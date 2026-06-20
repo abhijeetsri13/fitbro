@@ -1,0 +1,56 @@
+# ── Secrets / credentials (never commit) ──
+.env
+*.env
+.env.*
+*.key
+*.pem
+*.p12
+secrets/
+.credentials.json
+*token*.json
+config.local.toml
+
+# ── BMAD framework tooling (installed; not part of the library) ──
+/_bmad/
+/.claude/
+
+# ── Empty scaffold folders ──
+/design-artifacts/
+
+# ── C++ build artifacts (future) ──
+build/
+out/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+compile_commands.json
+# Conan
+conan/
+conandata.yml.lock
+CMakeUserPresets.json
+.conan2/
+
+# ── Runtime data (a deployed engine writes these per account) ──
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+intent-log*.jsonl
+ledger*.jsonl
+/var/
+
+# ── OS / editor ──
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/
+.vscode/
