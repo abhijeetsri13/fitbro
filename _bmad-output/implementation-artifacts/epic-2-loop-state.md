@@ -60,7 +60,7 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - [x] 2-9  Freeze-quantity slicer — DONE
 - [x] 2-10 Four-level risk engine — DONE
 - [x] 2-11 Funds/margin view + cadence + fail-closed gate — DONE
-- [ ] 2-12 Rate limiter + reserved exit lane
+- [x] 2-12 Rate limiter + reserved exit lane — DONE
 - [ ] 2-13 Safe-start cold-boot gate
 - [ ] 2-14 Kite adapter conformance + live-min-qty smoke
 - (then Epic 3+ if time remains)
@@ -95,3 +95,6 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - 2-10 DONE: broker_exec::risk::RiskEngine — four independently-callable levels (account: daily-loss, max-open-positions[entries-only], max-margin; strategy: stopped-flag[AC-3], daily-loss, max-lots; instrument: max-lots, illiquid/stale; order: market-block, max-value, slippage). 0/false=off (never blocks), loss=negative-pnl signs verified, fail-closed on unknown order value when margin/value limit armed, check_all ordering account>strategy>instrument>order. make_risk_check() -> std::function for the 2.8 gate (self-contained, engine stateless). Review SHIP; fixed slippage doc, engine-by-value capture, added equal-limit boundary + precedence tests. 24/24 green.
 - 2-11 DONE: broker_exec::risk::FundsView — caches ports::FundsSnapshot + steady fetched_at; refresh() (no stamp-advance on fetch failure), is_fresh (steady age<=cadence, monotonic), invalidate() (after-fill), ensure_fresh (auto-refresh-if-stale, fail-closed DataStale, NEVER returns a stale snapshot), check_margin (fail-closed dominates even required==0; InsufficientFunds on shortfall), make_funds_check()->std::function for the 2.8 gate. Review SHIP (anti-over-leverage crux verified); added refresh-uses-new-value test, threaded root cause into DataStale, move nit. 24/24 green.
   This satisfies the 2-8 follow-up: the runtime wires FundsView::make_funds_check as GateContext.funds_check for entries.
+- 2-12 DONE: broker_exec::ratelimit::RateLimiter — token bucket over ClockPort.now_steady (integer chrono, carry => no drift, capped at capacity), reserved exit lane (entry floors at reserved_exit, exit floors at 0 and may draw the reserved pool), acquire()->RateLimited+RetrySafe on deny (slow+alert signal). Admission-only (per-send timeout =>UNKNOWN is the 1.9 dispatcher). Review SHIP; reserved lane inviolable + no-drift verified across config edges. 25/25 green.
+
+=== Epic 2: 12/14 done. Remaining: 2-13 safe-start cold-boot gate (composes session+reconcile+clock+config+instrument master+calendar+egress-IP+crypto-keys, fail-closed), 2-14 Kite adapter conformance + live-min-qty smoke. ===
