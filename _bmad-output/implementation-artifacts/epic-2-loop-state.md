@@ -55,7 +55,7 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - [x] 2-4  Kite daily session establishment + expiry detection — DONE
 - [x] 2-5  Capability model + early rejection — DONE
 - [x] 2-6  Instrument-master lifecycle (daily refresh, staleness gate) — DONE
-- [ ] 2-7  Trading-calendar lifecycle
+- [x] 2-7  Trading-calendar lifecycle — DONE
 - [ ] 2-8  Pre-submission validation gate
 - [ ] 2-9  Freeze-quantity slicer
 - [ ] 2-10 Four-level risk engine
@@ -88,3 +88,4 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - 2-4 DONE: broker_exec::session — KiteSessionEstablisher.establish() (SHA-256 checksum via OpenSSL, request_token->access_token, persisted encrypted via TokenStore), validate() (loads token from store, 401/TokenException->NeedsReauth state, 5xx->reconcile Error), kSupportsHeadlessSessionRefresh=false, needs_reauth_error(). No auto-refresh. Review SHIP (no leak, checksum independently verified); added validate-5xx + missing/empty-access_token tests. No new dep. 20/20 ctests green.
 - 2-5 DONE: broker_exec::capabilities — Capability enum + tri-state Support{Unknown,Supported,Unsupported} (Unknown==0 so zero-init is fail-closed), CapabilitySet.supports()/require()/require_all() (NotSupported+DoNotRetry, names the cap), kite_capabilities() (lifecycle Supported, HeadlessSessionRefresh Unsupported, unverified Unknown). Review SHIP; applied fail-closed enum reorder. Fixed nested-Builder incomplete-type compile error. No new dep. 21/21 green.
 - 2-6 DONE: broker_exec::refdata::InstrumentMaster — header-mapped Kite CSV parse (no float; decimal->paise), date-versioned cache, resolve() (unknown/expired->Validation), require_fresh() (DataStale+BlockStrategy safe-start gate), injected fetch_csv seam (transport-free) + ClockPort. Review SHIP; applied 3 fixes (no-fresh-on-persist-fail, reject non-positive lot/tick, expiry==today boundary test). No new dep. 22/22 green.
+- 2-7 DONE: broker_exec::refdata::TradingCalendar — JSON holidays/special-sessions/windows, UTC->IST(+330) local date+minute via std::chrono, is_trading_day (special overrides weekend+holiday), half-open entry/square-off/ session windows, require_entry_allowed->MarketClosed, require_fresh->DataStale+BlockStrategy, date-versioned cache (no-fresh-on-persist-fail). Review SHIP; applied ISO-date validation of holiday entries + exact window-boundary tests. No new dep (nlohmann existing). 22/22 green.

@@ -66,7 +66,7 @@ development_status:
   2-4-kite-daily-session-establishment-and-expiry-detection: done
   2-5-capability-model-and-early-rejection: done
   2-6-instrument-master-lifecycle: done
-  2-7-trading-calendar-lifecycle: backlog
+  2-7-trading-calendar-lifecycle: done
   2-8-pre-submission-validation-gate: backlog
   2-9-freeze-quantity-slicer: backlog
   2-10-four-level-risk-engine: backlog

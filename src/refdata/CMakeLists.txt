@@ -9,6 +9,7 @@
 
 add_library(broker_exec_refdata STATIC
   instrument_master.cpp
+  trading_calendar.cpp
 )
 add_library(broker_exec::refdata ALIAS broker_exec_refdata)
 
@@ -26,11 +27,17 @@ target_link_libraries(broker_exec_refdata
     broker_exec_ports
     broker_exec_errors
   PRIVATE
+    # The trading calendar (Story 2.7) parses a JSON source; nlohmann_json is an
+    # existing Conan dep and stays an implementation detail (PRIVATE — it does not
+    # appear in any refdata public header).
+    nlohmann_json::nlohmann_json
     broker_exec_warnings
     broker_exec_sanitizers)
 
 if(BROKER_EXEC_BUILD_TESTS)
-  add_executable(broker_exec_refdata_tests instrument_master_test.cpp)
+  add_executable(broker_exec_refdata_tests
+    instrument_master_test.cpp
+    trading_calendar_test.cpp)
   target_link_libraries(broker_exec_refdata_tests
     PRIVATE
       broker_exec_refdata
