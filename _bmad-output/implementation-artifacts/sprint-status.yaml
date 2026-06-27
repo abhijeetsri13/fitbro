@@ -81,7 +81,7 @@ development_status:
   3-1-continuous-reconciliation-fetch-off-loop-apply-on-loop: done
   3-2-manual-intervention-detection: done
   3-3-corporate-action-awareness: done
-  3-4-crash-recovery-reconcile-before-resume: backlog
+  3-4-crash-recovery-reconcile-before-resume: done
   3-5-market-data-tick-stream-with-tradability-states: backlog
   3-6-liveness-and-process-self-health-watchdogs: backlog
   3-7-degradation-posture-coordinator: backlog
