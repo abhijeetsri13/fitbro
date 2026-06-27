@@ -74,6 +74,7 @@ add_subdirectory(src/risk)             # pre-submission validation gate (2.8) + 
 add_subdirectory(src/slicing)          # freeze-quantity slicer: deterministic <parent>#<k> children (2.9)
 add_subdirectory(src/ratelimit)        # token bucket + reserved exit lane (2.12)
 add_subdirectory(src/reconcile)        # continuous reconciliation: fetch-off-loop/apply-on-loop (3.1)
+add_subdirectory(src/marketdata)       # tick stream tradability states (Live/Stale/...) (3.5)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
