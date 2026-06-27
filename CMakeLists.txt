@@ -67,6 +67,7 @@ add_subdirectory(src/runtime)          # dispatch() send chokepoint, no-blind-re
 add_subdirectory(src/config)           # typed/validated layered config: defaults->TOML->env (2.1)
 add_subdirectory(src/secrets)          # env SecretProvider + AES-256-GCM token store (2.2)
 add_subdirectory(src/adapters/kite)    # Kite Connect REST client (transport) (2.3)
+add_subdirectory(src/session)          # Kite daily session establishment + expiry detection (2.4)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli

@@ -63,7 +63,7 @@ development_status:
   2-1-typed-configuration-system: done
   2-2-secret-provider-token-encryption-and-the-redaction-scrubber: done
   2-3-kite-connect-rest-client-the-transport: done
-  2-4-kite-daily-session-establishment-and-expiry-detection: backlog
+  2-4-kite-daily-session-establishment-and-expiry-detection: done
   2-5-capability-model-and-early-rejection: backlog
   2-6-instrument-master-lifecycle: backlog
   2-7-trading-calendar-lifecycle: backlog

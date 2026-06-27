@@ -52,7 +52,7 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - [x] 2-1  Typed configuration system (toml++ + env, fail-fast, secrets-not-in-toml) — DONE (fb8097a)
 - [x] 2-2  Secret provider, token encryption (OpenSSL AES-256-GCM), redaction scrubber — DONE (3420fbf)
 - [x] 2-3  Kite Connect REST client (cpr/libcurl) behind adapter port — DONE
-- [ ] 2-4  Kite daily session establishment + expiry detection
+- [x] 2-4  Kite daily session establishment + expiry detection — DONE
 - [ ] 2-5  Capability model + early rejection
 - [ ] 2-6  Instrument-master lifecycle (daily refresh, staleness gate)
 - [ ] 2-7  Trading-calendar lifecycle
@@ -84,3 +84,5 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
   nlohmann PUBLIC, scrub error_type into broker_code; added 5xx/NetworkException/Margin tests. cpr/1.10.5.
   Also fixed: cpr ErrorCode enum names (HOST/PROXY_RESOLUTION_FAILURE) + moved cpr_http_client.hpp to include/.
   19/19 ctests green.
+
+- 2-4 DONE: broker_exec::session — KiteSessionEstablisher.establish() (SHA-256 checksum via OpenSSL, request_token->access_token, persisted encrypted via TokenStore), validate() (loads token from store, 401/TokenException->NeedsReauth state, 5xx->reconcile Error), kSupportsHeadlessSessionRefresh=false, needs_reauth_error(). No auto-refresh. Review SHIP (no leak, checksum independently verified); added validate-5xx + missing/empty-access_token tests. No new dep. 20/20 ctests green.
