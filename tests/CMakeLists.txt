@@ -59,6 +59,32 @@ target_link_libraries(broker_exec_conformance_tests
     broker_exec_sanitizers)
 add_test(NAME broker_exec_conformance_tests COMMAND broker_exec_conformance_tests)
 
+# ── Kite adapter conformance (Story 2.14) ───────────────────────────────────
+# The SAME broker-agnostic kit, now gating the real KiteBrokerAdapter via a
+# stateful recorded Kite-HTTP server (no live creds). Proves zero duplicate
+# orders across the full fault matrix for Kite — tier-1 certification.
+add_executable(broker_exec_kite_conformance_tests
+  conformance/kite_conformance_test.cpp)
+target_include_directories(broker_exec_kite_conformance_tests
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/conformance)
+target_link_libraries(broker_exec_kite_conformance_tests
+  PRIVATE
+    broker_exec_kite          # KiteBrokerAdapter + REST client + HttpClient seam
+    broker_exec_runtime
+    broker_exec_fake_broker   # FaultConfig (the per-scenario fault selector)
+    broker_exec_intentlog
+    broker_exec_store
+    broker_exec_idempotency
+    broker_exec_lifecycle
+    broker_exec_clock
+    broker_exec_ports
+    broker_exec_domain
+    broker_exec_errors
+    Catch2::Catch2WithMain
+    broker_exec_warnings
+    broker_exec_sanitizers)
+add_test(NAME broker_exec_kite_conformance_tests COMMAND broker_exec_kite_conformance_tests)
+
 # ── SIGKILL worker (plain exe — NO Catch2) ──────────────────────────────────
 # A standalone `int main(argc,argv)` spawned by the SIGKILL test. It installs the
 # Dispatcher pre-send barrier (std::_Exit, the portable uncatchable-kill analog)

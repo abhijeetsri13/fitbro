@@ -62,7 +62,7 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - [x] 2-11 Funds/margin view + cadence + fail-closed gate — DONE
 - [x] 2-12 Rate limiter + reserved exit lane — DONE
 - [x] 2-13 Safe-start cold-boot gate — DONE
-- [ ] 2-14 Kite adapter conformance + live-min-qty smoke
+- [x] 2-14 Kite adapter conformance + live-min-qty smoke — DONE
 - (then Epic 3+ if time remains)
 
 ## Outcome log (append one line per completed story)
@@ -99,3 +99,9 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 
 === Epic 2: 12/14 done. Remaining: 2-13 safe-start cold-boot gate (composes session+reconcile+clock+config+instrument master+calendar+egress-IP+crypto-keys, fail-closed), 2-14 Kite adapter conformance + live-min-qty smoke. ===
 - 2-13 DONE: broker_exec::session::SafeStartGate — all-8-required fail-closed cold-boot gate (config->crypto-keys->clock->session->egress-IP->instrument-master->calendar->reconciliation), injected std::function per check; an UNSET check is a hard fail (Internal+BlockStrategy 'not configured'); a failing check is wrapped name-prefixed with inner category/action preserved (DataStale/SessionExpired survive); session_state_to_result helper. Review SHIP (all safety axes verified: empty-fail-closed for all 8, all-required, inner-category preserved, no-throw); fixed doc nits + improved session-wiring guidance. 25/25 green.
+- 2-14 DONE: KiteBrokerAdapter:ports::BrokerPort over KiteRestClient (tag+order_id->client_ref correlation maps so fetch_orders recovers the signal even on ack-loss; Kite status->OrderState, integer paise, no-throw/scrubbed). RecordedKiteServer (stateful Kite-HTTP twin of FakeBroker) + the SAME conformance kit, reused verbatim -> the Kite adapter passes the full fault matrix with ZERO duplicates (tier-1 cert). Review FIX-REQUIRED: added an explicit ack-lost recovery assertion (closes the vacuous-pass hole) + a no-blind-retry place_count probe + documented tier-2 limitations (square_off flatten, exchange-from-instrument-master, SL trigger/limit). docs/kite-min-qty-smoke.md runbook. 26/26 ctests green.
+
+========================= EPIC 2 COMPLETE (14/14) =========================
+All Epic-2 stories done, each via full BMAD cadence (create->dev subagent->MSVC build+ctest->adversarial review subagent->apply Critical/High+cheap-Medium fixes->commit). 26/26 ctests green on Release/MSVC. New deps wired: tomlplusplus, openssl, cpr/libcurl. Modules added: config, secrets(+platform perms), adapters/kite (REST client + BrokerPort adapter), session (establish+safe-start), capabilities, refdata (instrument master + trading calendar), risk (validation gate + 4-level engine + funds view), slicing, ratelimit. Notable review catches fixed: SL-Market trigger bypassing tick check (gate), fail-open capability enum default, NetworkException->do-not-retry (Kite), funds stale-but-served, instrument-master fresh-on-persist-fail, vacuous Kite conformance pass.
+Tier-2 follow-ups (operator/live, tracked): live-SDK unknown resolution + VCR fixtures; square_off position-flatten; exchange via instrument master (not heuristic); SL distinct trigger/limit (needs OrderIntent change); runtime must wire funds_check+calendar for entries (2-8 follow-up); provenance IDs through non-scrubbed fields (2-2 note).
+Next (Epic 3, if continued): 3-1 continuous reconciliation (fetch-off-loop/apply-on-loop, adaptive cadence).

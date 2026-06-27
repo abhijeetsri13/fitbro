@@ -8,6 +8,7 @@
 add_library(broker_exec_kite STATIC
   cpr_http_client.cpp
   kite_rest_client.cpp
+  kite_broker_adapter.cpp
 )
 add_library(broker_exec::kite ALIAS broker_exec_kite)
 
