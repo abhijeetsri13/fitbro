@@ -71,6 +71,7 @@ add_subdirectory(src/session)          # Kite daily session establishment + expi
 add_subdirectory(src/capabilities)     # per-broker capability model + early rejection (2.5)
 add_subdirectory(src/refdata)          # instrument-master lifecycle + staleness gate (2.6)
 add_subdirectory(src/risk)             # pre-submission validation gate (2.8) + risk engine (2.10)
+add_subdirectory(src/slicing)          # freeze-quantity slicer: deterministic <parent>#<k> children (2.9)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli

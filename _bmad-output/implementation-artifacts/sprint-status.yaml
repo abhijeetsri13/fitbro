@@ -68,7 +68,7 @@ development_status:
   2-6-instrument-master-lifecycle: done
   2-7-trading-calendar-lifecycle: done
   2-8-pre-submission-validation-gate: done
-  2-9-freeze-quantity-slicer: backlog
+  2-9-freeze-quantity-slicer: done
   2-10-four-level-risk-engine: backlog
   2-11-funds-margin-view-with-cadence-and-fail-closed-gate: backlog
   2-12-rate-limiter-with-reserved-exit-lane: backlog
