@@ -68,6 +68,7 @@ add_subdirectory(src/config)           # typed/validated layered config: default
 add_subdirectory(src/secrets)          # env SecretProvider + AES-256-GCM token store (2.2)
 add_subdirectory(src/adapters/kite)    # Kite Connect REST client (transport) (2.3)
 add_subdirectory(src/session)          # Kite daily session establishment + expiry detection (2.4)
+add_subdirectory(src/capabilities)     # per-broker capability model + early rejection (2.5)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
