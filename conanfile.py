@@ -25,6 +25,7 @@ class BrokerExecConan(ConanFile):
         self.requires("tomlplusplus/3.4.0")  # typed configuration (Story 2.1)
         self.requires("openssl/3.2.1")  # AES-256-GCM token encryption at rest (Story 2.2)
         self.requires("cpr/1.10.5")  # Kite Connect REST transport over libcurl (Story 2.3)
+        self.requires("spdlog/1.14.1")  # structured JSON logging + redaction (Story 4.1)
         # Test framework.
         self.test_requires("catch2/3.5.2")
 

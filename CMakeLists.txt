@@ -39,6 +39,7 @@ find_package(nlohmann_json REQUIRED)  # intent-log JSON lines (Story 1.5)
 find_package(tomlplusplus CONFIG REQUIRED)  # typed configuration (Story 2.1)
 find_package(OpenSSL REQUIRED)  # AES-256-GCM token encryption at rest (Story 2.2)
 find_package(cpr REQUIRED)  # Kite Connect REST transport over libcurl (Story 2.3)
+find_package(spdlog REQUIRED)  # structured JSON logging + redaction (Story 4.1)
 
 # Vendored SQLite (static, hermetic) — provides target SQLite::SQLite3.
 add_subdirectory(third_party/sqlite3)
@@ -77,6 +78,7 @@ add_subdirectory(src/reconcile)        # continuous reconciliation: fetch-off-lo
 add_subdirectory(src/marketdata)       # tick stream tradability states (Live/Stale/...) (3.5)
 add_subdirectory(src/health)           # liveness + self-health watchdogs (3.6)
 add_subdirectory(src/modes)            # degradation-posture coordinator (3.7)
+add_subdirectory(src/observability)    # structured logging + provenance + audit (4.1)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
