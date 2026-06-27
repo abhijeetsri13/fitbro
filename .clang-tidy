@@ -1,0 +1,25 @@
+---
+# Checks tuned for a safety-critical, single-threaded decision core. Broad
+# bugprone/cppcoreguidelines coverage; a few noisy checks disabled to keep
+# signal high. Money-path floating-point use is caught here AND by review.
+Checks: >
+  -*,
+  bugprone-*,
+  cppcoreguidelines-*,
+  clang-analyzer-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -misc-non-private-member-variables-in-classes,
+  -bugprone-easily-swappable-parameters
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*/(include|src)/broker_exec/.*'
+FormatStyle: file

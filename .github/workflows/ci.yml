@@ -1,0 +1,133 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ── Cross-platform build + test matrix ──
+  # Proves the library builds and its tests pass on Linux (gcc & clang),
+  # Windows (MSVC), and macOS (clang) — one uniform Ninja + Conan-preset flow.
+  build:
+    name: ${{ matrix.name }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+        include:
+          - { name: linux-gcc,    os: ubuntu-24.04,  cc: gcc-13, cxx: g++-13 }
+          - { name: linux-clang,  os: ubuntu-24.04,  cc: clang,  cxx: clang++ }
+          - { name: macos-clang,  os: macos-14,      cc: clang,  cxx: clang++ }
+          - { name: windows-msvc, os: windows-2022 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Ninja (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ninja -y
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set compiler env (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          echo "CC=${{ matrix.cc }}"   >> "$GITHUB_ENV"
+          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
+
+      - name: Install Conan
+        run: |
+          pip install "conan>=2.0"
+          conan profile detect --force
+
+      - name: Build + test
+        run: |
+          BT="${{ matrix.build_type }}"
+          PRESET="conan-$(echo "$BT" | tr '[:upper:]' '[:lower:]')"
+          conan install . --build=missing -s compiler.cppstd=20 -s build_type="$BT" \
+            -c tools.cmake.cmaketoolchain:generator=Ninja
+          cmake --preset "$PRESET"
+          cmake --build --preset "$PRESET"
+          ctest --preset "$PRESET" --output-on-failure
+
+  # ── Sanitizer builds (clang/Linux): ASan+UBSan and TSan ──
+  sanitizers:
+    name: sanitize / ${{ matrix.san }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        san: ["address,undefined", "thread"]
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Conan
+        run: |
+          pip install "conan>=2.0"
+          conan profile detect --force
+      - name: Build + test with sanitizers
+        run: |
+          conan install . --build=missing -s compiler.cppstd=20 -s build_type=Debug \
+            -c tools.cmake.cmaketoolchain:generator=Ninja
+          cmake --preset conan-debug -DBROKER_EXEC_SANITIZER="${{ matrix.san }}"
+          cmake --build --preset conan-debug
+          ctest --preset conan-debug --output-on-failure
+
+  # ── Format + static analysis ──
+  lint:
+    name: clang-format + clang-tidy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang-format clang-tidy ninja-build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: clang-format check
+        run: |
+          mapfile -t files < <(find include src tests -type f \( -name '*.cpp' -o -name '*.hpp' \) 2>/dev/null)
+          if [ ${#files[@]} -gt 0 ]; then clang-format --dry-run --Werror "${files[@]}"; fi
+      - name: Generate compile_commands.json
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          pip install "conan>=2.0"
+          conan profile detect --force
+          conan install . --build=missing -s compiler.cppstd=20 \
+            -c tools.cmake.cmaketoolchain:generator=Ninja
+          cmake --preset conan-release
+      - name: clang-tidy
+        run: |
+          BUILD_DIR="$(dirname "$(find . -name compile_commands.json | head -n1)")"
+          mapfile -t files < <(find src -type f -name '*.cpp' 2>/dev/null)
+          if [ ${#files[@]} -gt 0 ]; then clang-tidy -p "$BUILD_DIR" "${files[@]}"; fi

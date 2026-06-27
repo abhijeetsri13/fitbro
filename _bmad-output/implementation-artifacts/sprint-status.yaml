@@ -1,0 +1,116 @@
+# generated: 2026-06-21
+# last_updated: 2026-06-21
+# project: fitbro
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: {project-root}/_bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-06-21
+last_updated: 2026-06-21
+project: fitbro
+project_key: NOKEY
+tracking_system: file-system
+story_location: "{project-root}/_bmad-output/implementation-artifacts"
+
+development_status:
+  # ── Epic 1: Order-Safety Substrate ──
+  epic-1: done
+  1-1-cpp-project-scaffold-with-hexagonal-target-boundary: done
+  1-2-domain-value-types-orderstate-enum-and-the-money-fixed-point-type: done
+  1-3-ports-and-the-injected-clock-with-skew-stall-detection: done
+  1-4-typed-error-taxonomy-with-suggested-actions: done
+  1-5-write-ahead-intent-log-fsync-hash-chained-replayable: done
+  1-6-sqlite-projection-and-numbered-migrations: done
+  1-7-client-ref-generation-and-idempotency: done
+  1-8-order-lifecycle-state-machine-with-apply-ordering-and-parent-child-model: done
+  1-9-dispatch-chokepoint-with-no-blind-retry: done
+  1-10-unknown-handling-and-match-key-precedence: done
+  1-11-adversarial-fake-broker-for-fault-injection: done
+  1-12-conformance-kit-sigkill-durability-harness-sm-1: done
+  epic-1-retrospective: optional
+
+  # ── Epic 2: Live Kite Trading — Validation Gate, Risk, Reference Data & Session ──
+  epic-2: backlog
+  2-1-typed-configuration-system: backlog
+  2-2-secret-provider-token-encryption-and-the-redaction-scrubber: backlog
+  2-3-kite-connect-rest-client-the-transport: backlog
+  2-4-kite-daily-session-establishment-and-expiry-detection: backlog
+  2-5-capability-model-and-early-rejection: backlog
+  2-6-instrument-master-lifecycle: backlog
+  2-7-trading-calendar-lifecycle: backlog
+  2-8-pre-submission-validation-gate: backlog
+  2-9-freeze-quantity-slicer: backlog
+  2-10-four-level-risk-engine: backlog
+  2-11-funds-margin-view-with-cadence-and-fail-closed-gate: backlog
+  2-12-rate-limiter-with-reserved-exit-lane: backlog
+  2-13-safe-start-cold-boot-gate: backlog
+  2-14-kite-adapter-conformance-and-live-min-qty-smoke: backlog
+  epic-2-retrospective: optional
+
+  # ── Epic 3: Resilience — Reconciliation, Recovery, Safe Degradation & Kill Switches ──
+  epic-3: backlog
+  3-1-continuous-reconciliation-fetch-off-loop-apply-on-loop: backlog
+  3-2-manual-intervention-detection: backlog
+  3-3-corporate-action-awareness: backlog
+  3-4-crash-recovery-reconcile-before-resume: backlog
+  3-5-market-data-tick-stream-with-tradability-states: backlog
+  3-6-liveness-and-process-self-health-watchdogs: backlog
+  3-7-degradation-posture-coordinator: backlog
+  3-8-kill-switches-with-operator-control-plane: backlog
+  epic-3-retrospective: optional
+
+  # ── Epic 4: Operator Visibility — Observability, Alerts, Ledger, Modes & Surface ──
+  epic-4: backlog
+  4-1-structured-logging-provenance-audit: backlog
+  4-2-daily-error-reconciliation-reports: backlog
+  4-3-alerting-with-dead-man-s-switch: backlog
+  4-4-tamper-evident-ledger-eod-signed-report-heartbeat: backlog
+  4-5-trading-modes: backlog
+  4-6-cli-and-localhost-health-endpoint: backlog
+  epic-4-retrospective: optional
+
+  # ── Epic 5: Option-Selling Safety — Hedge-First, Baskets, Slicing & Margin Shock ──
+  epic-5: backlog
+  5-1-hedge-first-execution-with-naked-sell-prevention: backlog
+  5-2-basket-multi-leg-execution: backlog
+  5-3-freeze-slicing-at-option-size: backlog
+  5-4-margin-span-shock-simulation-capability-gated: backlog
+  epic-5-retrospective: optional
+
+  # ── Epic 6: Breadth — Kotak Neo Adapter & Multi-Account ──
+  epic-6: backlog
+  6-1-kotak-neo-rest-websocket-client-and-multi-step-auth: backlog
+  6-2-kotak-neo-adapter-certification: backlog
+  6-3-broker-portability-proof: backlog
+  6-4-multi-strategy-isolation: backlog
+  6-5-multi-account-process-per-account-with-supervisor: backlog
+  epic-6-retrospective: optional
