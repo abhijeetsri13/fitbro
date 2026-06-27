@@ -76,6 +76,7 @@ add_subdirectory(src/ratelimit)        # token bucket + reserved exit lane (2.12
 add_subdirectory(src/reconcile)        # continuous reconciliation: fetch-off-loop/apply-on-loop (3.1)
 add_subdirectory(src/marketdata)       # tick stream tradability states (Live/Stale/...) (3.5)
 add_subdirectory(src/health)           # liveness + self-health watchdogs (3.6)
+add_subdirectory(src/modes)            # degradation-posture coordinator (3.7)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
