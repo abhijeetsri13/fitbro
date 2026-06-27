@@ -83,7 +83,7 @@ development_status:
   3-3-corporate-action-awareness: done
   3-4-crash-recovery-reconcile-before-resume: done
   3-5-market-data-tick-stream-with-tradability-states: done
-  3-6-liveness-and-process-self-health-watchdogs: backlog
+  3-6-liveness-and-process-self-health-watchdogs: done
   3-7-degradation-posture-coordinator: backlog
   3-8-kill-switches-with-operator-control-plane: backlog
   epic-3-retrospective: optional
