@@ -56,7 +56,7 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - [x] 2-5  Capability model + early rejection — DONE
 - [x] 2-6  Instrument-master lifecycle (daily refresh, staleness gate) — DONE
 - [x] 2-7  Trading-calendar lifecycle — DONE
-- [ ] 2-8  Pre-submission validation gate
+- [x] 2-8  Pre-submission validation gate — DONE
 - [ ] 2-9  Freeze-quantity slicer
 - [ ] 2-10 Four-level risk engine
 - [ ] 2-11 Funds/margin view + cadence + fail-closed gate
@@ -89,3 +89,5 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - 2-5 DONE: broker_exec::capabilities — Capability enum + tri-state Support{Unknown,Supported,Unsupported} (Unknown==0 so zero-init is fail-closed), CapabilitySet.supports()/require()/require_all() (NotSupported+DoNotRetry, names the cap), kite_capabilities() (lifecycle Supported, HeadlessSessionRefresh Unsupported, unverified Unknown). Review SHIP; applied fail-closed enum reorder. Fixed nested-Builder incomplete-type compile error. No new dep. 21/21 green.
 - 2-6 DONE: broker_exec::refdata::InstrumentMaster — header-mapped Kite CSV parse (no float; decimal->paise), date-versioned cache, resolve() (unknown/expired->Validation), require_fresh() (DataStale+BlockStrategy safe-start gate), injected fetch_csv seam (transport-free) + ClockPort. Review SHIP; applied 3 fixes (no-fresh-on-persist-fail, reject non-positive lot/tick, expiry==today boundary test). No new dep. 22/22 green.
 - 2-7 DONE: broker_exec::refdata::TradingCalendar — JSON holidays/special-sessions/windows, UTC->IST(+330) local date+minute via std::chrono, is_trading_day (special overrides weekend+holiday), half-open entry/square-off/ session windows, require_entry_allowed->MarketClosed, require_fresh->DataStale+BlockStrategy, date-versioned cache (no-fresh-on-persist-fail). Review SHIP; applied ISO-date validation of holiday entries + exact window-boundary tests. No new dep (nlohmann existing). 22/22 green.
+- 2-8 DONE: broker_exec::risk::ValidationGate — non-bypassable ordered pipeline (kill-switch, UNKNOWN-pause, duplicate, exchange, product, lot, tick, freeze, time-window, funds, risk, hedge); exits exempt from entry-only blocks (kill/pause/dup/window/funds) but still run exchange/product/lot/tick/freeze/risk/hedge; over-freeze->AllowWithSlicing (slice-mode) without short-circuiting later checks; first-failure names the check; real refdata calendar + injected predicates for funds/risk/hedge/dup/kill/pause (real impls in 2.9/2.10/2.11/3.8). Review FIX-REQUIRED: fixed StopLossMarket trigger now tick-checked (HIGH bypass), kill/pause action=BlockStrategy, dropped dead capabilities link, added SL-M/SL/empty-exchange tests. 23/23 green.
+  FOLLOW-UP (gate composition, for runtime/2.11/2.13): the gate treats an ABSENT funds_check / null calendar as PASS (injectable default); the runtime MUST wire funds_check + calendar for entries — enforce that invariant at composition.
