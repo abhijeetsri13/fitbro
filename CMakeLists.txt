@@ -73,6 +73,7 @@ add_subdirectory(src/refdata)          # instrument-master lifecycle + staleness
 add_subdirectory(src/risk)             # pre-submission validation gate (2.8) + risk engine (2.10)
 add_subdirectory(src/slicing)          # freeze-quantity slicer: deterministic <parent>#<k> children (2.9)
 add_subdirectory(src/ratelimit)        # token bucket + reserved exit lane (2.12)
+add_subdirectory(src/reconcile)        # continuous reconciliation: fetch-off-loop/apply-on-loop (3.1)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
