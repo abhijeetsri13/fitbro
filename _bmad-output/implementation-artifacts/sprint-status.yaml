@@ -72,7 +72,7 @@ development_status:
   2-10-four-level-risk-engine: done
   2-11-funds-margin-view-with-cadence-and-fail-closed-gate: done
   2-12-rate-limiter-with-reserved-exit-lane: done
-  2-13-safe-start-cold-boot-gate: backlog
+  2-13-safe-start-cold-boot-gate: done
   2-14-kite-adapter-conformance-and-live-min-qty-smoke: backlog
   epic-2-retrospective: optional
 

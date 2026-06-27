@@ -61,7 +61,7 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - [x] 2-10 Four-level risk engine — DONE
 - [x] 2-11 Funds/margin view + cadence + fail-closed gate — DONE
 - [x] 2-12 Rate limiter + reserved exit lane — DONE
-- [ ] 2-13 Safe-start cold-boot gate
+- [x] 2-13 Safe-start cold-boot gate — DONE
 - [ ] 2-14 Kite adapter conformance + live-min-qty smoke
 - (then Epic 3+ if time remains)
 
@@ -98,3 +98,4 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - 2-12 DONE: broker_exec::ratelimit::RateLimiter — token bucket over ClockPort.now_steady (integer chrono, carry => no drift, capped at capacity), reserved exit lane (entry floors at reserved_exit, exit floors at 0 and may draw the reserved pool), acquire()->RateLimited+RetrySafe on deny (slow+alert signal). Admission-only (per-send timeout =>UNKNOWN is the 1.9 dispatcher). Review SHIP; reserved lane inviolable + no-drift verified across config edges. 25/25 green.
 
 === Epic 2: 12/14 done. Remaining: 2-13 safe-start cold-boot gate (composes session+reconcile+clock+config+instrument master+calendar+egress-IP+crypto-keys, fail-closed), 2-14 Kite adapter conformance + live-min-qty smoke. ===
+- 2-13 DONE: broker_exec::session::SafeStartGate — all-8-required fail-closed cold-boot gate (config->crypto-keys->clock->session->egress-IP->instrument-master->calendar->reconciliation), injected std::function per check; an UNSET check is a hard fail (Internal+BlockStrategy 'not configured'); a failing check is wrapped name-prefixed with inner category/action preserved (DataStale/SessionExpired survive); session_state_to_result helper. Review SHIP (all safety axes verified: empty-fail-closed for all 8, all-required, inner-category preserved, no-throw); fixed doc nits + improved session-wiring guidance. 25/25 green.

@@ -10,6 +10,7 @@
 
 add_library(broker_exec_session STATIC
   kite_session_establisher.cpp
+  safe_start.cpp
 )
 add_library(broker_exec::session ALIAS broker_exec_session)
 
@@ -39,11 +40,13 @@ target_link_libraries(broker_exec_session
     broker_exec_sanitizers)
 
 if(BROKER_EXEC_BUILD_TESTS)
-  add_executable(broker_exec_session_tests session_test.cpp)
+  add_executable(broker_exec_session_tests session_test.cpp safe_start_test.cpp)
   target_link_libraries(broker_exec_session_tests
     PRIVATE
       broker_exec_session
       broker_exec_secrets          # real TokenStore for persistence assertions
+      broker_exec_refdata          # real InstrumentMaster::require_fresh (safe-start AC-3)
+      broker_exec_clock            # TestClock drives the real InstrumentMaster (AC-3)
       nlohmann_json::nlohmann_json # json appears directly in the test body
       Catch2::Catch2WithMain
       broker_exec_warnings
