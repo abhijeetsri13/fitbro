@@ -36,6 +36,7 @@ endif()
 # ── Dependencies (resolved by Conan-generated find_package config files) ──
 find_package(Catch2 3 REQUIRED)
 find_package(nlohmann_json REQUIRED)  # intent-log JSON lines (Story 1.5)
+find_package(tomlplusplus CONFIG REQUIRED)  # typed configuration (Story 2.1)
 
 # Vendored SQLite (static, hermetic) — provides target SQLite::SQLite3.
 add_subdirectory(third_party/sqlite3)
@@ -60,6 +61,8 @@ add_subdirectory(src/idempotency)      # client-ref gen + idempotency index (1.7
 add_subdirectory(src/lifecycle)        # order lifecycle FSM + parent/child fold (1.8)
 add_subdirectory(src/adapters/fake)    # adversarial fake broker / fault injection (1.11)
 add_subdirectory(src/runtime)          # dispatch() send chokepoint, no-blind-retry (1.9)
+# --- Epic 2 ---
+add_subdirectory(src/config)           # typed/validated layered config: defaults->TOML->env (2.1)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli

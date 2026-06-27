@@ -22,6 +22,7 @@ class BrokerExecConan(ConanFile):
         # (third_party/sqlite3) rather than taken from Conan, to guarantee a
         # static, byte-identical, DLL-free build across Linux/macOS/Windows.
         self.requires("nlohmann_json/3.11.3")  # intent-log JSON lines (Story 1.5)
+        self.requires("tomlplusplus/3.4.0")  # typed configuration (Story 2.1)
         # Test framework.
         self.test_requires("catch2/3.5.2")
 

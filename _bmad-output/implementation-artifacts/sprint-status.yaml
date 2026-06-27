@@ -59,8 +59,8 @@ development_status:
   epic-1-retrospective: optional
 
   # ── Epic 2: Live Kite Trading — Validation Gate, Risk, Reference Data & Session ──
-  epic-2: backlog
-  2-1-typed-configuration-system: backlog
+  epic-2: in-progress
+  2-1-typed-configuration-system: ready-for-dev
   2-2-secret-provider-token-encryption-and-the-redaction-scrubber: backlog
   2-3-kite-connect-rest-client-the-transport: backlog
   2-4-kite-daily-session-establishment-and-expiry-detection: backlog

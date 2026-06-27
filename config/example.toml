@@ -1,0 +1,54 @@
+# broker_exec — example configuration (Story 2.1, FR-34).
+#
+# This documents the full, NON-SECRET configuration surface. The same binary
+# runs dev/paper/live by config alone. Layering order (lowest -> highest):
+#
+#     built-in defaults  ->  this TOML file  ->  environment overrides (env WINS)
+#
+# Every field has an environment override named BROKER_EXEC_<SECTION>_<FIELD>
+# (uppercase), e.g. engine.mode -> BROKER_EXEC_ENGINE_MODE. Use env overrides to
+# specialize one shared file into dev/paper/live-small/live-prod.
+#
+# SECRETS DO NOT BELONG HERE. API keys, tokens, passwords, MPIN, TOTP seeds, etc.
+# are provided ONLY via the environment seam / SecretProvider. Any key whose name
+# contains token/secret/password/api_key/mpin/totp (case-insensitive) is REJECTED
+# at load — the config file fails fast rather than ever persisting a credential.
+
+[engine]
+# Trading run mode: "dry-run" | "paper" | "live" | "replay". dry-run is the safe
+# default and never touches a live broker. (env: BROKER_EXEC_ENGINE_MODE)
+mode = "paper"
+# Logical account label this process trades. Required.
+# (env: BROKER_EXEC_ENGINE_ACCOUNT_ID)
+account_id = "acct-dev-01"
+
+[broker]
+# Broker adapter selector, e.g. "kite" | "kotak_neo". Required.
+# (env: BROKER_EXEC_BROKER_NAME)
+name = "kite"
+# REST base URL for the broker (optional). (env: BROKER_EXEC_BROKER_BASE_URL)
+base_url = "https://api.kite.trade"
+# Per-call timeout in milliseconds; must be > 0. (env: BROKER_EXEC_BROKER_TIMEOUT_MS)
+timeout_ms = 5000
+
+[risk]
+# Hard cap on a single order's notional, in integer paise (never a float).
+# 0 means no cap configured here. Must be >= 0.
+# (env: BROKER_EXEC_RISK_MAX_ORDER_VALUE_PAISE)
+max_order_value_paise = 5000000
+# Maximum number of simultaneously open positions; must be >= 0.
+# (env: BROKER_EXEC_RISK_MAX_OPEN_POSITIONS)
+max_open_positions = 10
+
+[paths]
+# Base directory for durable state (intent log, store, ...). Required.
+# Use a real path for your platform; std::filesystem resolves the grammar.
+# (env: BROKER_EXEC_PATHS_DATA_DIR)
+data_dir = "/var/lib/broker_exec"
+# Directory for logs (optional). (env: BROKER_EXEC_PATHS_LOG_DIR)
+log_dir = "/var/log/broker_exec"
+
+[logging]
+# Verbosity: "trace" | "debug" | "info" | "warn" | "error".
+# (env: BROKER_EXEC_LOGGING_LEVEL)
+level = "info"
