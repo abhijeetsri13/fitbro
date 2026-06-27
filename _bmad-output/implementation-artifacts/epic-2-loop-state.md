@@ -51,7 +51,7 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 
 - [x] 2-1  Typed configuration system (toml++ + env, fail-fast, secrets-not-in-toml) — DONE (fb8097a)
 - [x] 2-2  Secret provider, token encryption (OpenSSL AES-256-GCM), redaction scrubber — DONE (3420fbf)
-- [ ] 2-3  Kite Connect REST client (cpr/libcurl) behind adapter port
+- [x] 2-3  Kite Connect REST client (cpr/libcurl) behind adapter port — DONE
 - [ ] 2-4  Kite daily session establishment + expiry detection
 - [ ] 2-5  Capability model + early rejection
 - [ ] 2-6  Instrument-master lifecycle (daily refresh, staleness gate)
@@ -78,3 +78,9 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
   openssl/3.2.1 wired. 18/18 ctests green.
 - NOTE for Epic 4 (provenance): scrub()'s >=20 alnum rule will redact client_ref/order_id in free-form logs;
   route provenance IDs through structured (non-scrubbed) fields, scrub only free text.
+- 2-3 DONE: adapters/kite — HttpClient seam + CprHttpClient (cpr confined to .cpp), KiteRestClient
+  (Kite v3 envelope, Authorization built only at call site, never logged), error mapping to taxonomy
+  (scrubbed). Review FIX-REQUIRED: fixed NetworkException->ReconcileFirst (was DoNotRetry, safety bug),
+  nlohmann PUBLIC, scrub error_type into broker_code; added 5xx/NetworkException/Margin tests. cpr/1.10.5.
+  Also fixed: cpr ErrorCode enum names (HOST/PROXY_RESOLUTION_FAILURE) + moved cpr_http_client.hpp to include/.
+  19/19 ctests green.

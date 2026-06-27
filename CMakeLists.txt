@@ -38,6 +38,7 @@ find_package(Catch2 3 REQUIRED)
 find_package(nlohmann_json REQUIRED)  # intent-log JSON lines (Story 1.5)
 find_package(tomlplusplus CONFIG REQUIRED)  # typed configuration (Story 2.1)
 find_package(OpenSSL REQUIRED)  # AES-256-GCM token encryption at rest (Story 2.2)
+find_package(cpr REQUIRED)  # Kite Connect REST transport over libcurl (Story 2.3)
 
 # Vendored SQLite (static, hermetic) — provides target SQLite::SQLite3.
 add_subdirectory(third_party/sqlite3)
@@ -65,6 +66,7 @@ add_subdirectory(src/runtime)          # dispatch() send chokepoint, no-blind-re
 # --- Epic 2 ---
 add_subdirectory(src/config)           # typed/validated layered config: defaults->TOML->env (2.1)
 add_subdirectory(src/secrets)          # env SecretProvider + AES-256-GCM token store (2.2)
+add_subdirectory(src/adapters/kite)    # Kite Connect REST client (transport) (2.3)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
