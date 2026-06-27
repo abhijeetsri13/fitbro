@@ -1,14 +1,24 @@
-# broker_exec::reconcile — continuous reconciliation (Story 3.1, FR-11).
+# broker_exec::reconcile — continuous reconciliation (Story 3.1, FR-11) +
+# manual-intervention detection (Story 3.2, FR-12).
 #
-# Two structurally separated halves: the FETCH side (Reconciler) reads the broker
-# only and produces an immutable ReconcileResult off the main loop; the APPLY side
-# (ReconcileApplier) is the sole writer, folding a result into local state by
-# reusing the lifecycle FSM and raising an alert + blocking new orders on a
-# mismatch. Depends INWARD only on domain/ports/errors (public API) and lifecycle
-# (used inside the .cpp only). No transport/adapter/SDK dependency. No new Conan dep.
+# 3.1: two structurally separated halves: the FETCH side (Reconciler) reads the
+# broker only and produces an immutable ReconcileResult off the main loop; the
+# APPLY side (ReconcileApplier) is the sole writer, folding a result into local
+# state by reusing the lifecycle FSM and raising an alert + blocking new orders on
+# a mismatch.
+#
+# 3.2: the ManualInterventionDetector CLASSIFIES a 3.1 ReconcileResult into named
+# manual-intervention events (position closed/reduced manually, order cancelled
+# manually), alerts on each, and reconciles the local position book to broker
+# truth so a manually-closed position reads flat (the structural no-duplicate-exit
+# guarantee).
+#
+# Depends INWARD only on domain/ports/errors (public API) and lifecycle (used
+# inside the .cpp only). No transport/adapter/SDK dependency. No new Conan dep.
 
 add_library(broker_exec_reconcile STATIC
   reconciler.cpp
+  manual_intervention.cpp
 )
 add_library(broker_exec::reconcile ALIAS broker_exec_reconcile)
 
@@ -34,7 +44,9 @@ target_link_libraries(broker_exec_reconcile
     broker_exec_sanitizers)
 
 if(BROKER_EXEC_BUILD_TESTS)
-  add_executable(broker_exec_reconcile_tests reconcile_test.cpp)
+  add_executable(broker_exec_reconcile_tests
+    reconcile_test.cpp
+    manual_intervention_test.cpp)
   target_link_libraries(broker_exec_reconcile_tests
     PRIVATE
       broker_exec_reconcile
