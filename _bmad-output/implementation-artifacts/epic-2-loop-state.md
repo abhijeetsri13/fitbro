@@ -49,7 +49,7 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 
 ## Story queue (Epic 2) — tick as done
 
-- [ ] 2-1  Typed configuration system (toml++ + env, fail-fast, secrets-not-in-toml)
+- [x] 2-1  Typed configuration system (toml++ + env, fail-fast, secrets-not-in-toml) — DONE (fb8097a)
 - [ ] 2-2  Secret provider, token encryption (OpenSSL AES-256-GCM), redaction scrubber
 - [ ] 2-3  Kite Connect REST client (cpr/libcurl) behind adapter port
 - [ ] 2-4  Kite daily session establishment + expiry detection
@@ -67,4 +67,7 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 
 ## Outcome log (append one line per completed story)
 
-- (baseline) Conan install + CMake build + ctest of Epic-1 tree — verifying green starting point.
+- (baseline) Epic-1 tree builds green; 16 ctests pass (Release/MSVC). Conan deps OK.
+- 2-1 DONE (fb8097a): broker_exec::config, toml++ defaults->file->env, fail-closed Result<Config>,
+  recursive secret-key denylist, env seam. Review verdict SHIP; applied denylist broaden + shape tests
+  + all-fields env-wins test + dropped vestigial domain link. 17/17 ctests green.

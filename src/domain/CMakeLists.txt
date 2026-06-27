@@ -6,6 +6,7 @@ add_library(broker_exec_domain STATIC
   enums.cpp
   money.cpp
   types.cpp
+  redaction.cpp
 )
 add_library(broker_exec::domain ALIAS broker_exec_domain)
 
@@ -20,7 +21,7 @@ target_link_libraries(broker_exec_domain
     broker_exec_sanitizers)
 
 if(BROKER_EXEC_BUILD_TESTS)
-  add_executable(broker_exec_domain_tests value_types_test.cpp)
+  add_executable(broker_exec_domain_tests value_types_test.cpp redaction_test.cpp)
   target_link_libraries(broker_exec_domain_tests
     PRIVATE
       broker_exec_domain

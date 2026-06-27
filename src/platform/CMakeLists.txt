@@ -5,6 +5,7 @@
 
 add_library(broker_exec_platform STATIC
   durable.cpp
+  permissions.cpp
   process.cpp
 )
 add_library(broker_exec::platform ALIAS broker_exec_platform)
