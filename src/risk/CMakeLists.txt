@@ -10,6 +10,7 @@
 add_library(broker_exec_risk STATIC
   validation_gate.cpp
   risk_engine.cpp
+  funds_view.cpp
 )
 add_library(broker_exec::risk ALIAS broker_exec_risk)
 
@@ -36,13 +37,15 @@ target_link_libraries(broker_exec_risk
 if(BROKER_EXEC_BUILD_TESTS)
   add_executable(broker_exec_risk_tests
     validation_gate_test.cpp
-    risk_engine_test.cpp)
+    risk_engine_test.cpp
+    funds_view_test.cpp)
   target_link_libraries(broker_exec_risk_tests
     PRIVATE
       broker_exec_risk
       broker_exec_refdata    # build a TradingCalendar in-test (require_entry_allowed)
-      broker_exec_clock      # TestClock (deterministic ClockPort for the calendar)
-      broker_exec_domain     # Instrument/Quantity/Price construction + assertions
+      broker_exec_clock      # TestClock (deterministic ClockPort: calendar + funds view)
+      broker_exec_domain     # Instrument/Quantity/Price/Money construction + assertions
+      broker_exec_ports      # ports::FundsSnapshot for the funds-view tests
       Catch2::Catch2WithMain
       broker_exec_warnings
       broker_exec_sanitizers)
