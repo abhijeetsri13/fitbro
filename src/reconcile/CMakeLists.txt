@@ -19,6 +19,7 @@
 add_library(broker_exec_reconcile STATIC
   reconciler.cpp
   manual_intervention.cpp
+  corporate_actions.cpp
 )
 add_library(broker_exec::reconcile ALIAS broker_exec_reconcile)
 
@@ -46,7 +47,8 @@ target_link_libraries(broker_exec_reconcile
 if(BROKER_EXEC_BUILD_TESTS)
   add_executable(broker_exec_reconcile_tests
     reconcile_test.cpp
-    manual_intervention_test.cpp)
+    manual_intervention_test.cpp
+    corporate_actions_test.cpp)
   target_link_libraries(broker_exec_reconcile_tests
     PRIVATE
       broker_exec_reconcile
