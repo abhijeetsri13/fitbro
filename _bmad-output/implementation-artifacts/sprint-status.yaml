@@ -77,7 +77,7 @@ development_status:
   epic-2-retrospective: optional
 
   # ── Epic 3: Resilience — Reconciliation, Recovery, Safe Degradation & Kill Switches ──
-  epic-3: in-progress
+  epic-3: done
   3-1-continuous-reconciliation-fetch-off-loop-apply-on-loop: done
   3-2-manual-intervention-detection: done
   3-3-corporate-action-awareness: done
@@ -85,7 +85,7 @@ development_status:
   3-5-market-data-tick-stream-with-tradability-states: done
   3-6-liveness-and-process-self-health-watchdogs: done
   3-7-degradation-posture-coordinator: done
-  3-8-kill-switches-with-operator-control-plane: backlog
+  3-8-kill-switches-with-operator-control-plane: done
   epic-3-retrospective: optional
 
   # ── Epic 4: Operator Visibility — Observability, Alerts, Ledger, Modes & Surface ──
