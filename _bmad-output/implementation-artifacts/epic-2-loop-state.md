@@ -50,7 +50,7 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 ## Story queue (Epic 2) — tick as done
 
 - [x] 2-1  Typed configuration system (toml++ + env, fail-fast, secrets-not-in-toml) — DONE (fb8097a)
-- [ ] 2-2  Secret provider, token encryption (OpenSSL AES-256-GCM), redaction scrubber
+- [x] 2-2  Secret provider, token encryption (OpenSSL AES-256-GCM), redaction scrubber — DONE (3420fbf)
 - [ ] 2-3  Kite Connect REST client (cpr/libcurl) behind adapter port
 - [ ] 2-4  Kite daily session establishment + expiry detection
 - [ ] 2-5  Capability model + early rejection
@@ -71,3 +71,10 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - 2-1 DONE (fb8097a): broker_exec::config, toml++ defaults->file->env, fail-closed Result<Config>,
   recursive secret-key denylist, env seam. Review verdict SHIP; applied denylist broaden + shape tests
   + all-fields env-wins test + dropped vestigial domain link. 17/17 ctests green.
+- 2-2 DONE (3420fbf): domain::scrub redaction (pure), EnvSecretProvider, OpenSSL AES-256-GCM TokenStore
+  (fail-closed on tamper, 0600/0700 via new platform perms seam). Review SHIP (crypto correct); applied
+  6 fixes (perms-fail surfaces Error, whole-word auth needles, cleanse bad key, perms test, dropped dead link);
+  reverted an over-aggressive all-letter redaction rule (broke long-word prose) — under-reach documented as accepted.
+  openssl/3.2.1 wired. 18/18 ctests green.
+- NOTE for Epic 4 (provenance): scrub()'s >=20 alnum rule will redact client_ref/order_id in free-form logs;
+  route provenance IDs through structured (non-scrubbed) fields, scrub only free text.
