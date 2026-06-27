@@ -9,6 +9,7 @@
 
 add_library(broker_exec_risk STATIC
   validation_gate.cpp
+  risk_engine.cpp
 )
 add_library(broker_exec::risk ALIAS broker_exec_risk)
 
@@ -34,7 +35,8 @@ target_link_libraries(broker_exec_risk
 
 if(BROKER_EXEC_BUILD_TESTS)
   add_executable(broker_exec_risk_tests
-    validation_gate_test.cpp)
+    validation_gate_test.cpp
+    risk_engine_test.cpp)
   target_link_libraries(broker_exec_risk_tests
     PRIVATE
       broker_exec_risk

@@ -58,7 +58,7 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - [x] 2-7  Trading-calendar lifecycle — DONE
 - [x] 2-8  Pre-submission validation gate — DONE
 - [x] 2-9  Freeze-quantity slicer — DONE
-- [ ] 2-10 Four-level risk engine
+- [x] 2-10 Four-level risk engine — DONE
 - [ ] 2-11 Funds/margin view + cadence + fail-closed gate
 - [ ] 2-12 Rate limiter + reserved exit lane
 - [ ] 2-13 Safe-start cold-boot gate
@@ -92,3 +92,4 @@ For the next `backlog` story in `sprint-status.yaml` (top-to-bottom order):
 - 2-8 DONE: broker_exec::risk::ValidationGate — non-bypassable ordered pipeline (kill-switch, UNKNOWN-pause, duplicate, exchange, product, lot, tick, freeze, time-window, funds, risk, hedge); exits exempt from entry-only blocks (kill/pause/dup/window/funds) but still run exchange/product/lot/tick/freeze/risk/hedge; over-freeze->AllowWithSlicing (slice-mode) without short-circuiting later checks; first-failure names the check; real refdata calendar + injected predicates for funds/risk/hedge/dup/kill/pause (real impls in 2.9/2.10/2.11/3.8). Review FIX-REQUIRED: fixed StopLossMarket trigger now tick-checked (HIGH bypass), kill/pause action=BlockStrategy, dropped dead capabilities link, added SL-M/SL/empty-exchange tests. 23/23 green.
   FOLLOW-UP (gate composition, for runtime/2.11/2.13): the gate treats an ABSENT funds_check / null calendar as PASS (injectable default); the runtime MUST wire funds_check + calendar for entries — enforce that invariant at composition.
 - 2-9 DONE: broker_exec::slicing::FreezeSlicer — pure deterministic fan-out of an over-freeze OrderIntent into children (chunk=(freeze/lot)*lot; full=qty/chunk; rem lot-aligned; sum==qty invariant), each with inline <parent>#<k> ref (k from 1, parity-tested vs idempotency::child_ref). qty<=freeze -> passthrough {parent}. Production target links domain+errors only (no idempotency/SQLite). Review SHIP (arithmetic verified); added boundary tests (qty==freeze, qty==freeze+lot, lot=0 mod-guard, freeze=0, 100000->56 children). 24/24 green.
+- 2-10 DONE: broker_exec::risk::RiskEngine — four independently-callable levels (account: daily-loss, max-open-positions[entries-only], max-margin; strategy: stopped-flag[AC-3], daily-loss, max-lots; instrument: max-lots, illiquid/stale; order: market-block, max-value, slippage). 0/false=off (never blocks), loss=negative-pnl signs verified, fail-closed on unknown order value when margin/value limit armed, check_all ordering account>strategy>instrument>order. make_risk_check() -> std::function for the 2.8 gate (self-contained, engine stateless). Review SHIP; fixed slippage doc, engine-by-value capture, added equal-limit boundary + precedence tests. 24/24 green.
