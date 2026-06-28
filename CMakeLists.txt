@@ -40,6 +40,8 @@ find_package(tomlplusplus CONFIG REQUIRED)  # typed configuration (Story 2.1)
 find_package(OpenSSL REQUIRED)  # AES-256-GCM token encryption at rest (Story 2.2)
 find_package(cpr REQUIRED)  # Kite Connect REST transport over libcurl (Story 2.3)
 find_package(spdlog REQUIRED)  # structured JSON logging + redaction (Story 4.1)
+find_package(CLI11 REQUIRED)  # operator CLI subcommands (Story 4.6)
+find_package(httplib REQUIRED)  # localhost health endpoint transport (Story 4.6)
 
 # Vendored SQLite (static, hermetic) — provides target SQLite::SQLite3.
 add_subdirectory(third_party/sqlite3)
@@ -81,6 +83,7 @@ add_subdirectory(src/modes)            # degradation-posture coordinator (3.7)
 add_subdirectory(src/observability)    # structured logging + provenance + audit (4.1)
 add_subdirectory(src/alerting)         # alerting + dead-man's-switch heartbeat (4.3)
 add_subdirectory(src/ledger)           # tamper-evident hash-chained + Ed25519-signed ledger (4.4)
+add_subdirectory(src/cli)              # thin operator CLI + localhost health endpoint (4.6)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli

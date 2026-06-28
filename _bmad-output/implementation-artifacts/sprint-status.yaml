@@ -89,13 +89,13 @@ development_status:
   epic-3-retrospective: optional
 
   # ── Epic 4: Operator Visibility — Observability, Alerts, Ledger, Modes & Surface ──
-  epic-4: in-progress
+  epic-4: done
   4-1-structured-logging-provenance-audit: done
   4-2-daily-error-reconciliation-reports: done
   4-3-alerting-with-dead-man-s-switch: done
   4-4-tamper-evident-ledger-eod-signed-report-heartbeat: done
   4-5-trading-modes: done
-  4-6-cli-and-localhost-health-endpoint: backlog
+  4-6-cli-and-localhost-health-endpoint: done
   epic-4-retrospective: optional
 
   # ── Epic 5: Option-Selling Safety — Hedge-First, Baskets, Slicing & Margin Shock ──

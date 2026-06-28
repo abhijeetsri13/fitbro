@@ -171,3 +171,27 @@ then Epic 4 done; Epic 5 (option-selling safety), Epic 6 (Kotak + multi-account)
 follow-ups tracked earlier (Kite square_off position-flatten, exchange via instrument master, SL distinct
 trigger/limit, runtime wiring of funds_check+calendar into the gate, IXWebSocket + cpr-alert + cpr-kite
 transports behind their seams, ledger truncation-detection via a retained signed head).
+
+========================= LOOP RESUMED (2026-06-28) =========================
+User: "continue loop for next 2 hour". NEW hard deadline: epoch 1782625409
+(2026-06-28 11:13 IST). Same per-story cadence + conventions as above.
+Next backlog story: 4-6 (CLI + localhost health endpoint, FR-36).
+Design choice (low-risk near deadline): model HealthSnapshot + CLI verb dispatch
+over INJECTED SEAMS (std::function facade) so tests need NO real socket and NO
+broker — CLI11 + cpp-httplib are header-only (fast Conan install). The endpoint
+handler logic is tested as pure route->response functions; real socket bind +
+runtime wiring of verbs to live modules is composition-root / tier-2.
+
+- 4-6 DONE: broker_exec::cli (new module) — thin operator CLI + localhost health endpoint (FR-36).
+  HealthSnapshot (immutable, integer/enum-only) + to_json (scrubbed outbound payload) + is_live/is_ready
+  (readiness strictly stronger; fail-closed on negative budget/age). HealthState = mutex-guarded latest-snapshot
+  publisher; EMPTY default fails closed (Failed session, INT64_MAX heartbeat, clock not sane) -> /healthz + /ready
+  both 503 before the loop publishes. Pure route() (no socket in tests): GET /healthz->live, /ready->ready,
+  anything else->clean 404, no throw. CLI: OperatorApi std::function seam, Verb enum, is_mutating true ONLY for Kill,
+  dispatch fails closed on a null callback; run_cli over CLI11 (one subcommand/verb), every printed line scrubbed.
+  New header-only Conan deps: cli11/2.4.2 + cpp-httplib/0.15.3 (CLI11::CLI11 + httplib::httplib, both PRIVATE-confined to .cpp).
+  Review verdict SHIP (no Critical/High). Applied 3 fixes: (1) MEDIUM listen() now ENFORCES loopback-only host
+  (reject 0.0.0.0/LAN -> fail closed, AC-3); (2) server set_error_handler -> JSON-404 parity with route(); (3) run_cli
+  wraps dispatch in try/catch so a throwing external seam callback exits non-zero (scrubbed) instead of std::terminate.
+  Orchestrator edits: root CMakeLists find_package(CLI11/httplib)+add_subdirectory(src/cli); conanfile two deps.
+  34/34 ctests green (Release/MSVC). **Epic 4 COMPLETE (6/6).**
