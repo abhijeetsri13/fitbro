@@ -127,3 +127,47 @@ Totals: Epic 1 (12, pre-existing) + Epic 2 (14) + Epic 3 (8) = 34 stories; 30 ct
 - 4-3 DONE: broker_exec::alerting — MultiChannelAlertSink:ports::AlertSink (Telegram+webhook channels over an injected PostFn seam, NO network/dep): send() scrubs the message via domain::scrub BEFORE building any body (no token in any outbound payload), best-effort (ok if >=1 channel delivered, Error if all fail / no channels configured — never a silent success), beats the heartbeat on a delivered alert; send_test_alert() requires ALL channels. HeartbeatMonitor dead-man's-switch (steady-clock beat + is_alive(max_gap); flips false after the gap with no beat = the absence alarm an external watcher fires on). Review SHIP; added send_test_alert all-required/empty + heartbeat ==max_gap boundary + key=value redaction tests. No new dep (cpr HTTP channel behind the seam = follow-up). 32/32 green.
 - 4-4 DONE: broker_exec::ledger::Ledger — SHA-256 hash chain (entry.hash=SHA256hex(prev_hash+scrubbed_payload), genesis '') + Ed25519 per-account signature, BOTH via the already-built OpenSSL EVP (NO libsodium / no new dep, RAII on every ctx). append() scrubs the payload before hash/persist + durable_sync (fsync); verify_chain() recomputes + link + seq, names the first bad seq (a non-key-holder edit breaks it); sign_head/verify_head fail-closed (wrong key/tampered head/bad-len sig -> Error); require_key_match fail-closed (safe-start blocker); EOD report (count+head+signature+pubkey, tamper-EVIDENT not legal proof) + write_public_key; position heartbeat (scrubbed). Review FIX-REQUIRED: fixed HIGH load() nlohmann type_error throw across the no-throw boundary on a wrong-field-type corrupt line (now type-checked -> Validation Error) + tolerate a torn trailing line (mid-file stays fatal) + tests. 33/33 green.
 - 4-5 DONE: broker_exec::modes trading modes — TradingMode{Live,Paper,DryRun,Replay,MonitorOnly,ExitOnly,Emergency}; policy_for() single-source table (allows_entry/exit, live_execution, read_only, replay_clock); will_execute_live true ONLY for Live/ExitOnly/Emergency (Paper/DryRun/Replay/MonitorOnly non-live -> dry-run VALIDATES but never executes, AC-3); require_op_allowed (read-only modes block all; Emergency only Cancel/SquareOff; ExitOnly blocks Entry); uses_recorded_clock true only for Replay (AC-2); unmapped mode -> locked_down() fail-closed. Review SHIP; added fail-closed-fallback + will_execute_live-exact-set + to_string-stability tests + can_place_exit advisory doc. 33/33 green.
+========================= LOOP ENDED — FINAL SUMMARY =========================
+Stopped at ~06:09 IST, ~46 min before the 06:55 deadline. Deliberately did NOT start
+4-6 (CLI + localhost health endpoint): it is the most integration-heavy remaining story
+(CLI11 + cpp-httplib + a localhost socket server) and could not be finished + reviewed +
+committed safely before the deadline — per the standing instruction, prefer a clean stop
+over a half-done uncommitted story.
+
+DELIVERED THIS SESSION (28 stories, each via full BMAD cadence: create-story -> dev subagent
+-> real MSVC/Conan build + ctest -> adversarial review subagent -> apply Critical/High +
+cheap-Medium fixes -> commit -> push):
+  Epic 2 (Live Kite Trading): 14/14  DONE
+  Epic 3 (Resilience):         8/8   DONE
+  Epic 4 (Operator Visibility):5/6   (4-1..4-5 done; only 4-6 CLI/health left)
+Project totals: Epic 1 (12, pre-existing) + Epic 2 (14) + Epic 3 (8) + Epic 4 (5) = 39 stories done.
+33/33 ctest suites green on Release/MSVC. Branch epic-2-live-kite-trading pushed (HEAD eb12b6d).
+
+NEW MODULES THIS SESSION: config, secrets(+platform perms), adapters/kite (REST client + BrokerPort
+adapter), session (establish + safe-start), capabilities, refdata (instrument master + trading
+calendar), risk (validation gate + 4-level engine + funds view), slicing, ratelimit, reconcile
+(reconciliation + manual-intervention + corporate-action + crash-recovery), marketdata, health,
+modes (posture + kill switches + trading modes), observability (logging + reports), alerting, ledger.
+NEW CONAN DEPS WIRED: tomlplusplus, openssl, cpr/libcurl, spdlog (built from source).
+
+NOTABLE REVIEW CATCHES FIXED (the adversarial review earned its keep — a real bug almost every story):
+  - SL-Market trigger price bypassing the tick check (2-8 gate)
+  - fail-open capability enum default (2-5); funds stale-but-served (2-11)
+  - NetworkException->do-not-retry on a possibly-live order (2-3 kite)
+  - vacuous Kite conformance pass (2-14); instrument-master fresh-on-persist-fail (2-6)
+  - reconcile false-block on the place->reconcile race (3-1)
+  - a just-filled bot exit mislabeled as human tampering (3-2)
+  - crash-recovery resuming despite a phantom order (3-4)
+  - market-data fail-open-before-connect (3-5); watchdog negative-limit fail-open (3-6)
+  - CRITICAL secret leak: domain::scrub only ran on the 4-1 LOGGED line, never on in-memory
+    AuditEvent.fields -> the 4-2 report rendering fields leaked tokens (fixed; lesson propagated:
+    every consumer of fields / every outbound msg scrubs itself)
+  - HIGH: 4-1 invalid-UTF-8 broker payload threw across the no-throw logging boundary
+  - HIGH: 4-4 ledger load() type_error throw on a wrong-field-type corrupt line (the exact tamper path)
+
+REMAINING (for a future loop): 4-6 CLI + localhost health endpoint (model the HealthSnapshot + CLI
+dispatch over a seam to avoid a real socket in tests; CLI11 + cpp-httplib are header-only = fast install),
+then Epic 4 done; Epic 5 (option-selling safety), Epic 6 (Kotak + multi-account). Plus the tier-2/runtime
+follow-ups tracked earlier (Kite square_off position-flatten, exchange via instrument master, SL distinct
+trigger/limit, runtime wiring of funds_check+calendar into the gate, IXWebSocket + cpr-alert + cpr-kite
+transports behind their seams, ledger truncation-detection via a retained signed head).
