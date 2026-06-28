@@ -93,7 +93,7 @@ development_status:
   4-1-structured-logging-provenance-audit: done
   4-2-daily-error-reconciliation-reports: done
   4-3-alerting-with-dead-man-s-switch: done
-  4-4-tamper-evident-ledger-eod-signed-report-heartbeat: backlog
+  4-4-tamper-evident-ledger-eod-signed-report-heartbeat: done
   4-5-trading-modes: backlog
   4-6-cli-and-localhost-health-endpoint: backlog
   epic-4-retrospective: optional

@@ -80,6 +80,7 @@ add_subdirectory(src/health)           # liveness + self-health watchdogs (3.6)
 add_subdirectory(src/modes)            # degradation-posture coordinator (3.7)
 add_subdirectory(src/observability)    # structured logging + provenance + audit (4.1)
 add_subdirectory(src/alerting)         # alerting + dead-man's-switch heartbeat (4.3)
+add_subdirectory(src/ledger)           # tamper-evident hash-chained + Ed25519-signed ledger (4.4)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
