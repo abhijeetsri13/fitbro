@@ -238,3 +238,16 @@ runtime wiring of verbs to live modules is composition-root / tier-2.
   capabilities::Support + domain::Money; no new dep. Review verdict SHIP (no Critical/High/Medium; no fail-open, crossing test
   correct, net-short never approved without SPAN). Applied both LOWs (margin_now defense-in-depth + derived blocked) + a test.
   35/35 ctests green. **Epic 5 COMPLETE (4/4).**
+
+- 6-4 DONE (OUT OF SPRINT ORDER, deliberate): broker_exec::isolation::StrategyBook (new module) — multi-strategy isolation
+  (FR-32). Picked 6-4 over 6-1 because 6-1 (Kotak REST+WebSocket+multi-step auth) needs IXWebSocket (new dep + build) + a
+  large auth spike — too heavy/risky near the 2h deadline; 6-4 is pure in-memory logic, no dep, independent of the Kotak
+  transport chain. Per-strategy virtual book keyed by strategy_id: isolated per-symbol signed net qty + average-cost +
+  realized P&L + tag + active flag. apply_fill touches ONLY the owning strategy (AC-1 isolation, proven byte-identical).
+  Average-cost model with correct realized-P&L sign for long-close AND short-close + cross-zero reopen + flat reset.
+  square_off(id, netting=false) flattens ONLY that strategy; netting=true nets across all strategies (AC-1). check_new_order
+  blocks on COMBINED account exposure vs cap (AC-2 global limit; negative cap fail-closed, zero=no-limit, stopped-check
+  first). stop/resume_strategy independent (AC-3, stopping A never touches B). Over a mark_price std::function seam; no I/O.
+  Review verdict SHIP (no Critical/High; isolation/limit/stop/P&L-sign all hold). Applied MEDIUM (short-close P&L-sign test
+  at non-zero value) + LOW (zero-qty fill no longer default-inserts a phantom record). 36/36 ctests green. Epic 6 now 1/5
+  (6-1/6-2/6-3 Kotak transport chain + 6-5 supervisor remain — 6-1 needs IXWebSocket, a longer session).

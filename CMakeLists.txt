@@ -86,6 +86,8 @@ add_subdirectory(src/ledger)           # tamper-evident hash-chained + Ed25519-s
 add_subdirectory(src/cli)              # thin operator CLI + localhost health endpoint (4.6)
 # --- Epic 5 ---
 add_subdirectory(src/options)          # hedge-first option execution: never momentarily naked (5.1)
+# --- Epic 6 ---
+add_subdirectory(src/isolation)        # per-strategy virtual book + global limit + independent stop (6.4)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
