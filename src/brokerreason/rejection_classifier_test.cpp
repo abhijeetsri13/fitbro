@@ -120,6 +120,42 @@ TEST_CASE("FAIL-CLOSED: empty and unmatched text never become safe-to-retry",
   }
 }
 
+TEST_CASE("FAIL-OPEN GUARD: a hard reject merely CONTAINING '429' in an id is not retry-able",
+          "[brokerreason]") {
+  // A bare "429" substring collides with arbitrary numeric ids. Such a message has
+  // no rate-limit phrasing, so it must NOT become SafeToRetryReadOnly (which would
+  // tell the caller it may resend a possibly-live order => duplicate).
+  for (const std::string_view raw :
+       {std::string_view("Order rejected at exchange (ref: 980429117)"),
+        std::string_view("could not place order #1234290")}) {
+    const Classification c = classify_rejection(raw);
+    CHECK(c.posture != RetryPosture::SafeToRetryReadOnly);
+    CHECK(c.reason != RejectReason::RateLimited);
+  }
+  // A genuine throttle (with rate-limit phrasing) IS rate-limited.
+  CHECK(classify_rejection("HTTP 429 Too Many Requests").reason == RejectReason::RateLimited);
+  CHECK(classify_rejection("request was throttled").reason == RejectReason::RateLimited);
+}
+
+TEST_CASE("Indeterminate covers 502/504 and a bare timeout (duplicate-order hazard)",
+          "[brokerreason]") {
+  for (const std::string_view raw :
+       {std::string_view("502 Bad Gateway"), std::string_view("504 Gateway Timeout"),
+        std::string_view("request timeout")}) {
+    const Classification c = classify_rejection(raw);
+    CHECK(c.reason == RejectReason::Indeterminate);
+    CHECK(c.posture == RetryPosture::ReconcileFirst);
+  }
+}
+
+TEST_CASE("classify_status('rejected') fails closed (no reason in a bare status)",
+          "[brokerreason]") {
+  const Classification c = classify_status("REJECTED");
+  CHECK(c.reason == RejectReason::Unknown);
+  CHECK(c.posture == RetryPosture::DoNotRetry);
+  CHECK(c.should_alert);
+}
+
 TEST_CASE("classification is case-insensitive", "[brokerreason]") {
   CHECK(classify_rejection("INSUFFICIENT MARGIN").reason == RejectReason::Margin);
   CHECK(classify_rejection("insufficient margin").reason == RejectReason::Margin);

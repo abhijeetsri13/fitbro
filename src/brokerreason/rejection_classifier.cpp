@@ -210,8 +210,15 @@ Classification classify_rejection(std::string_view raw_message) {
       contains(m, "session") || contains(m, "unauthorized") || contains(m, "401")) {
     return make(rule_for(RejectReason::SessionExpired));
   }
+  // RateLimited is the ONLY reason that yields SafeToRetryReadOnly (the one
+  // retry-able posture), so it must require genuine rate-limit phrasing — NEVER a
+  // bare "429" substring, which collides with arbitrary numeric order/exchange ids
+  // (e.g. "rejected, ref 980429117") and would mis-classify a hard reject as
+  // safe-to-retry => duplicate-order hazard. Only ANCHORED 429 forms count.
   if (contains(m, "too many requests") || contains(m, "rate limit") ||
-      contains(m, "rate-limit") || contains(m, "429")) {
+      contains(m, "rate-limit") || contains(m, "ratelimit") || contains(m, "throttle") ||
+      contains(m, "429 too many") || contains(m, "http 429") || contains(m, "status 429") ||
+      contains(m, "error 429") || contains(m, "code 429") || contains(m, "(429)")) {
     return make(rule_for(RejectReason::RateLimited));
   }
   // AlreadyComplete: the broker says the order is already terminal. Two-keyword
@@ -230,10 +237,14 @@ Classification classify_rejection(std::string_view raw_message) {
   // Indeterminate: the DUPLICATE-ORDER HAZARD — timeouts and OMS/gateway errors
   // where we cannot tell whether the order reached the exchange. Checked before
   // the generic RmsBlock so an OMS-gateway 503 is reconciled, not mis-blocked.
+  // NB: anchored OMS phrases only — a bare "oms" substring over-matches unrelated
+  // words ("customs"); the explicit "no response from oms"/"kt-oms" cover the real
+  // Kite OMS-failure strings, and even a miss here lands on the safe RmsBlock
+  // (DoNotRetry), never on a retry-able posture.
   if (contains(m, "timeout") || contains(m, "timed out") ||
       contains(m, "no response from oms") || contains(m, "no response") ||
-      contains(m, "kt-oms") || contains(m, "oms") || contains(m, "gateway timeout") ||
-      contains(m, "502") || contains(m, "503") || contains(m, "504")) {
+      contains(m, "kt-oms") || contains(m, "gateway timeout") || contains(m, "502") ||
+      contains(m, "503") || contains(m, "504")) {
     return make(rule_for(RejectReason::Indeterminate));
   }
   // Generic RmsBlock LAST among the matchers: broad "rms"/"blocked" keywords, so

@@ -74,8 +74,14 @@ enum class RetryPosture {
   DoNotRetry,          // a MUTATING action that must NOT be blindly resent.
   ReconcileFirst,      // state is ambiguous — reconcile the orderbook before any
                        // decision (the no-duplicate-order safeguard).
-  SafeToRetryReadOnly  // a READ that timed out may be retried (with backoff; the
-                       // caller throttles). NEVER granted to a mutating reject.
+  SafeToRetryReadOnly  // a rate-limit/throttle reject that MAY be retried with
+                       // backoff — but ONLY for a READ-ONLY operation. CALLER
+                       // OBLIGATION: this module classifies text alone and cannot
+                       // see whether the rejected op was a read or a write, so the
+                       // caller MUST gate this posture on read-only ops and treat
+                       // ANY throttle on a mutating op (place/modify/cancel) as
+                       // ReconcileFirst — a 429 on a PLACE is still ambiguous about
+                       // whether the order reached the exchange (duplicate hazard).
 };
 
 // The classifier result. `canonical_detail` is SCRUBBED + redaction-safe: it
