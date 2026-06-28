@@ -332,3 +332,17 @@ Pattern holding: adversarial review caught a real HIGH/MEDIUM fail-open on every
 - IMP-8 IN PROGRESS: margin safety buffer (research #10) — fail-closed buffer over the broker margin API + worst-case
   (summed-leg) multi-leg margin when the leg benefit can't be trusted near the 9:20/expiry boundary; round-UP, overflow-guarded.
 Tally: 6 improvements committed, adversarial review caught a real HIGH/MEDIUM fail-open on EVERY one (6/6). 41/41 ctest green.
+
+--- IMPROVEMENT-LOOP PROGRESS (cont. 3) ---
+- IMP-7 DONE (f336076): broker_exec::sessionguard mid-session re-auth guard (research #6). Reuses brokerreason classifier;
+  SessionExpired -> NeedsReauth freeze entries (exits/reads always allowed) + alert. Review SHIP (first with no HIGH/MEDIUM);
+  applied LOW defense-in-depth (Entry gated on state==Healthy too).
+- IMP-8 DONE (2df1747): broker_exec::marginsafety margin safety buffer (research #10). Fail-closed over-estimate: worst-case
+  (summed-leg) multi-leg margin near 9:20/expiry + round-UP bps buffer, overflow-saturating. Review SHIP; applied MEDIUM
+  (benefit_trusted now defaults FALSE = fail-closed) + tests.
+- IMP-9 IN PROGRESS: canonical fill normalizer (research #2/#4 — a partial fill arriving as a Kite UPDATE event misread as
+  not-filled; pushes not authoritative). Quantity-first canonical (state, filled, pending); a push is never authoritative,
+  exit only off a reconciled fill (exit_qty_for==0 for a push).
+TALLY: 8 improvements committed, 43/43 ctest green. New modules this loop: brokerreason, ratelimit/endpoint_limiter,
+protection, modifyguard, priceband, sessionguard, marginsafety (+ ledger checkpoint hardening). Adversarial review caught a
+real fail-open/UB on 6 of 8 (the other 2 = cheap LOW/MEDIUM hardening).
