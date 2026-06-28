@@ -96,6 +96,7 @@ add_subdirectory(src/priceband)        # pre-submission circuit/LPP price-band v
 add_subdirectory(src/sessionguard)     # mid-session re-auth guard: detect a token that died DURING the session -> freeze entries, keep exits/reconcile alive, alert
 add_subdirectory(src/marginsafety)     # margin safety buffer: fail-closed buffer over the under-counting broker margin API + worst-case multi-leg
 add_subdirectory(src/fillnorm)         # canonical fill normalizer: drive state off filled qty not event type; a push is never authoritative (exit only off a reconciled fill)
+add_subdirectory(src/feedsub)          # websocket resubscribe guard: on every (re)connect re-issue the FULL subscription set + verify a first tick per token by a deadline -> flag connected-but-mute tokens (not tradable)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
