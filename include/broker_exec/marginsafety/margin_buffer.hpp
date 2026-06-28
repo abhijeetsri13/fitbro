@@ -94,7 +94,11 @@ struct MarginInputs {
   domain::Money summed_leg_margin;
   domain::Money available;
   bool is_multi_leg = false;
-  bool benefit_trusted = true;
+  // Defaults to FALSE — the fail-closed direction: trust in the broker's netted
+  // leg-benefit figure must be ASSERTED explicitly. A caller that sets is_multi_leg
+  // but forgets this gets worst-case (summed-leg) sizing, not the optimistic netted
+  // quote, matching the result struct's fail-closed default.
+  bool benefit_trusted = false;
 };
 
 // The terminal verdict. Stable, log-friendly names (see to_string):

@@ -242,3 +242,34 @@ TEST_CASE("to_string: stable MarginVerdict names") {
   CHECK(to_string(MarginVerdict::Sufficient) == "Sufficient");
   CHECK(to_string(MarginVerdict::InsufficientBlocked) == "InsufficientBlocked");
 }
+
+TEST_CASE("a NEGATIVE flat_buffer is clamped to 0 (never shrinks the requirement)") {
+  MarginSafetyConfig cfg;
+  cfg.buffer_bps = 0;  // isolate the flat cushion
+  cfg.flat_buffer = domain::Money::from_paise(-100);  // a negative cushion must NOT shrink
+
+  MarginInputs in;
+  in.api_required = domain::Money::from_rupees(100);
+  in.summed_leg_margin = domain::Money::from_rupees(100);
+  in.available = domain::Money::from_rupees(100);
+
+  const MarginSafetyResult r = evaluate_margin(in, cfg);
+  // effective must not drop below base (== api): the negative flat is floored to 0.
+  CHECK(r.effective_required == domain::Money::from_rupees(100));
+  CHECK(r.effective_required >= r.base_required);
+}
+
+TEST_CASE("multi-leg with DEFAULTED benefit_trusted uses the worst case (fail-closed default)") {
+  const MarginSafetyConfig cfg = cfg_bps(0);
+
+  MarginInputs in;  // benefit_trusted is left DEFAULT (now false)
+  in.is_multi_leg = true;
+  in.api_required = domain::Money::from_rupees(120);       // optimistic netted quote
+  in.summed_leg_margin = domain::Money::from_rupees(200);  // worst case, no leg benefit
+  in.available = domain::Money::from_rupees(130);          // covers 120 but NOT 200
+
+  const MarginSafetyResult r = evaluate_margin(in, cfg);
+  CHECK(r.used_worst_case);                                    // defaulted to worst case
+  CHECK(r.base_required == domain::Money::from_rupees(200));
+  CHECK(r.blocked);                                            // 130 < 200 -> blocked
+}
