@@ -99,8 +99,8 @@ development_status:
   epic-4-retrospective: optional
 
   # ── Epic 5: Option-Selling Safety — Hedge-First, Baskets, Slicing & Margin Shock ──
-  epic-5: backlog
-  5-1-hedge-first-execution-with-naked-sell-prevention: backlog
+  epic-5: in-progress
+  5-1-hedge-first-execution-with-naked-sell-prevention: done
   5-2-basket-multi-leg-execution: backlog
   5-3-freeze-slicing-at-option-size: backlog
   5-4-margin-span-shock-simulation-capability-gated: backlog

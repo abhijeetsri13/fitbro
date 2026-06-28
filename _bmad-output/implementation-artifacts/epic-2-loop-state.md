@@ -195,3 +195,13 @@ runtime wiring of verbs to live modules is composition-root / tier-2.
   wraps dispatch in try/catch so a throwing external seam callback exits non-zero (scrubbed) instead of std::terminate.
   Orchestrator edits: root CMakeLists find_package(CLI11/httplib)+add_subdirectory(src/cli); conanfile two deps.
   34/34 ctests green (Release/MSVC). **Epic 4 COMPLETE (6/6).**
+
+- 5-1 DONE: broker_exec::options::execute_hedge_first (new module) — never-naked hedge-first state machine (FR-16).
+  Ordered fail-closed: place_hedge -> confirm_hedge(==true ONLY) -> place_short -> recheck_hedge_live. Short is sent ONLY
+  on a placed-AND-confirmed hedge; a confirm Error/false/null-seam aborts BEFORE any short (AC-2, no naked window). Lone
+  hedge (ShortPlacementFailed) is SAFE (no alert/no emergency). AC-3 (short live, hedge later unprovable: recheck false OR
+  Error OR null): run the EMERGENCY ACTION FIRST then best-effort Critical alert. Over injected std::function seams +
+  ports::AlertSink; no broker, no new dep. Review verdict SHIP (no Critical/High; never-naked invariant proven by tests).
+  Applied MEDIUM hardening: emergency square-off now runs BEFORE the alert + alert send wrapped in try/catch, so a THROWING
+  alert sink can never skip the square-off nor break the no-throw contract; added 3 tests (null-short-seam safe,
+  emergency-returns-Error ran-but-failed, throwing-sink-still-squares-off). 35/35 ctests green. Epic 5 now 1/4.
