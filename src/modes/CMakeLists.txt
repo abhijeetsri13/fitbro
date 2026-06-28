@@ -7,6 +7,7 @@
 add_library(broker_exec_modes STATIC
   posture.cpp
   killswitch.cpp
+  trading_mode.cpp
 )
 add_library(broker_exec::modes ALIAS broker_exec_modes)
 
@@ -33,7 +34,7 @@ target_link_libraries(broker_exec_modes
 if(BROKER_EXEC_BUILD_TESTS)
   # The test exe ALSO links broker_exec_health (to drive the from_health mapping
   # test with real health::HealthSignal values).
-  add_executable(broker_exec_modes_tests posture_test.cpp killswitch_test.cpp)
+  add_executable(broker_exec_modes_tests posture_test.cpp killswitch_test.cpp trading_mode_test.cpp)
   target_link_libraries(broker_exec_modes_tests
     PRIVATE
       broker_exec_modes
