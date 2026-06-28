@@ -346,3 +346,41 @@ Tally: 6 improvements committed, adversarial review caught a real HIGH/MEDIUM fa
 TALLY: 8 improvements committed, 43/43 ctest green. New modules this loop: brokerreason, ratelimit/endpoint_limiter,
 protection, modifyguard, priceband, sessionguard, marginsafety (+ ledger checkpoint hardening). Adversarial review caught a
 real fail-open/UB on 6 of 8 (the other 2 = cheap LOW/MEDIUM hardening).
+
+============== IMPROVEMENT LOOP COMPLETE (2026-06-28) ==============
+"3 hours heavy topics + fix online developer complaints." Web research gathered REAL Kite Connect /
+Kotak Neo developer complaints (kite.trade forum, GitHub Kotak-Neo issues, StackOverflow, Reddit) ->
+mapped each to a concrete library defense -> implemented 10 hardening modules, each: scope -> dev
+subagent -> build+ctest -> ADVERSARIAL REVIEW subagent -> fix -> commit -> push.
+
+DELIVERED (10 improvements; new modules unless noted):
+  IMP-1  ledger truncation/rollback detection via a KEY-PINNED signed checkpoint (ledger hardening)  [2e23db6]
+  IMP-2  broker_exec::brokerreason  canonical rejection/status classifier (fail-closed)              [9e6ef05]
+  IMP-3  broker_exec::ratelimit::EndpointRateLimiter  per-endpoint buckets + 429 circuit-breaker      [9fff693]
+  IMP-4  broker_exec::protection  protective-stop supervisor (never trust a GTT; band-aware re-arm)   [abe259c]
+  IMP-5  broker_exec::modifyguard  modify-order safety (no remainder-cancel)                           [65dc171]
+  IMP-6  broker_exec::priceband  pre-submission circuit/LPP band validator (block entry, clamp exit)  [d7b4fe1]
+  IMP-7  broker_exec::sessionguard  mid-session re-auth guard (freeze entries, keep exits)            [f336076]
+  IMP-8  broker_exec::marginsafety  margin safety buffer (fail-closed over-estimate, worst-case legs) [2df1747]
+  IMP-9  broker_exec::fillnorm  canonical fill normalizer (drive off filled qty; push != authoritative)[6e64304]
+  IMP-10 broker_exec::feedsub  websocket resubscribe guard (no connected-but-mute after reconnect)    [1264a8d]
+
+ADVERSARIAL REVIEW VALUE: caught a real fail-open / UB on 8 of 10 (the other 2 = cheap LOW/MEDIUM
+hardening). Representative HIGH/CRITICAL catches fixed before commit:
+  - IMP-1 unpinned-key fail-open (a non-key-holder could re-sign a truncated chain) -> pin the verifying key.
+  - IMP-2 bare "429" substring matched arbitrary ids -> a hard reject looked safe-to-retry -> anchored phrasing.
+  - IMP-3 order_per_sec<=0 misconfig emptied the Order bucket -> trapped every exit -> floored capacity.
+  - IMP-4 a Filled order flag closed an exposed position (live qty!=0) -> naked -> live position is sole truth; + INT64_MIN UB.
+  - IMP-5 pre-ack/in-flight states fell through to Allow -> a qty modify on a stale fill cancels the remainder -> not-modifiable.
+  - IMP-6 stop-limit exit clamped only the limit, left the trigger out-of-band -> clamp both.
+  - IMP-9 filled>0 with a zero/omitted total fell through to a not-filled state -> drive off quantity (Filled).
+
+COVERAGE NOTE: the single biggest money-loss complaint class (duplicate-order-on-timeout / order UNKNOWN) was
+already COVERED by the dispatcher (1.9: record->fsync->send->UNKNOWN, no-blind-retry) + UnknownPause + reconcile;
+research confirmed no gap there. The 10 fixes target the REAL gaps the complaints exposed.
+
+STATE: 45/45 ctest suites green (Release/MSVC), whole tree clean. All on branch epic-2-live-kite-trading (not
+merged; no PR). NEW dep-free safety modules wire over injected seams; real transport/runtime wiring stays tier-2.
+REMAINING (future, dep/ripple-heavy, NOT done): Kotak adapter chain 6-1/6-2/6-3 + 6-5 process wiring (IXWebSocket);
+SL distinct trigger/limit on domain::OrderIntent (ripples across all constructors); wire the 10 new guards into a
+runtime composition root; per-broker freeze-qty + dated scrip-master data loaders.
