@@ -91,7 +91,7 @@ development_status:
   # ── Epic 4: Operator Visibility — Observability, Alerts, Ledger, Modes & Surface ──
   epic-4: in-progress
   4-1-structured-logging-provenance-audit: done
-  4-2-daily-error-reconciliation-reports: backlog
+  4-2-daily-error-reconciliation-reports: done
   4-3-alerting-with-dead-man-s-switch: backlog
   4-4-tamper-evident-ledger-eod-signed-report-heartbeat: backlog
   4-5-trading-modes: backlog

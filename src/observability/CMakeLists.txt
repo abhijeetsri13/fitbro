@@ -14,6 +14,7 @@ add_library(broker_exec_observability STATIC
   audit_event.cpp
   structured_logger.cpp
   audit_trail.cpp
+  reports.cpp
 )
 add_library(broker_exec::observability ALIAS broker_exec_observability)
 
@@ -34,7 +35,9 @@ target_link_libraries(broker_exec_observability
     broker_exec_sanitizers)
 
 if(BROKER_EXEC_BUILD_TESTS)
-  add_executable(broker_exec_observability_tests observability_test.cpp)
+  add_executable(broker_exec_observability_tests
+    observability_test.cpp
+    reports_test.cpp)
   target_link_libraries(broker_exec_observability_tests
     PRIVATE
       broker_exec_observability
