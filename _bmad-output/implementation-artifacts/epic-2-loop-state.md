@@ -216,3 +216,14 @@ runtime wiring of verbs to live modules is composition-root / tier-2.
   broker, no new dep. Review verdict SHIP (no Critical/High/Medium; never-orphan invariant proven via placement/unwind logs).
   Applied LOW: the Critical alert now NAMES the still-LIVE un-unwound leg_ids (loudest channel reflects the worst state) +
   a test asserting it. 35/35 ctests green. Epic 5 now 2/4.
+
+- 5-3 DONE: broker_exec::options::execute_sliced_leg (sliced_leg.cpp in the options module) — freeze-slicing at option size,
+  no duplicates (FR-6/FR-17). REUSES the real slicing::FreezeSlicer for deterministic <parent>#<k> children (no reinvented
+  ref logic). Places children k=1..N over injected seams: already_placed(ref) (idempotency) + place_child(intent)->(state,oid).
+  AC-2 SIGKILL-no-duplicate: a child already_placed==true is AlreadyPlaced/deduped/NOT re-sent — replay re-emits identical
+  refs and dedupes (no orphan/dup); proven via placement log (#1/#2 never re-sent, only #3 placed). AC-3 UNKNOWN-pause: a
+  child Unknown OR a place Error OR an already_placed Error STOPS immediately (no blind retry — dispatch rule), paused_at_ref
+  set, Critical "reconcile before resume" alert (best-effort swallow+try/catch); later children never placed. Fail-closed:
+  null place_child or slicer Validation Error -> SliceRejected, nothing placed. Review verdict SHIP (no Critical/High/Medium;
+  duplicate-on-replay/blind-retry/place-past-pause all disproven by trace + placement-log tests). Applied LOW doc fix (pacing
+  lives in the place_child seam, not the loop). 35/35 ctests green. Epic 5 now 3/4.
