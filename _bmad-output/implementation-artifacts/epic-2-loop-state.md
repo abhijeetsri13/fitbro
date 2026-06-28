@@ -307,3 +307,15 @@ push-as-truth (covered by reconciliation); the REAL gaps -> implemented:
   unknown band; alert survives a throwing sink.
 - NEXT CANDIDATES: IMP-5 marketdata staleness refinement (last_trade_time cadence; illiquid != mute, research #5/#8);
   wire brokerreason classifier into the dispatcher/reconcile error path; per-broker freeze-qty table source (research #9).
+
+--- IMPROVEMENT-LOOP PROGRESS (cont.) ---
+- IMP-3 DONE (9fff693): per-endpoint rate limiter + 429 circuit-breaker (research #4). Review caught a MEDIUM exit-trap
+  (order_per_sec<=0 misconfig emptied the Order bucket -> every exit denied) -> floored Order capacity; +misconfig tests.
+- IMP-4 DONE (abe259c): broker_exec::protection protective-stop supervisor (research #3 — never trust a GTT). Review caught
+  a HIGH fail-open (a Filled order flag closed an exposed (qty!=0) position -> naked) -> live position_qty is now the sole
+  source of truth (Closed only when flat); + INT64_MIN negation UB fix; + inverted-band guard.
+- IMP-5 IN PROGRESS: modify-order safety guard (research #11 — a qty modify on a partially-filled order cancels the working
+  remainder; raced-fill detection; price-only modify allowed; fail-closed verdicts).
+- IMP-6 IN PROGRESS: pre-submission circuit/LPP price-band validator (research #12 — out-of-band orders exchange-rejected
+  during volatility). Block an out-of-band ENTRY pre-submission; CLAMP an out-of-band protective EXIT (never block an exit).
+Pattern holding: adversarial review caught a real HIGH/MEDIUM fail-open on every improvement so far (4/4).

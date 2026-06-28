@@ -91,6 +91,8 @@ add_subdirectory(src/isolation)        # per-strategy virtual book + global limi
 add_subdirectory(src/supervisor)       # supervisor decision core: exit-code contract + restart-backoff + absence alarm (6.5)
 add_subdirectory(src/brokerreason)     # versioned canonical rejection/status classifier: fail-closed reason + retry posture
 add_subdirectory(src/protection)       # library-owned protective-stop supervisor: never trust the GTT; re-arm on fired-but-unfilled
+add_subdirectory(src/modifyguard)      # modify-order safety guard: never let a modify cancel a working/partially-filled remainder
+add_subdirectory(src/priceband)        # pre-submission circuit/LPP price-band validator: block out-of-band entry, clamp out-of-band exit
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
