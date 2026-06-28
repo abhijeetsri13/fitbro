@@ -251,3 +251,28 @@ runtime wiring of verbs to live modules is composition-root / tier-2.
   Review verdict SHIP (no Critical/High; isolation/limit/stop/P&L-sign all hold). Applied MEDIUM (short-close P&L-sign test
   at non-zero value) + LOW (zero-qty fill no longer default-inserts a phantom record). 36/36 ctests green. Epic 6 now 1/5
   (6-1/6-2/6-3 Kotak transport chain + 6-5 supervisor remain — 6-1 needs IXWebSocket, a longer session).
+
+- 6-5 PARTIAL (decision core only; story = in-progress): broker_exec::supervisor::SupervisorPolicy (new module) — the
+  supervisor exit-code contract + restart-backoff + absence-alarm policy (FR-33 AC-3). exit_reason_from_code: 0->CleanShutdown,
+  70->FailClosedNeedsHuman, ANY other (incl. signals/negative)->Crash (fail-safe unknown==Crash). decide(): CleanShutdown->
+  NoRestartCleanShutdown (no alarm); FailClosedNeedsHuman->NoRestartEscalate + absence alarm (NEVER auto-restarts, any n);
+  Crash->RestartWithBackoff (capped exponential) UNLESS consecutive_crashes > max_consecutive_restarts -> NoRestartEscalate +
+  alarm (crash-loop circuit-breaker). Standalone (stdlib only, no deps). Review verdict SHIP (no Critical/High; fail-closed
+  never restarts, breaker boundary correct, backoff floored positive). Applied MEDIUM: backoff_for now clamps on value>cap/2
+  BEFORE doubling so value*=2 is overflow-free for ANY cap up to INT_MAX (the prior form could overflow to a negative/instant
+  backoff near INT_MAX) + tests (near-INT_MAX cap, degenerate breaker). 37/37 ctests green.
+  *** DEFERRED (6-5 remainder, needs a longer session): process-per-account spawn, systemd template, per-(broker,date) shared
+  cache under a cross-process lock, SIGKILL-restart-from-intent-log. Story stays in-progress until that OS wiring lands. ***
+
+============== 2-HOUR RESUMED LOOP COMPLETE (2026-06-28) ==============
+Delivered this 2h window (6 stories, each full BMAD cadence build+adversarial-review+fix+commit+push, all green):
+  4-6 (CLI + localhost health endpoint)  -> Epic 4 COMPLETE (6/6)
+  5-1 hedge-first / never-naked
+  5-2 basket / multi-leg (no orphans)
+  5-3 freeze-slicing at option size (no duplicates)
+  5-4 margin/SPAN shock sim (capability-gated)  -> Epic 5 COMPLETE (4/4)
+  6-4 multi-strategy isolation
+  6-5 supervisor decision core (PARTIAL — policy only)
+Project status: Epics 1,2,3,4,5 COMPLETE; Epic 6 = 1 done (6-4) + 6-5 partial; 6-1/6-2/6-3 (Kotak REST+WebSocket adapter +
+certification + portability proof — need IXWebSocket) and the 6-5 process wiring remain. 37/37 ctest suites green (Release/MSVC).
+All on branch epic-2-live-kite-trading (not merged to main; no PR).

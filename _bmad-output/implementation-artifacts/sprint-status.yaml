@@ -112,5 +112,5 @@ development_status:
   6-2-kotak-neo-adapter-certification: backlog
   6-3-broker-portability-proof: backlog
   6-4-multi-strategy-isolation: done
-  6-5-multi-account-process-per-account-with-supervisor: backlog
+  6-5-multi-account-process-per-account-with-supervisor: in-progress
   epic-6-retrospective: optional
