@@ -67,10 +67,19 @@ struct PriceBand {
 // (-) exits by Buy. `protective_limit` is the marketable limit for the exit (a
 // limit placed near/through the trigger so it fills like a market but cannot be
 // rejected for price once clamped into the band).
+//
+// CONTRACT — `position_qty` is the SOURCE OF TRUTH for exposure: it MUST be the
+// CURRENT, RECONCILED remaining position (broker fills already applied), NOT the
+// size the stop was originally armed at. A position the protective exit actually
+// flattened is 0 (=> Closed); a partial fill leaves the remaining magnitude. The
+// supervisor never trusts a broker order flag over this: a `Filled`
+// protective_order_state arriving while position_qty is still non-zero is treated
+// as STILL EXPOSED (re-arm), not as protected — so the caller must keep
+// position_qty reconciled or risk an over-exit on a position-feed lag.
 struct ProtectiveStop {
   std::string position_id;        // the protected position handle (opaque id)
   std::string symbol;             // tradable symbol (redaction-safe to log)
-  std::int64_t position_qty = 0;  // signed: +long / -short; 0 == flat
+  std::int64_t position_qty = 0;  // signed: +long / -short; 0 == flat (reconciled)
   domain::Money stop_trigger;     // the stop trigger price
   domain::Money protective_limit;  // limit for the protective exit (marketable)
 };
@@ -140,24 +149,27 @@ struct StopInputs {
 // ProtectionDecision rather than propagating (a throwing/dead AlertSink is
 // caught and swallowed — the protective decision survives a broken alert
 // channel). The logic, in order:
-//   1. position_qty == 0            -> Closed (flat; no emit, no alert).
+//   1. position_qty == 0            -> Closed (flat; no emit, no alert). This is
+//      the ONLY Closed path: exposure is read from the live position, never an
+//      order flag (a Filled that flattened the position is reported as qty 0 here).
 //   2. derive exit side (long->Sell, short->Buy) + exit qty = |position_qty|.
 //      A non-positive qty (overflow / mismatch) -> Unprotected + Critical
 //      (fail-closed: we cannot form a valid exit).
-//   3. protective_order_state == Filled -> Closed (protected; PartiallyFilled is
-//      NOT Filled and falls through to re-arm the remainder).
-//   4. !trigger_crossed             -> Armed (latent; nothing to emit).
-//   5. trigger_crossed && not Filled (state in {Rejected, Cancelled, Unknown,
-//      PartiallyFilled} OR !protective_order_known) -> ReArmNeeded: emit a
-//      BAND-AWARE protective exit + Critical alert. THE CORE FIX — never trust
-//      the broker GTT; re-arm on fired-but-unfilled.
+//   3. !trigger_crossed             -> Armed (latent; nothing to emit).
+//   4. trigger_crossed on a non-flat position -> ReArmNeeded REGARDLESS of the
+//      protective order flag (Rejected / Cancelled / Unknown / PartiallyFilled /
+//      a stale Filled / never placed): the live position is still exposed. Emit a
+//      BAND-AWARE protective exit + Critical alert. THE CORE FIX — never trust the
+//      broker GTT (a fired-but-unfilled GTT is already deleted) nor a Filled flag
+//      over the live position.
 // Band clamp on the emitted exit:
 //   * Sell (long exit): limit = clamp(protective_limit, [band.lower, band.upper])
 //     (never below the floor, never above the ceiling).
 //   * Buy  (short exit): limit = clamp(protective_limit, [band.lower, band.upper])
 //     (never above the ceiling, never below the floor).
-//   * band.valid == false -> emit at the RAW protective_limit (do NOT skip the
-//     exit) but escalate the detail to "band unknown — protective limit
+//   * band unusable (band.valid == false OR an inverted lower>upper band) -> emit
+//     at the RAW protective_limit (do NOT skip the exit) but escalate the detail
+//     to "band unknown — protective limit
 //     unclamped" so the operator knows the price was not made safe.
 [[nodiscard]] ProtectionDecision evaluate_protection(const ProtectiveStop& stop,
                                                      const StopInputs& in,

@@ -71,14 +71,16 @@ ProtectionDecision evaluate_protection(const ProtectiveStop& stop, const StopInp
 
   // ── Step 2: derive the exit (OPPOSITE side, absolute size) ────────────────
   // The exit side is the opposite of the position: long (+) exits Sell, short
-  // (-) exits Buy. exit_qty is the magnitude. Computing the magnitude WITHOUT
-  // std::abs avoids the INT64_MIN UB; if the magnitude still comes out
-  // non-positive (only possible for INT64_MIN, where negation overflows) we
-  // cannot form a valid exit -> FAIL-CLOSED Unprotected.
+  // (-) exits Buy. exit_qty is the magnitude, computed via UNSIGNED negation so
+  // INT64_MIN is well-defined (plain `-INT64_MIN` is signed-overflow UB and would
+  // TRAP under the UBSan build). A genuinely non-positive magnitude is impossible
+  // after this, but the guard stays as defence-in-depth -> FAIL-CLOSED Unprotected.
   const domain::Side exit_side =
       stop.position_qty > 0 ? domain::Side::Sell : domain::Side::Buy;
   const std::int64_t exit_qty =
-      stop.position_qty > 0 ? stop.position_qty : -stop.position_qty;
+      stop.position_qty > 0
+          ? stop.position_qty
+          : static_cast<std::int64_t>(0ULL - static_cast<std::uint64_t>(stop.position_qty));
   if (exit_qty <= 0) {
     decision.state = ProtectionState::Unprotected;
     decision.detail =
@@ -90,29 +92,28 @@ ProtectionDecision evaluate_protection(const ProtectiveStop& stop, const StopInp
     return decision;
   }
 
-  // ── Step 3: a confirmed Filled protective exit means we ARE protected ─────
-  // NOTE: PartiallyFilled is deliberately NOT Filled — the unfilled remainder is
-  // still naked and must fall through to the re-arm below.
-  if (in.protective_order_state == domain::OrderState::Filled) {
-    decision.state = ProtectionState::Closed;
-    decision.detail = "protective exit filled for " + stop.symbol + ": position protected";
-    return decision;
-  }
-
-  // ── Step 4: trigger not crossed -> protection is latent (Armed) ───────────
+  // ── Step 3: trigger not crossed -> protection is latent (Armed) ───────────
   // We TRUST the caller's trigger_crossed flag (the caller owns tick semantics).
+  // NB: there is deliberately NO "protective_order_state == Filled -> Closed"
+  // shortcut here. The SOURCE OF TRUTH for exposure is the live position_qty, NOT
+  // a broker order flag: a position that the protective exit actually flattened is
+  // reported as position_qty == 0 and already returned Closed in Step 1. A `Filled`
+  // flag arriving while position_qty is still non-zero (a stale/leftover fill, an
+  // inconsistent !known+Filled, or a fill that did not flatten the position) means
+  // the position is STILL exposed — trusting the flag there would leave a naked
+  // position. So a crossed trigger on a non-flat position ALWAYS re-arms.
   if (!in.trigger_crossed) {
     decision.state = ProtectionState::Armed;
     decision.detail = "armed for " + stop.symbol + ": trigger not crossed";
     return decision;
   }
 
-  // ── Step 5: trigger crossed + exit NOT Filled -> RE-ARM (THE CORE FIX) ────
-  // The stop fired (or should have) but the protective exit is not confirmed
-  // Filled: Rejected / Cancelled / Unknown / PartiallyFilled, OR no protective
-  // order was ever placed. NEVER TRUST THE BROKER GTT — a fired-but-unfilled GTT
-  // is already deleted and the position is exposed. Emit a fresh band-aware
-  // protective exit and raise Critical.
+  // ── Step 4: trigger crossed on a still-exposed position -> RE-ARM (CORE) ───
+  // The stop fired (or should have) and position_qty is non-zero, so the position
+  // is exposed. Whatever the protective order claims (Rejected / Cancelled /
+  // Unknown / PartiallyFilled / a stale Filled / never placed), the live position
+  // is not flat. NEVER TRUST THE BROKER GTT — a fired-but-unfilled GTT is already
+  // deleted. Emit a fresh band-aware protective exit and raise Critical.
   decision.state = ProtectionState::ReArmNeeded;
   decision.emit_exit = true;
   decision.exit.symbol = stop.symbol;
@@ -122,7 +123,11 @@ ProtectionDecision evaluate_protection(const ProtectiveStop& stop, const StopInp
   const std::string side_tag =
       std::string(domain::to_string(exit_side));  // "Buy"/"Sell", redaction-safe
 
-  if (in.band.valid) {
+  // An inverted band (lower > upper) is a malformed/garbage band — clamping into
+  // it would emit an edge price the exchange still rejects, defeating the point.
+  // Treat it like an unknown band: emit unclamped + escalate, never silently trust.
+  const bool band_usable = in.band.valid && in.band.lower <= in.band.upper;
+  if (band_usable) {
     decision.exit.limit_price = clamp_into_band(exit_side, stop.protective_limit, in.band);
     decision.detail = "re-arm protective " + side_tag + " for " + stop.symbol +
                       ": stop fired-but-unfilled; limit clamped into band";

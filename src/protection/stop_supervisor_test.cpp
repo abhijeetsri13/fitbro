@@ -123,9 +123,11 @@ TEST_CASE("armed: long position, trigger NOT crossed => Armed, no emit") {
   CHECK(alerts.count() == 0);
 }
 
-TEST_CASE("protected: trigger crossed, protective order Filled => Closed, no emit") {
+TEST_CASE("protected: the protective exit flattened the position (qty 0) => Closed, no emit") {
   SpyAlertSink alerts;
-  ProtectiveStop stop = long_stop();
+  // A real protective fill is reflected as a flat position (qty 0) — exposure is
+  // read from the live position, not an order flag.
+  ProtectiveStop stop = long_stop(/*qty=*/0);
 
   StopInputs in;
   in.trigger_crossed = true;
@@ -139,6 +141,30 @@ TEST_CASE("protected: trigger crossed, protective order Filled => Closed, no emi
   CHECK_FALSE(d.emit_exit);
   CHECK_FALSE(d.alert);
   CHECK(alerts.count() == 0);
+}
+
+TEST_CASE("FAIL-OPEN GUARD: a Filled flag while the position is STILL exposed re-arms (live "
+          "position wins over the order flag)") {
+  // The HIGH defect the review caught: a stale/leftover/residual Filled flag must
+  // NOT close an exposed (non-zero) crossed position — that would leave it naked.
+  for (const bool known : {true, false}) {
+    SpyAlertSink alerts;
+    ProtectiveStop stop = long_stop(/*qty=*/50);  // STILL exposed
+
+    StopInputs in;
+    in.trigger_crossed = true;
+    in.protective_order_known = known;
+    in.protective_order_state = OrderState::Filled;  // claims filled...
+    in.band = wide_band();
+
+    const auto d = evaluate_protection(stop, in, alerts);
+
+    CHECK(d.state == ProtectionState::ReArmNeeded);  // ...but the live position is exposed
+    CHECK(d.emit_exit);
+    CHECK(d.exit.side == Side::Sell);
+    CHECK(d.exit.qty == 50);
+    CHECK(alerts.last_level() == AlertLevel::Critical);
+  }
 }
 
 // ── THE CORE CASE: GTT fired-but-unfilled drives a re-arm for EACH failure. ──
@@ -276,6 +302,27 @@ TEST_CASE("band clamp: short exit (Buy) with protective_limit ABOVE band.upper =
   CHECK(d.state == ProtectionState::ReArmNeeded);
   CHECK(d.exit.side == Side::Buy);
   CHECK(d.exit.limit_price == Money::from_rupees(110));  // clamped down into the band
+}
+
+TEST_CASE("inverted band (lower>upper) is treated as unusable: emit unclamped + Critical, not an "
+          "edge price the exchange would still reject") {
+  SpyAlertSink alerts;
+  ProtectiveStop stop = long_stop(/*qty=*/25);
+  stop.protective_limit = Money::from_rupees(99);
+
+  StopInputs in;
+  in.trigger_crossed = true;
+  in.protective_order_known = true;
+  in.protective_order_state = OrderState::Rejected;
+  in.band = PriceBand{Money::from_rupees(110), Money::from_rupees(90), true};  // inverted
+
+  const auto d = evaluate_protection(stop, in, alerts);
+
+  CHECK(d.state == ProtectionState::ReArmNeeded);
+  CHECK(d.emit_exit);
+  CHECK(d.exit.limit_price == Money::from_rupees(99));  // unclamped (not an inverted edge)
+  CHECK(d.detail.find("band unknown") != std::string::npos);
+  CHECK(alerts.last_level() == AlertLevel::Critical);
 }
 
 TEST_CASE("band clamp: a protective limit already inside the band is left unchanged") {
