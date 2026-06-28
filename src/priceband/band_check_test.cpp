@@ -98,11 +98,17 @@ TEST_CASE("stop-limit checks BOTH the trigger and the limit", "[priceband]") {
   CHECK(entry.blocked);
 
   // The same on an exit clamps (never blocks); both prices in band would be Within.
+  // BOTH the limit AND the out-of-band trigger must be clamped into the band — a
+  // half-clamped stop-limit would still be exchange-rejected on the trigger.
   const BandCheckResult exit =
       check_price_band(Side::Sell, OrderType::StopLoss, Money::from_rupees(100),
                        /*trigger=*/Money::from_rupees(70), band_90_110(), /*is_exit=*/true);
   CHECK(exit.verdict == BandVerdict::OutsideBandExitClamped);
   CHECK_FALSE(exit.blocked);
+  CHECK(exit.has_suggestion);
+  CHECK(exit.suggested_limit == Money::from_rupees(100));   // already in band
+  CHECK(exit.has_trigger_suggestion);
+  CHECK(exit.suggested_trigger == Money::from_rupees(90));  // 70 clamped UP to band.lower
 
   const BandCheckResult both_in =
       check_price_band(Side::Buy, OrderType::StopLoss, Money::from_rupees(100),

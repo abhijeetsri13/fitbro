@@ -103,10 +103,15 @@ BandCheckResult check_price_band(domain::Side side, domain::OrderType order_type
   }
 
   // ── Step 5: OUT OF BAND — exit clamps, entry blocks (THE SPINE) ───────────
-  // The suggested limit is the order's limit pulled inside the band; for a stop-
-  // limit the caller should clamp the trigger likewise.
+  // The suggested limit is the order's limit pulled inside the band. For a STOP-
+  // LIMIT, the trigger is clamped too — suggesting only the limit while leaving the
+  // trigger out of band would still be exchange-rejected, defeating the clamp.
   result.suggested_limit = clamp(limit_price, band.lower, band.upper);
   result.has_suggestion = true;
+  if (check_trigger) {
+    result.suggested_trigger = clamp(trigger_price, band.lower, band.upper);
+    result.has_trigger_suggestion = true;
+  }
   if (is_exit) {
     // INVARIANT: an EXIT is NEVER blocked. A protective exit must still reach the
     // broker during the very volatility that pushed it out of band — so we clamp

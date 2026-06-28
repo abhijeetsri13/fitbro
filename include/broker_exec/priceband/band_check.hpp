@@ -98,6 +98,12 @@ struct BandCheckResult {
   bool blocked = false;
   domain::Money suggested_limit;
   bool has_suggestion = false;
+  // For a STOP-LIMIT order, the trigger must be brought in-band too — clamping only
+  // the limit while leaving the trigger outside would still earn the exact "price
+  // out of LPP range" rejection. `suggested_trigger` is the trigger pulled inside
+  // the band, meaningful ONLY when `has_trigger_suggestion` is true.
+  domain::Money suggested_trigger;
+  bool has_trigger_suggestion = false;
   std::string detail;
 };
 
