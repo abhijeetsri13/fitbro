@@ -276,3 +276,14 @@ Delivered this 2h window (6 stories, each full BMAD cadence build+adversarial-re
 Project status: Epics 1,2,3,4,5 COMPLETE; Epic 6 = 1 done (6-4) + 6-5 partial; 6-1/6-2/6-3 (Kotak REST+WebSocket adapter +
 certification + portability proof — need IXWebSocket) and the 6-5 process wiring remain. 37/37 ctest suites green (Release/MSVC).
 All on branch epic-2-live-kite-trading (not merged to main; no PR).
+
+============== IMPROVEMENT LOOP (2026-06-28, ~3h) ==============
+User: "start improvement loop for 3 hours heavy topics now, also check online developer
+complaints and fix the issues they mention." DEADLINE: epoch 1782640218 (2026-06-28 15:20 IST).
+Mode: HARDEN/IMPROVE existing modules (not just new stories). Same cadence: scope -> dev subagent
+-> build+ctest -> adversarial review -> fix -> commit -> push. A background research subagent is
+gathering REAL Kite Connect / Kotak Neo developer complaints -> map to library fixes.
+Heavy-topic backlog (dep-free first): (1) ledger truncation-detection via retained signed head;
+(2) SL distinct trigger/limit (OrderIntent trigger_price + gate); (3) runtime gate-composition
+fail-closed when funds_check/calendar absent for entries; (4) Kite square_off position-flatten;
+(5) complaint-driven fixes from the research findings.

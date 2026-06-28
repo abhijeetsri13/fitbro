@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -121,6 +122,32 @@ class Pkey {
 
 [[nodiscard]] std::string to_hex(const std::vector<unsigned char>& bytes) {
   return to_hex(bytes.data(), bytes.size());
+}
+
+// Decode a lowercase/uppercase hex string into bytes. Returns false (and leaves
+// `out` unspecified) on an odd length or any non-hex digit — used to fail CLOSED
+// when a checkpoint's signature/public-key field is garbage rather than hex.
+[[nodiscard]] bool from_hex(std::string_view hex, std::vector<unsigned char>& out) {
+  if (hex.size() % 2 != 0) {
+    return false;
+  }
+  const auto nibble = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  out.clear();
+  out.reserve(hex.size() / 2);
+  for (std::size_t i = 0; i < hex.size(); i += 2) {
+    const int hi = nibble(hex[i]);
+    const int lo = nibble(hex[i + 1]);
+    if (hi < 0 || lo < 0) {
+      return false;
+    }
+    out.push_back(static_cast<unsigned char>((hi << 4) | lo));
+  }
+  return true;
 }
 
 // SHA-256 of `data`, lowercase hex. Internal; OpenSSL EVP with RAII on the ctx.
@@ -450,6 +477,158 @@ Result<EodReport> Ledger::eod_report(const std::vector<unsigned char>& private_k
   report.signature = std::move(signature).value();
   report.public_key = public_key;
   return report;
+}
+
+fs::path Ledger::checkpoint_path() const {
+  // Sibling of the ledger file: <ledger path> + ".checkpoint" (a filename-suffix
+  // concat, so e.g. ".../ledger.jsonl" -> ".../ledger.jsonl.checkpoint").
+  fs::path cp = path_;
+  cp += ".checkpoint";
+  return cp;
+}
+
+Result<ports::Ok> Ledger::write_checkpoint(const std::vector<unsigned char>& private_key,
+                                           const std::vector<unsigned char>& public_key) const {
+  // An empty ledger has no head to sign -> a defined Error in the checkpoint
+  // vocabulary (guarded before eod_report so the message is checkpoint-specific).
+  if (head_hash().empty()) {
+    return fail(make_error(ErrorCategory::Validation, "ledger empty, nothing to checkpoint"));
+  }
+
+  // The checkpoint payload IS the EOD bundle {entry_count, head_hash, Ed25519
+  // signature over head_hash, public_key}: reuse eod_report() so the signed
+  // high-water mark and the EOD report are byte-for-byte the same construction.
+  auto report = eod_report(private_key, public_key);
+  if (!report) {
+    return fail(std::move(report).error());
+  }
+  const std::string bundle = report.value().to_json();
+
+  // ATOMIC + DURABLE publish (same discipline as append()): write the full
+  // payload to a temp sibling, fsync it, then rename it over the checkpoint path.
+  // A crash mid-write leaves the OLD checkpoint intact — a reader never observes
+  // a half-written high-water mark.
+  const fs::path target = checkpoint_path();
+  fs::path tmp = target;
+  tmp += ".tmp";
+
+  std::FILE* fp = std::fopen(tmp.string().c_str(), "wb");
+  if (fp == nullptr) {
+    return fail(make_error(ErrorCategory::Internal, "ledger: failed to open checkpoint temp file"));
+  }
+  const std::size_t written = std::fwrite(bundle.data(), 1, bundle.size(), fp);
+  if (written != bundle.size() || std::fflush(fp) != 0) {
+    std::fclose(fp);
+    return fail(make_error(ErrorCategory::Internal, "ledger: failed to write checkpoint"));
+  }
+  const bool synced = platform::durable_sync(platform::portable_fileno(fp));
+  if (std::fclose(fp) != 0 || !synced) {
+    return fail(make_error(ErrorCategory::Internal, "ledger: failed to durably sync checkpoint"));
+  }
+  std::error_code ec;
+  fs::rename(tmp, target, ec);
+  if (ec) {
+    return fail(
+        make_error(ErrorCategory::Internal, "ledger: failed to atomically publish checkpoint"));
+  }
+  return ports::ok();
+}
+
+Result<ports::Ok> Ledger::verify_against_checkpoint(
+    const std::vector<unsigned char>& pinned_public_key) const {
+  const fs::path cp = checkpoint_path();
+  std::error_code ec;
+  const bool present = fs::exists(cp, ec);
+  if (ec) {
+    return fail(make_error(ErrorCategory::Internal, "ledger: failed to stat checkpoint file"));
+  }
+  if (!present) {
+    // NO BASELINE: no checkpoint has ever been written, so there is genuinely no
+    // prior signed state to measure a truncation against. This is the only safe
+    // default and is NOT fail-open — truncation simply cannot be detected before
+    // the first checkpoint arms it.
+    return ports::ok();
+  }
+
+  // The checkpoint EXISTS, so from here every failure is FAIL CLOSED: a present
+  // checkpoint that won't parse / won't verify is itself evidence of tamper.
+  std::ifstream in(cp, std::ios::binary);
+  if (!in) {
+    return fail(make_error(ErrorCategory::Internal, "ledger: failed to open checkpoint file"));
+  }
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  if (in.bad()) {
+    return fail(make_error(ErrorCategory::Internal, "ledger: failed to read checkpoint file"));
+  }
+
+  // Non-throwing, TYPE-CHECKED parse (same discipline as load()): require each
+  // field present AND of the expected type so no json access can throw across the
+  // no-throw boundary. A malformed checkpoint -> Validation Error, never ok().
+  const json parsed = json::parse(text, nullptr, false);
+  const bool well_formed =
+      !parsed.is_discarded() && parsed.is_object() &&
+      parsed.contains("entry_count") && parsed["entry_count"].is_number_integer() &&
+      parsed.contains("head_hash") && parsed["head_hash"].is_string() &&
+      parsed.contains("signature") && parsed["signature"].is_string() &&
+      parsed.contains("public_key") && parsed["public_key"].is_string();
+  if (!well_formed) {
+    return fail(
+        make_error(ErrorCategory::Validation, "ledger: checkpoint file malformed or unparseable"));
+  }
+
+  const std::int64_t cp_size = parsed["entry_count"].get<std::int64_t>();
+  const std::string cp_head = parsed["head_hash"].get<std::string>();
+  std::vector<unsigned char> signature;
+  std::vector<unsigned char> public_key;
+  if (!from_hex(parsed["signature"].get<std::string>(), signature) ||
+      !from_hex(parsed["public_key"].get<std::string>(), public_key)) {
+    return fail(
+        make_error(ErrorCategory::Validation, "ledger: checkpoint file malformed or unparseable"));
+  }
+
+  // A valid checkpoint always signs at least the genesis entry; size<1 is
+  // nonsensical (and would underflow the index guard below).
+  if (cp_size < 1) {
+    return fail(
+        make_error(ErrorCategory::Validation, "ledger: checkpoint records a non-positive size"));
+  }
+
+  // KEY PINNING (anti-substitution — the core anti-tamper anchor): the public_key
+  // embedded in the checkpoint is attacker-writable, so verifying the signature
+  // under it would be circular — a non-key-holder could generate a fresh keypair,
+  // re-sign a truncated/rolled-back chain, and embed their own public key, passing
+  // every check. The embedded key MUST therefore match a PINNED key the caller
+  // trusts out-of-band (the EOD-published key / ledger_public_key.hex provisioned
+  // under restricted perms). Fail closed on mismatch, BEFORE trusting anything.
+  if (auto pinned_ok = require_key_match(pinned_public_key, public_key); !pinned_ok) {
+    return fail(make_error(ErrorCategory::Validation,
+                           "checkpoint public key does not match the pinned key (substitution)"));
+  }
+
+  // AUTHENTICITY: the signed head must verify under the PINNED key (== embedded,
+  // just matched). A forged or edited checkpoint (signature or head flipped) fails.
+  if (auto authentic = verify_head(cp_head, signature, pinned_public_key); !authentic) {
+    return fail(make_error(ErrorCategory::Validation, "checkpoint signature invalid"));
+  }
+
+  // TRUNCATION: the live chain must still be at least as long as the signed
+  // high-water mark; a shorter chain means the tail was chopped.
+  if (static_cast<std::int64_t>(size()) < cp_size) {
+    return fail(make_error(ErrorCategory::Validation,
+                           "ledger TRUNCATED: have " + std::to_string(size()) +
+                               " entries, checkpoint signed " + std::to_string(cp_size)));
+  }
+
+  // ROLLBACK / SUBSTITUTION: the historical entry at the high-water index must
+  // still carry the signed head hash. (size>=cp_size and cp_size>=1 keep the
+  // index in range.) Growth is fine — appended entries do not change this one.
+  const LedgerEntry& at_mark = entries_[static_cast<std::size_t>(cp_size) - 1];
+  if (at_mark.hash != cp_head) {
+    return fail(make_error(ErrorCategory::Validation,
+                           "ledger ROLLED BACK/SUBSTITUTED: entry " + std::to_string(cp_size - 1) +
+                               " hash diverges from the signed checkpoint"));
+  }
+  return ports::ok();
 }
 
 PositionHeartbeat Ledger::make_heartbeat(std::string_view exposure_summary,

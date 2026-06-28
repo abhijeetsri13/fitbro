@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <string>
 #include <string_view>
@@ -53,6 +54,18 @@ struct TempDir {
 [[nodiscard]] std::string read_file(const fs::path& p) {
   std::ifstream in(p, std::ios::binary);
   return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+void write_file(const fs::path& p, const std::string& content) {
+  std::ofstream out(p, std::ios::binary | std::ios::trunc);
+  out << content;
+}
+
+// Append each payload to the ledger, one entry per element.
+void append_all(Ledger& ledger, std::initializer_list<std::string_view> payloads) {
+  for (std::string_view payload : payloads) {
+    REQUIRE(ledger.append(std::string(payload)).has_value());
+  }
 }
 
 }  // namespace
@@ -355,4 +368,229 @@ TEST_CASE("an appended secret is scrubbed before hashing/persist (4.2 lesson)", 
   CHECK(read_file(file).find(kToken) == std::string::npos);
   // ...and the chain still verifies (the hash is over the SCRUBBED payload).
   CHECK(ledger.verify_chain().has_value());
+}
+
+TEST_CASE("write_checkpoint then verify_against_checkpoint passes; high-water advances", "[ledger]") {
+  const TempDir dir("checkpoint_intact");
+  const TestClock clock;
+  Ledger ledger(clock, dir.path / "ledger.jsonl");
+
+  const auto kp = Ledger::generate_keypair();
+  REQUIRE(kp.has_value());
+
+  append_all(ledger, {"p0", "p1", "p2", "p3", "p4"});
+  REQUIRE(ledger.size() == 5);
+  REQUIRE(ledger.write_checkpoint(kp.value().private_key, kp.value().public_key).has_value());
+  CHECK(ledger.verify_against_checkpoint(kp.value().public_key).has_value());
+
+  // The high-water mark advances: append 3 more, re-checkpoint at size 8, verify.
+  append_all(ledger, {"p5", "p6", "p7"});
+  REQUIRE(ledger.size() == 8);
+  REQUIRE(ledger.write_checkpoint(kp.value().private_key, kp.value().public_key).has_value());
+  CHECK(ledger.verify_against_checkpoint(kp.value().public_key).has_value());
+}
+
+TEST_CASE("a chain that only GREW since the checkpoint still verifies", "[ledger]") {
+  const TempDir dir("checkpoint_growth");
+  const TestClock clock;
+  Ledger ledger(clock, dir.path / "ledger.jsonl");
+
+  const auto kp = Ledger::generate_keypair();
+  REQUIRE(kp.has_value());
+
+  append_all(ledger, {"p0", "p1", "p2", "p3", "p4"});
+  REQUIRE(ledger.write_checkpoint(kp.value().private_key, kp.value().public_key).has_value());
+
+  // Append 3 more WITHOUT a new checkpoint: the size-5 checkpoint must still
+  // verify because entry[4] is unchanged and the chain only grew.
+  append_all(ledger, {"p5", "p6", "p7"});
+  REQUIRE(ledger.size() == 8);
+  CHECK(ledger.verify_against_checkpoint(kp.value().public_key).has_value());
+}
+
+TEST_CASE("a chopped tail is detected against the signed checkpoint (truncation)", "[ledger]") {
+  const TempDir dir("checkpoint_truncate");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+
+  const auto kp = Ledger::generate_keypair();
+  REQUIRE(kp.has_value());
+
+  {
+    Ledger ledger(clock, file);
+    append_all(ledger, {"p0", "p1", "p2", "p3", "p4"});
+    REQUIRE(ledger.write_checkpoint(kp.value().private_key, kp.value().public_key).has_value());
+  }
+
+  // Simulate a tail chop: keep only the first 3 of the 5 ledger lines. The
+  // size-5 checkpoint sibling is left in place.
+  std::vector<std::string> lines;
+  {
+    std::ifstream in(file, std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) {
+      lines.push_back(line);
+    }
+  }
+  REQUIRE(lines.size() == 5);
+  {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    for (std::size_t i = 0; i < 3; ++i) {
+      out << lines[i] << '\n';
+    }
+  }
+
+  Ledger fresh(clock, file);
+  REQUIRE(fresh.load().has_value());
+  CHECK(fresh.size() == 3);
+  CHECK(fresh.verify_chain().has_value());  // the surviving 3 are self-consistent
+  const auto verified = fresh.verify_against_checkpoint(kp.value().public_key);
+  REQUIRE_FALSE(verified.has_value());      // ...but truncation IS caught
+  CHECK(verified.error().category == ErrorCategory::Validation);
+  CHECK(verified.error().message.find("TRUNCATED") != std::string::npos);
+}
+
+TEST_CASE("a substituted/rolled-back chain is detected against the checkpoint", "[ledger]") {
+  const TempDir dir("checkpoint_rollback");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const fs::path other = dir.path / "other.jsonl";
+  const TestClock clock;
+
+  const auto kp = Ledger::generate_keypair();
+  REQUIRE(kp.has_value());
+
+  // Chain A: signs a size-5 checkpoint into file's sibling.
+  {
+    Ledger ledger_a(clock, file);
+    append_all(ledger_a, {"A0", "A1", "A2", "A3", "A4"});
+    REQUIRE(ledger_a.write_checkpoint(kp.value().private_key, kp.value().public_key).has_value());
+  }
+
+  // Chain B: a DIFFERENT 5-entry chain (different payloads => different hash at
+  // seq 4). Overwrite the ledger file with B's lines, leaving A's checkpoint.
+  {
+    Ledger ledger_b(clock, other);
+    append_all(ledger_b, {"B0", "B1", "B2", "B3", "B4"});
+  }
+  write_file(file, read_file(other));
+
+  Ledger fresh(clock, file);
+  REQUIRE(fresh.load().has_value());
+  CHECK(fresh.size() == 5);
+  CHECK(fresh.verify_chain().has_value());  // chain B is internally consistent
+  const auto verified = fresh.verify_against_checkpoint(kp.value().public_key);
+  REQUIRE_FALSE(verified.has_value());      // ...but it is NOT the signed chain
+  CHECK(verified.error().category == ErrorCategory::Validation);
+  CHECK(verified.error().message.find("ROLLED BACK") != std::string::npos);
+}
+
+TEST_CASE("a forged (byte-flipped) checkpoint fails closed", "[ledger]") {
+  const TempDir dir("checkpoint_forged");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+
+  const auto kp = Ledger::generate_keypair();
+  REQUIRE(kp.has_value());
+
+  Ledger ledger(clock, file);
+  append_all(ledger, {"p0", "p1", "p2", "p3", "p4"});
+  REQUIRE(ledger.write_checkpoint(kp.value().private_key, kp.value().public_key).has_value());
+
+  // Flip one hex digit inside the checkpoint's signature on disk: still valid
+  // JSON and valid hex, but the signature no longer verifies.
+  fs::path cp = file;
+  cp += ".checkpoint";
+  REQUIRE(fs::exists(cp));
+  std::string content = read_file(cp);
+  const auto pos = content.find("\"signature\":\"");
+  REQUIRE(pos != std::string::npos);
+  const std::size_t digit = pos + std::string("\"signature\":\"").size();
+  REQUIRE(digit < content.size());
+  content[digit] = (content[digit] == '0') ? '1' : '0';  // a different, valid hex digit
+  write_file(cp, content);
+
+  const auto verified = ledger.verify_against_checkpoint(kp.value().public_key);
+  REQUIRE_FALSE(verified.has_value());
+  CHECK(verified.error().category == ErrorCategory::Validation);
+  CHECK(verified.error().message.find("signature invalid") != std::string::npos);
+}
+
+TEST_CASE("absent checkpoint is ok (documented no-baseline default)", "[ledger]") {
+  const TempDir dir("checkpoint_absent");
+  const TestClock clock;
+  Ledger ledger(clock, dir.path / "ledger.jsonl");
+
+  const auto kp = Ledger::generate_keypair();
+  REQUIRE(kp.has_value());
+
+  append_all(ledger, {"p0", "p1", "p2"});
+  // No checkpoint was ever written -> no prior signed state to measure against.
+  CHECK(ledger.verify_against_checkpoint(kp.value().public_key).has_value());
+}
+
+TEST_CASE("checkpointing an empty ledger is a defined Error", "[ledger]") {
+  const TempDir dir("checkpoint_empty");
+  const TestClock clock;
+  Ledger ledger(clock, dir.path / "ledger.jsonl");
+
+  const auto kp = Ledger::generate_keypair();
+  REQUIRE(kp.has_value());
+
+  const auto written = ledger.write_checkpoint(kp.value().private_key, kp.value().public_key);
+  REQUIRE_FALSE(written.has_value());
+  CHECK(written.error().category == ErrorCategory::Validation);
+  CHECK(written.error().message.find("empty") != std::string::npos);
+}
+
+TEST_CASE("KEY-SUBSTITUTION attack is caught by pinning (a self-consistent checkpoint under a "
+          "DIFFERENT key is rejected)",
+          "[ledger]") {
+  const TempDir dir("checkpoint_substitution");
+  const TestClock clock;
+  Ledger ledger(clock, dir.path / "ledger.jsonl");
+
+  // The legitimate, pinned key (e.g. from the EOD report / ledger_public_key.hex).
+  const auto pinned = Ledger::generate_keypair();
+  REQUIRE(pinned.has_value());
+  // The ATTACKER's freshly generated key — they do NOT hold the pinned private key.
+  const auto attacker = Ledger::generate_keypair();
+  REQUIRE(attacker.has_value());
+
+  append_all(ledger, {"p0", "p1", "p2"});
+  // The attacker writes a checkpoint that is PERFECTLY self-consistent under their
+  // OWN key (signature verifies, size + head match the on-disk chain). Pre-pinning
+  // this passed; with key pinning it must be rejected because the embedded key is
+  // not the pinned key.
+  REQUIRE(
+      ledger.write_checkpoint(attacker.value().private_key, attacker.value().public_key).has_value());
+
+  const auto verified = ledger.verify_against_checkpoint(pinned.value().public_key);
+  REQUIRE_FALSE(verified.has_value());
+  CHECK(verified.error().category == ErrorCategory::Validation);
+  CHECK(verified.error().message.find("pinned key") != std::string::npos);
+}
+
+TEST_CASE("a present-but-malformed checkpoint fails closed (not ok)", "[ledger]") {
+  const TempDir dir("checkpoint_malformed");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+
+  const auto kp = Ledger::generate_keypair();
+  REQUIRE(kp.has_value());
+
+  Ledger ledger(clock, file);
+  append_all(ledger, {"p0", "p1", "p2"});
+  REQUIRE(ledger.write_checkpoint(kp.value().private_key, kp.value().public_key).has_value());
+
+  fs::path cp = file;
+  cp += ".checkpoint";
+  REQUIRE(fs::exists(cp));
+  // Garbage that is present but not parseable -> a present checkpoint that won't
+  // parse is itself evidence of tamper; must fail CLOSED, never ok().
+  write_file(cp, "this is not json {");
+
+  const auto verified = ledger.verify_against_checkpoint(kp.value().public_key);
+  REQUIRE_FALSE(verified.has_value());
+  CHECK(verified.error().category == ErrorCategory::Validation);
+  CHECK(verified.error().message.find("malformed") != std::string::npos);
 }

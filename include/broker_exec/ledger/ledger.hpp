@@ -97,8 +97,11 @@ class Ledger {
   [[nodiscard]] Result<ports::Ok> verify_chain() const;
 
   // Clear in-memory state and rebuild it from the file (one JSON line per
-  // entry). A blank line is skipped; a parse failure is an Error. The caller is
-  // expected to verify_chain() after a load (load rebuilds, it does not trust).
+  // entry). A blank line is skipped; a parse failure is an Error. load() REBUILDS
+  // ONLY — it does not trust and never auto-validates. The safe-start / recovery
+  // sequence is the caller's: load() -> verify_chain() (internal consistency) ->
+  // verify_against_checkpoint() (truncation/rollback vs the retained signed
+  // high-water mark). load() deliberately does NOT call either, per this contract.
   [[nodiscard]] Result<ports::Ok> load();
 
   // The chain head hash (last entry's hash), or "" when the ledger is empty.
@@ -144,7 +147,70 @@ class Ledger {
   [[nodiscard]] static PositionHeartbeat make_heartbeat(std::string_view exposure_summary,
                                                         std::chrono::system_clock::time_point ts);
 
+  // ── Tamper-evident truncation / rollback detection ───────────────────────
+  //
+  // verify_chain() only proves the entries PRESENT are internally consistent;
+  // it cannot see entries that were removed. An attacker who CHOPS THE TAIL
+  // (drops the last N entries) or ROLLS BACK to an earlier state leaves a chain
+  // that is still self-consistent, so verify_chain() passes and the loss goes
+  // undetected. The retained signed checkpoint closes that gap: it persists a
+  // signed high-water mark {size, head_hash, signature, public_key} to a SEPARATE
+  // sibling file, and a later load can prove the live chain still REACHES that
+  // signed point.
+  //
+  // TRUST MODEL (read this): detection holds ONLY against a PINNED public key
+  // supplied out-of-band to verify_against_checkpoint() — the checkpoint file is
+  // attacker-writable, so its embedded public_key cannot anchor trust by itself
+  // (a non-key-holder could re-sign a truncated chain under a fresh key). The
+  // pinned key is the EOD-published key / ledger_public_key.hex provisioned under
+  // restricted perms. With that anchor, a non-key-holder rewrite is DETECTED; the
+  // residual honesty caveat (SEC-2) is only that the genuine PRIVATE-key holder
+  // can re-sign — so this is tamper-EVIDENT against everyone else, not legal proof.
+
+  // Sign the current head and persist the high-water-mark bundle {size,
+  // head_hash, Ed25519 signature over head_hash, public_key} as compact JSON to
+  // the sibling path checkpoint_path() (= <ledger path> + ".checkpoint"). Written
+  // ATOMICALLY (temp file + rename) and fsync'd via platform::durable_sync, the
+  // same durability discipline as every other persisted record. An empty ledger
+  // has no head -> a defined Error ("ledger empty, nothing to checkpoint").
+  [[nodiscard]] Result<ports::Ok> write_checkpoint(
+      const std::vector<unsigned char>& private_key,
+      const std::vector<unsigned char>& public_key) const;
+
+  // Verify the live chain still reaches the retained signed checkpoint, anchored
+  // to `pinned_public_key` (supplied out-of-band — the EOD-published key /
+  // ledger_public_key.hex; NEVER the key embedded in the checkpoint, which is
+  // attacker-writable). The embedded key must MATCH the pinned key (else Error:
+  // substitution) before the signature is trusted. Call this AFTER
+  // load()+verify_chain() in the safe-start / recovery sequence (load() stays
+  // rebuild-only by contract and never auto-calls this). Outcomes:
+  //   • embedded key != pinned key -> Error (FAIL CLOSED): key substitution.
+  //   • no checkpoint file        -> ok(). No prior signed state exists, so a
+  //                                  truncation simply has no baseline to be
+  //                                  measured against yet — this is NOT fail-open,
+  //                                  there is genuinely nothing to compare. The
+  //                                  very first run, before any checkpoint, cannot
+  //                                  detect truncation; write_checkpoint() arms it.
+  //   • checkpoint present but unparseable -> Error (FAIL CLOSED): a checkpoint
+  //                                  that exists but is garbage is itself tamper.
+  //   • signature does not verify  -> Error "checkpoint signature invalid"
+  //                                  (forged / edited checkpoint).
+  //   • size() <  checkpoint.size  -> Error: ledger TRUNCATED below the signed
+  //                                  high-water mark (the tail was chopped).
+  //   • entry[checkpoint.size-1].hash != checkpoint.head_hash -> Error: ledger
+  //                                  ROLLED BACK / SUBSTITUTED (a divergent chain).
+  //   • otherwise                  -> ok(). Growth is fine: appending MORE entries
+  //                                  after a checkpoint still verifies, because the
+  //                                  historical entry at checkpoint.size-1 is
+  //                                  unchanged and size only grew.
+  [[nodiscard]] Result<ports::Ok> verify_against_checkpoint(
+      const std::vector<unsigned char>& pinned_public_key) const;
+
  private:
+  // The retained-checkpoint sibling path: the ledger path with a ".checkpoint"
+  // suffix appended to its filename (e.g. <dir>/ledger.jsonl.checkpoint).
+  [[nodiscard]] std::filesystem::path checkpoint_path() const;
+
   const ports::ClockPort* clock_;
   std::filesystem::path path_;
   std::vector<LedgerEntry> entries_;

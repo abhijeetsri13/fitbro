@@ -89,6 +89,7 @@ add_subdirectory(src/options)          # hedge-first option execution: never mom
 # --- Epic 6 ---
 add_subdirectory(src/isolation)        # per-strategy virtual book + global limit + independent stop (6.4)
 add_subdirectory(src/supervisor)       # supervisor decision core: exit-code contract + restart-backoff + absence alarm (6.5)
+add_subdirectory(src/brokerreason)     # versioned canonical rejection/status classifier: fail-closed reason + retry posture
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
