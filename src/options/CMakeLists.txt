@@ -7,6 +7,7 @@
 
 add_library(broker_exec_options STATIC
   hedge_first.cpp
+  basket.cpp
 )
 add_library(broker_exec::options ALIAS broker_exec_options)
 
@@ -28,7 +29,7 @@ target_link_libraries(broker_exec_options
     broker_exec_sanitizers)
 
 if(BROKER_EXEC_BUILD_TESTS)
-  add_executable(broker_exec_options_tests hedge_first_test.cpp)
+  add_executable(broker_exec_options_tests hedge_first_test.cpp basket_test.cpp)
   target_link_libraries(broker_exec_options_tests
     PRIVATE
       broker_exec_options

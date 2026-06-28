@@ -205,3 +205,14 @@ runtime wiring of verbs to live modules is composition-root / tier-2.
   Applied MEDIUM hardening: emergency square-off now runs BEFORE the alert + alert send wrapped in try/catch, so a THROWING
   alert sink can never skip the square-off nor break the no-throw contract; added 3 tests (null-short-seam safe,
   emergency-returns-Error ran-but-failed, throwing-sink-still-squares-off). 35/35 ctests green. Epic 5 now 1/4.
+
+- 5-2 DONE: broker_exec::options::execute_basket (basket.cpp in the options module) — multi-leg basket, no orphaned legs (FR-17).
+  Pre-flight Kahn topological sort: empty/dup leg_id, unknown dep, ANY dependency cycle, or null place_leg seam => Blocked,
+  NOTHING placed (fail-closed, never a half-basket). Dependency-honoring execution in topo order: a leg is placed ONLY if
+  every prerequisite ended Executed, else SkippedUnmetDependency (place_leg NOT called) and skips propagate transitively
+  (AC-1). Partial detected. AC-2 policy: UnwindExecuted cancels executed legs NEWEST-FIRST (a failed/null unwind leaves the
+  leg Executed + escalates — never a silently-dropped live orphan) + Critical alert; LeaveAndAlert leaves them + Warning.
+  AC-3 single-unit (basket_id + tracked_as_single_unit, default true). Over injected std::function seams + AlertSink; no
+  broker, no new dep. Review verdict SHIP (no Critical/High/Medium; never-orphan invariant proven via placement/unwind logs).
+  Applied LOW: the Critical alert now NAMES the still-LIVE un-unwound leg_ids (loudest channel reflects the worst state) +
+  a test asserting it. 35/35 ctests green. Epic 5 now 2/4.
