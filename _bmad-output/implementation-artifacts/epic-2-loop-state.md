@@ -287,3 +287,23 @@ Heavy-topic backlog (dep-free first): (1) ledger truncation-detection via retain
 (2) SL distinct trigger/limit (OrderIntent trigger_price + gate); (3) runtime gate-composition
 fail-closed when funds_check/calendar absent for entries; (4) Kite square_off position-flatten;
 (5) complaint-driven fixes from the research findings.
+
+--- IMPROVEMENT-LOOP PROGRESS (research-driven) ---
+Research findings (Kite/Kotak dev complaints) -> mapped to fixes. Top money-loss gaps: write-path
+duplicate-on-timeout (ALREADY COVERED by dispatcher 1.9 INDETERMINATE/Unknown + UnknownPause + no-blind-retry);
+push-as-truth (covered by reconciliation); the REAL gaps -> implemented:
+- IMP-1 DONE (2e23db6): ledger truncation/rollback detection via a KEY-PINNED signed checkpoint. Review caught a
+  HIGH fail-open (unpinned key let a non-key-holder re-sign a truncated chain) -> fixed: verify_against_checkpoint
+  takes a pinned out-of-band key + require_key_match before verify_head. + key-substitution & malformed-file tests.
+- IMP-2 DONE (9e6ef05): broker_exec::brokerreason canonical rejection/status classifier (fixes brittle free-text
+  matching; fail-closed unknown->DoNotRetry; timeout/5xx->Indeterminate/ReconcileFirst). Review caught a HIGH
+  fail-open (bare "429" substring matched arbitrary ids -> a hard reject looked SafeToRetryReadOnly + alert
+  suppressed) -> fixed: anchored 429/rate-limit phrasing only; dropped bare "oms"; documented read-only caller
+  obligation; negative tests.
+- IMP-3 IN PROGRESS: per-endpoint rate limiter (order/quote/historical/other buckets) + 429 circuit-breaker with
+  backoff, preserving the reserved exit lane (research #4: avoid account-level RMS ban; exits never trapped).
+- IMP-4 IN PROGRESS: library-owned protective-stop supervisor (research #3: never trust a broker GTT as a durable
+  stop) — re-arms a band-aware protective exit when a stop fired-but-unfilled (LPP/circuit reject); fail-closed on
+  unknown band; alert survives a throwing sink.
+- NEXT CANDIDATES: IMP-5 marketdata staleness refinement (last_trade_time cadence; illiquid != mute, research #5/#8);
+  wire brokerreason classifier into the dispatcher/reconcile error path; per-broker freeze-qty table source (research #9).

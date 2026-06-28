@@ -6,6 +6,7 @@
 
 add_library(broker_exec_ratelimit STATIC
   rate_limiter.cpp
+  endpoint_limiter.cpp   # per-endpoint buckets + 429 circuit-breaker, composing RateLimiter
 )
 add_library(broker_exec::ratelimit ALIAS broker_exec_ratelimit)
 
@@ -26,7 +27,9 @@ target_link_libraries(broker_exec_ratelimit
     broker_exec_sanitizers)
 
 if(BROKER_EXEC_BUILD_TESTS)
-  add_executable(broker_exec_ratelimit_tests rate_limiter_test.cpp)
+  add_executable(broker_exec_ratelimit_tests
+    rate_limiter_test.cpp
+    endpoint_limiter_test.cpp)
   target_link_libraries(broker_exec_ratelimit_tests
     PRIVATE
       broker_exec_ratelimit
