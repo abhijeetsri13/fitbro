@@ -319,3 +319,16 @@ push-as-truth (covered by reconciliation); the REAL gaps -> implemented:
 - IMP-6 IN PROGRESS: pre-submission circuit/LPP price-band validator (research #12 — out-of-band orders exchange-rejected
   during volatility). Block an out-of-band ENTRY pre-submission; CLAMP an out-of-band protective EXIT (never block an exit).
 Pattern holding: adversarial review caught a real HIGH/MEDIUM fail-open on every improvement so far (4/4).
+
+--- IMPROVEMENT-LOOP PROGRESS (cont. 2) ---
+- IMP-5 DONE (65dc171): broker_exec::modifyguard modify-order safety (research #11 — a qty modify cancels the working
+  remainder). Review caught a HIGH fail-open (pre-ack/in-flight states Created/Validated/PendingSend/Sent fell through to
+  Allow -> a qty modify on a stale filled_qty cancels the remainder) -> only Acknowledged/PartiallyFilled modifiable.
+- IMP-6 DONE (d7b4fe1): broker_exec::priceband pre-submission circuit/LPP band validator (research #12). Block out-of-band
+  ENTRY; CLAMP out-of-band EXIT (never block an exit). Review caught a MEDIUM (stop-limit exit clamped only the limit, left
+  the trigger out-of-band) -> suggested_trigger clamps both.
+- IMP-7 IN PROGRESS: mid-session re-auth guard (research #6) — reuses brokerreason classifier; a mid-session SessionExpired
+  -> NeedsReauth + freeze entries (exits/reconcile reads still allowed) + alert; fail-closed default.
+- IMP-8 IN PROGRESS: margin safety buffer (research #10) — fail-closed buffer over the broker margin API + worst-case
+  (summed-leg) multi-leg margin when the leg benefit can't be trusted near the 9:20/expiry boundary; round-UP, overflow-guarded.
+Tally: 6 improvements committed, adversarial review caught a real HIGH/MEDIUM fail-open on EVERY one (6/6). 41/41 ctest green.
