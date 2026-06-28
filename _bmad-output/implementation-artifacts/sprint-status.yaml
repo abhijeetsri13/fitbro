@@ -99,11 +99,11 @@ development_status:
   epic-4-retrospective: optional
 
   # ── Epic 5: Option-Selling Safety — Hedge-First, Baskets, Slicing & Margin Shock ──
-  epic-5: in-progress
+  epic-5: done
   5-1-hedge-first-execution-with-naked-sell-prevention: done
   5-2-basket-multi-leg-execution: done
   5-3-freeze-slicing-at-option-size: done
-  5-4-margin-span-shock-simulation-capability-gated: backlog
+  5-4-margin-span-shock-simulation-capability-gated: done
   epic-5-retrospective: optional
 
   # ── Epic 6: Breadth — Kotak Neo Adapter & Multi-Account ──

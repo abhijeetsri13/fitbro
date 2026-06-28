@@ -227,3 +227,14 @@ runtime wiring of verbs to live modules is composition-root / tier-2.
   null place_child or slicer Validation Error -> SliceRejected, nothing placed. Review verdict SHIP (no Critical/High/Medium;
   duplicate-on-replay/blind-retry/place-past-pause all disproven by trace + placement-log tests). Applied LOW doc fix (pacing
   lives in the place_child seam, not the loop). 35/35 ctests green. Epic 5 now 3/4.
+
+- 5-4 DONE: broker_exec::options::evaluate_margin_shock (margin_shock.cpp) — capability-gated pre-trade SPAN shock sim (FR-18).
+  Capability-gated FAIL-CLOSED: SPAN "available" ONLY when Support::Supported AND source non-null AND source returns a value;
+  Unknown/Unsupported (tri-state default) / null / erroring source => UNAVAILABLE. AC-1: crossing test margin_under_shock >
+  available (strict >, integer Money paise) => BlockedMarginShock pre-submission (+ defense-in-depth: also blocks if margin_now
+  already over available). AC-2: unavailable + net-short => BlockedUnavailableNetShort (fail-closed, NO summed-legs fallback —
+  there is no per-leg path in the seams); unavailable + not-net-short => AllowedUnavailableBounded. AC-3: seams.audit(result)
+  on EVERY path (incl. blocked); null audit safe. blocked flag derived from outcome (is_blocking) so it can't desync. Reuses
+  capabilities::Support + domain::Money; no new dep. Review verdict SHIP (no Critical/High/Medium; no fail-open, crossing test
+  correct, net-short never approved without SPAN). Applied both LOWs (margin_now defense-in-depth + derived blocked) + a test.
+  35/35 ctests green. **Epic 5 COMPLETE (4/4).**
