@@ -102,6 +102,14 @@ add_subdirectory(src/sessionguard)     # mid-session re-auth guard: detect a tok
 add_subdirectory(src/marginsafety)     # margin safety buffer: fail-closed buffer over the under-counting broker margin API + worst-case multi-leg
 # NOTE: src/fillnorm is added ABOVE (before src/adapters/kotak), which links it.
 add_subdirectory(src/feedsub)          # websocket resubscribe guard: on every (re)connect re-issue the FULL subscription set + verify a first tick per token by a deadline -> flag connected-but-mute tokens (not tradable)
+
+# Composition root (6.3): config "kite"|"kotak" -> assembled ports::BrokerPort +
+# CapabilitySet, with require_all() gating at LOAD time. Placed AFTER both adapter
+# targets and after config/capabilities, all of which it links. It is the
+# OUTERMOST layer and the only library target that links adapters on purpose —
+# the boundary rule (enforced below) is that domain/ports must not, and nothing
+# inner links this.
+add_subdirectory(src/composition)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
@@ -112,5 +120,18 @@ endif()
 
 # ── Architecture enforcement (the import-linter analog, build-time) ──
 # Fails the configure step if the inner layers ever link an outer one.
-enforce_no_dependency(TARGET broker_exec_domain FORBIDS broker_exec_adapters)
-enforce_no_dependency(TARGET broker_exec_ports  FORBIDS broker_exec_adapters)
+#
+# EVERY OUTER TARGET IS NAMED, not just the `broker_exec_adapters` INTERFACE
+# umbrella. The concrete adapter targets (broker_exec_kite,
+# broker_exec_adapters_kotak) do NOT link that umbrella — they were added as
+# independent targets — so listing only `broker_exec_adapters` would have let
+# `domain` link the real Kite adapter without tripping anything. The composition
+# root is listed for the same reason: it links every adapter, so an inner layer
+# reaching it would import all of them transitively.
+set(BROKER_EXEC_OUTER_TARGETS
+  broker_exec_adapters
+  broker_exec_kite
+  broker_exec_adapters_kotak
+  broker_exec_composition)
+enforce_no_dependency(TARGET broker_exec_domain FORBIDS ${BROKER_EXEC_OUTER_TARGETS})
+enforce_no_dependency(TARGET broker_exec_ports  FORBIDS ${BROKER_EXEC_OUTER_TARGETS})

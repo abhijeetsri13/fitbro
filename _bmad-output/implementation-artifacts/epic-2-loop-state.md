@@ -395,3 +395,12 @@ loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier
   abandoned live orders, H3 scrip-master returned Not_Ok envelope as data; +M1-M6 (sid/auth redact, mutation
   RetrySafe downgrade, "instrument token"!=session death, refusal allowlist, caps->Unknown, dump no-throw).
   46/46 green. NOTE: .agents/ added to .gitignore (first commit swept it; reset+redone clean).
+- ITER 2 / 6-2 DONE (07dfd24): KotakBrokerAdapter (two-rung correlation: nOrdNo anchor + both-directions-
+  unambiguous attribute corroboration, no speculative tag), fail-closed ordSt table (unknown->Unknown,
+  'not cancelled' never terminal), fail-closed decimal->paise (new shared domain/decimal_paise.hpp),
+  RecordedKotakServer + SAME conformance kit green w/ broker-truth duplicate tally, kotak smoke runbook,
+  caps stay all-Unknown. Review FIX-REQUIRED, 3 PROVEN vs built libs: H1 stranger-order adoption after
+  definitive reject (pending never purged), H2 duplicate metric unfalsifiable (ref-tally=0 on 2 real dups
+  -> broker-truth tally), H3 working+unknown-total-field -> terminal Filled (absorbing), H4 resolver rung-3
+  overrode adapter refusal (attrs now published only for positively-correlated rows + stack pin test);
+  M1 fill clamp, M2 money-parse overflow UB, M5 square_off NotSupported. 47/47 green.

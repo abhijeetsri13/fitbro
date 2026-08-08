@@ -110,7 +110,7 @@ development_status:
   epic-6: in-progress
   6-1-kotak-neo-rest-websocket-client-and-multi-step-auth: done
   6-2-kotak-neo-adapter-certification: done
-  6-3-broker-portability-proof: backlog
+  6-3-broker-portability-proof: done
   6-4-multi-strategy-isolation: done
   6-5-multi-account-process-per-account-with-supervisor: in-progress
   epic-6-retrospective: optional
