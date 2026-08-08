@@ -212,6 +212,115 @@ TEST_CASE("changing any order-defining field changes the signature",
     v.strategy = "beta";
     REQUIRE(idem::signal_signature(v) != base);
   }
+  {
+    // IMP-11: the TRIGGER is order-defining. Arming a stop makes it a different
+    // signal from the otherwise-identical unarmed order...
+    OrderIntent v = sample_intent();
+    v.order_type = OrderType::StopLoss;
+    v.trigger_price = Price::from_rupees(124);
+    REQUIRE(idem::signal_signature(v) != base);
+
+    // ...and two stops that differ ONLY in trigger LEVEL are different signals
+    // too. Collapsing them would dedupe the second away and never place it — a
+    // protective order silently dropped.
+    OrderIntent higher = v;
+    higher.trigger_price = Price::from_rupees(125);
+    REQUIRE(idem::signal_signature(higher) != idem::signal_signature(v));
+  }
+}
+
+TEST_CASE("IMP-11 GOLDEN: a non-stop signature is byte-identical to the pre-IMP-11 one",
+          "[idempotency][signature][IMP-11]") {
+  // THE UPGRADE HAZARD THIS PINS. A signal's signature is the dedupe key across a
+  // binary upgrade: the intent log stores the signature computed at write time and
+  // reserve() recomputes one from the live intent. If adding the trigger field
+  // shifted EVERY signature, a replayed pre-upgrade signal would stop matching its
+  // own record and could be placed a SECOND time.
+  //
+  // A self-comparison (sig(x) == sig(x)) would prove nothing here — it holds for
+  // ANY implementation, including one that broke legacy dedupe. So these are HARD
+  // GOLDEN LITERALS: the SHA-256 of the exact canonical byte string the
+  // pre-IMP-11 build produced for these two intents,
+  //
+  //   "strategy=alpha\x1fsymbol=NIFTY24JUN24000CE\x1fside=SELL\x1fqty=50"
+  //   "\x1fprice=12350\x1forder_type=<TYPE>\x1fproduct=INTRADAY"
+  //
+  // with no trigger field appended. IF EITHER OF THESE FAILS, DO NOT "UPDATE THE
+  // EXPECTED VALUE" — the legacy restart dedupe has silently broken and every
+  // in-flight order from the previous binary is now duplicable. See
+  // docs/upgrade-imp-11-stops.md.
+  CHECK(idem::signal_signature(sample_intent()) ==
+        "94c4c909371278c114ff14b432657d2509144526221f957178b5a0cac390f43a");
+
+  // MARKET specifically: its `price` is as meaningless as an SL-M's (no adapter
+  // transmits it), and it is DELIBERATELY still hashed anyway — zeroing it would
+  // change the signature of every plain market order ever written. This golden is
+  // what makes that "deliberately" enforceable rather than a comment.
+  OrderIntent market = sample_intent();
+  market.order_type = OrderType::Market;
+  CHECK(idem::signal_signature(market) ==
+        "3acb3443d79a6540bce992c256b078e53ad45819ffe26b669bbe7f4f81a584de");
+
+  // And the mechanism behind the goldens: an absent trigger contributes NOTHING,
+  // while a trigger ENGAGED AT ZERO is a real (different) signal.
+  const std::string base = idem::signal_signature(sample_intent());
+  OrderIntent reset_trigger = sample_intent();
+  reset_trigger.trigger_price.reset();
+  CHECK(idem::signal_signature(reset_trigger) == base);
+  OrderIntent armed_at_zero = sample_intent();
+  armed_at_zero.trigger_price = Price::from_paise(0);
+  CHECK(idem::signal_signature(armed_at_zero) != base);
+}
+
+TEST_CASE("IMP-11 HIGH-1: an SL-M's meaningless limit price does NOT define the signal",
+          "[idempotency][signature][IMP-11]") {
+  // THE DUPLICATE-ORDER HAZARD THIS CLOSES. An SL-M fires a MARKET order once its
+  // trigger is crossed: the gate does not check its `price` and NEITHER adapter
+  // transmits one. The field is therefore residue — and residue is usually a live
+  // mark. A strategy that re-derives `price` from the tape each tick would mint a
+  // DIFFERENT signature for a BYTE-IDENTICAL wire order, so the dedupe would let
+  // a SECOND live stop through. Both then fire and the position inverts.
+  OrderIntent slm = sample_intent();
+  slm.order_type = OrderType::StopLossMarket;
+  slm.trigger_price = Price::from_rupees(124);
+
+  OrderIntent wobbled = slm;
+  wobbled.price = Price::from_rupees(999, 99);  // mark moved; wire order identical
+  CHECK(idem::signal_signature(wobbled) == idem::signal_signature(slm));
+
+  // The trigger still defines it — that IS the SL-M's wire identity.
+  OrderIntent moved_stop = slm;
+  moved_stop.trigger_price = Price::from_rupees(125);
+  CHECK(idem::signal_signature(moved_stop) != idem::signal_signature(slm));
+
+  // AN SL IS THE OPPOSITE CASE and must keep hashing its limit: an SL's `price` is
+  // a REAL limit that goes on the wire, so two SLs differing only in limit are
+  // genuinely different orders. Zeroing it here would collapse them and drop one.
+  OrderIntent sl = sample_intent();
+  sl.order_type = OrderType::StopLoss;
+  sl.trigger_price = Price::from_rupees(124);
+  OrderIntent sl_other_limit = sl;
+  sl_other_limit.price = Price::from_rupees(123, 75);
+  CHECK(idem::signal_signature(sl_other_limit) != idem::signal_signature(sl));
+}
+
+TEST_CASE("IMP-11: the intent payload carries the trigger only when engaged",
+          "[idempotency][signature][IMP-11]") {
+  // Schema-version tolerance in the direction that matters: the payload marker is
+  // UNCHANGED, so a record written before the field existed still parses (its key
+  // is simply absent -> nullopt). Bumping the marker would make rebuild_from_log
+  // skip every committed pre-IMP-11 record and empty the dedupe index on the first
+  // boot after an upgrade.
+  const std::string plain = idem::intent_payload_json(sample_intent());
+  CHECK(plain.find("trigger_price_paise") == std::string::npos);
+  CHECK(plain.find("\"schema\":1") != std::string::npos);
+
+  OrderIntent stop = sample_intent();
+  stop.order_type = OrderType::StopLoss;
+  stop.trigger_price = Price::from_rupees(124);
+  const std::string armed = idem::intent_payload_json(stop);
+  CHECK(armed.find("\"trigger_price_paise\":12400") != std::string::npos);
+  CHECK(armed.find("\"schema\":1") != std::string::npos);  // marker NOT bumped
 }
 
 // ── (c) dedup: reserve twice -> one order ──────────────────────────────────

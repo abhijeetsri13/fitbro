@@ -196,7 +196,9 @@ class RecordedKotakServer final : public HttpClient {
     std::string side;  // Kotak `trnsTp`: "B" / "S"
     std::int64_t qty = 0;
     std::int64_t filled = 0;
-    std::string price;  // rupee-decimal TEXT, exactly as Kotak sends it
+    std::string price;       // rupee-decimal TEXT, exactly as Kotak sends it
+    std::string trigger;     // jData `tp`, echoed on a read as `trgPrc` (see below)
+    std::string price_type;  // jData `pt`, echoed on a read as `prcTp` (ditto)
     std::string status;
   };
 
@@ -245,6 +247,20 @@ class RecordedKotakServer final : public HttpClient {
     fill_qty_ = filled;
     fill_status_ = std::move(status);
   }
+
+  // Report every order row under a DIFFERENT `prcTp` than the one that was
+  // placed. Kotak's field VALUES are as unverified as its field names, so "the
+  // report names a price type we do not know" is a first-class hazard: the
+  // adapter must fall closed to Market AND suppress the trigger, because a Market
+  // carrying a trigger is a shape the validation gate refuses outright.
+  void set_price_type_override(std::string type) { price_type_override_ = std::move(type); }
+
+  // Additionally emit `tp` (the REQUEST spelling for the trigger) on order-book
+  // rows, with an arbitrary value. A real report may well carry this key holding
+  // something that is not a number; the adapter must NOT read it, because a
+  // present-but-unparseable money field fails the whole row closed to Unknown —
+  // and an all-Unknown book freezes entries. Empty (default) => not emitted.
+  void set_report_tp(std::string value) { report_tp_ = std::move(value); }
 
   // Emit the order TOTAL under a different JSON key. Kotak's field spellings are
   // an unverified tier-2 assumption, so "the total arrives under a name we did not
@@ -380,6 +396,8 @@ class RecordedKotakServer final : public HttpClient {
     rec.side = jstr(params, "tt");
     rec.qty = to_int(jstr(params, "qt"));
     rec.price = jstr(params, "pr");
+    rec.trigger = jstr(params, "tp");     // the REQUEST spelling; the read echoes trgPrc
+    rec.price_type = jstr(params, "pt");  // ditto: `pt` on the way in, `prcTp` on the way out
     rec.filled = fill_qty_ < 0 ? rec.qty : fill_qty_;  // deliberately un-clamped
     rec.status = fill_status_;
     book_.push_back(rec);
@@ -429,6 +447,21 @@ class RecordedKotakServer final : public HttpClient {
       o[total_field_] = std::to_string(rec.qty);  // Kotak sends quantities as TEXT
       o["fldQty"] = std::to_string(rec.filled);   // ditto
       o["prc"] = rec.price;                       // rupee-decimal TEXT; no float in the fixture
+      // THE ASYMMETRY IS DELIBERATE AND IS THE POINT: the order was PLACED with
+      // the trigger under jData `tp`, and Kotak's order REPORT spells the same
+      // datum `trgPrc`. Echoing it back under the request's key would let an
+      // adapter that only knows `tp` pass a round-trip it would fail live.
+      o["trgPrc"] = rec.trigger.empty() ? std::string("0") : rec.trigger;
+      // Same asymmetry, same reason: `pt` on the request, `prcTp` on the report.
+      // The type is what tells a reconciler the row IS a stop — without it a
+      // recovered stop comes back as a Market order carrying a trigger, a shape
+      // the validation gate refuses outright.
+      o["prcTp"] = price_type_override_.empty()
+                       ? (rec.price_type.empty() ? std::string("MKT") : rec.price_type)
+                       : price_type_override_;
+      if (!report_tp_.empty()) {
+        o["tp"] = report_tp_;  // the request-side spelling, on a REPORT (see set_report_tp)
+      }
       o["avgPrc"] = rec.filled > 0 ? rec.price : std::string("0.00");
       arr.push_back(o);
     }
@@ -512,9 +545,11 @@ class RecordedKotakServer final : public HttpClient {
 
   // Kotak-specific knobs.
   bool hard_reject_ = false;
-  std::int64_t fill_qty_ = -1;            // < 0 -> fill the whole order
-  std::string fill_status_ = "complete";  // the `ordSt` a recorded order reports
-  std::string total_field_ = "qty";       // which key carries the order total
+  std::int64_t fill_qty_ = -1;             // < 0 -> fill the whole order
+  std::string fill_status_ = "complete";   // the `ordSt` a recorded order reports
+  std::string total_field_ = "qty";        // which key carries the order total
+  std::string price_type_override_;        // empty => report each row's placed `pt`
+  std::string report_tp_;                  // empty => no `tp` key on report rows
 
   // Stateful broker truth; mutable because HttpClient::send() is const.
   mutable std::vector<Record> book_;

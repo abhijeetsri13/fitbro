@@ -159,3 +159,128 @@ TEST_CASE("[conformance][kite][recovery] ack-lost order is recovered with its cl
     CHECK(recovered.broker_order_id == placed.value().broker_order_id);
   }
 }
+
+// ── IMP-11 AC-2: the stop TRIGGER reaches the wire, and comes back ───────────
+//
+// Kite spells the activation price `trigger_price` in the order form. Before
+// OrderIntent carried a distinct trigger, this adapter sent `price` under BOTH
+// keys — so a live SL armed at its own limit. The recorded server captures the
+// form field UNDER ITS EXACT NAME and echoes it on the orderbook, so an adapter
+// that emitted the trigger under any other key (or duplicated `price` into it)
+// fails these assertions rather than passing vacuously.
+TEST_CASE("[conformance][kite][IMP-11] SL sends a DISTINCT trigger_price and parses it back",
+          "[conformance][kite][IMP-11]") {
+  const auto stop_intent = [](broker_exec::domain::OrderType type) {
+    broker_exec::domain::OrderIntent intent;
+    intent.client_ref = "alpha-1a2b3c4d-deadbeefcafebabe0123456789abcdef";
+    intent.symbol = "NIFTY24JUN24000CE";
+    intent.side = broker_exec::domain::Side::Sell;
+    intent.quantity = broker_exec::domain::Quantity::of(50);
+    intent.price = broker_exec::domain::Price::from_rupees(119);        // the LIMIT
+    intent.trigger_price = broker_exec::domain::Price::from_rupees(120, 50);  // the TRIGGER
+    intent.order_type = type;
+    intent.product = broker_exec::domain::Product::Intraday;
+    intent.strategy = "alpha";
+    return intent;
+  };
+
+  SECTION("stop-loss LIMIT (SL): both numbers cross the wire, and they DIFFER") {
+    broker_exec::clock::TestClock clock;
+    OwningKiteAdapter owner(clock, FaultConfig{});
+
+    REQUIRE(owner.adapter.place(stop_intent(broker_exec::domain::OrderType::StopLoss)).has_value());
+
+    auto orders = owner.adapter.fetch_orders();
+    REQUIRE(orders.has_value());
+    REQUIRE(orders.value().size() == 1);
+    const broker_exec::domain::Order& back = orders.value().front();
+
+    // The ORDER TYPE round-trips first: without it the recovered row would look
+    // like a Market order carrying a trigger, a shape the validation gate refuses
+    // outright — so the next touch of this order would fail closed on data we
+    // invented during reconcile.
+    CHECK(back.intent.order_type == broker_exec::domain::OrderType::StopLoss);
+    // The trigger round-trips as 120.50 — NOT the 119.00 limit, which is what a
+    // duplicated `price` would have produced.
+    REQUIRE(back.intent.trigger_price.has_value());
+    CHECK(*back.intent.trigger_price == broker_exec::domain::Price::from_paise(12050));
+    // The limit went out under `price` (the fixture echoes it as average_price).
+    CHECK(back.avg_price == broker_exec::domain::Price::from_paise(11900));
+    CHECK(*back.intent.trigger_price != back.avg_price);
+  }
+
+  SECTION("stop-loss MARKET (SL-M): the trigger goes out, the ignored limit does not") {
+    broker_exec::clock::TestClock clock;
+    OwningKiteAdapter owner(clock, FaultConfig{});
+
+    REQUIRE(owner.adapter.place(stop_intent(broker_exec::domain::OrderType::StopLossMarket))
+                .has_value());
+
+    auto orders = owner.adapter.fetch_orders();
+    REQUIRE(orders.has_value());
+    REQUIRE(orders.value().size() == 1);
+    const broker_exec::domain::Order& back = orders.value().front();
+    CHECK(back.intent.order_type == broker_exec::domain::OrderType::StopLossMarket);
+    REQUIRE(back.intent.trigger_price.has_value());
+    CHECK(*back.intent.trigger_price == broker_exec::domain::Price::from_paise(12050));
+    // No `price` form field was sent for a market-style order, so the fixture has
+    // nothing to echo: the limit is genuinely absent from the wire.
+    CHECK(back.avg_price == broker_exec::domain::Price::from_paise(0));
+  }
+
+  SECTION("an UNRECOGNIZED order_type falls closed to Market AND drops the trigger") {
+    // The fail-safe pairing. A type we cannot read means we do not know what the
+    // row is — and the one thing we must never do is publish it as an armed stop,
+    // or as a Market carrying a trigger (a refused shape). Both must go together:
+    // dropping only one of them still produces an order the gate rejects.
+    broker_exec::clock::TestClock clock;
+    OwningKiteAdapter owner(clock, FaultConfig{});
+
+    REQUIRE(owner.adapter.place(stop_intent(broker_exec::domain::OrderType::StopLoss)).has_value());
+    // Broker truth now reports a type from a vocabulary we do not know (a new Kite
+    // variant, say). The trigger is still there and still positive.
+    owner.server->set_order_type_override("CO-SL");
+
+    auto orders = owner.adapter.fetch_orders();
+    REQUIRE(orders.has_value());
+    REQUIRE(orders.value().size() == 1);
+    CHECK(orders.value().front().intent.order_type == broker_exec::domain::OrderType::Market);
+    CHECK_FALSE(orders.value().front().intent.trigger_price.has_value());
+  }
+
+  SECTION("a plain LIMIT order reports NO trigger (Kite's 0.00 stays nullopt)") {
+    broker_exec::clock::TestClock clock;
+    OwningKiteAdapter owner(clock, FaultConfig{});
+
+    broker_exec::domain::OrderIntent plain = stop_intent(broker_exec::domain::OrderType::Limit);
+    plain.trigger_price.reset();
+    REQUIRE(owner.adapter.place(plain).has_value());
+
+    auto orders = owner.adapter.fetch_orders();
+    REQUIRE(orders.has_value());
+    REQUIRE(orders.value().size() == 1);
+    CHECK(orders.value().front().intent.order_type == broker_exec::domain::OrderType::Limit);
+    // Kite reports trigger_price 0.00 on every non-stop row; reading that as an
+    // ENGAGED trigger of zero would make every reconciled limit order look like a
+    // stop (and fail the gate's shape check on the next touch).
+    CHECK_FALSE(orders.value().front().intent.trigger_price.has_value());
+  }
+
+  SECTION("a stop with NO trigger emits no trigger_price field at all") {
+    // The adapter's own fail-closed backstop. Falling back to `price` would arm a
+    // real stop at the wrong level; omitting the field earns a definitive broker
+    // rejection instead. The fixture proves the field never left.
+    broker_exec::clock::TestClock clock;
+    OwningKiteAdapter owner(clock, FaultConfig{});
+
+    broker_exec::domain::OrderIntent unarmed =
+        stop_intent(broker_exec::domain::OrderType::StopLoss);
+    unarmed.trigger_price.reset();
+    REQUIRE(owner.adapter.place(unarmed).has_value());
+
+    auto orders = owner.adapter.fetch_orders();
+    REQUIRE(orders.has_value());
+    REQUIRE(orders.value().size() == 1);
+    CHECK_FALSE(orders.value().front().intent.trigger_price.has_value());
+  }
+}

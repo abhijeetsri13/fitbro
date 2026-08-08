@@ -16,13 +16,23 @@ using domain::Order;
 using domain::OrderState;
 
 // Attribute equality for the WEAKEST rung: two orders corroborate when their
-// (symbol, side, quantity, price) all agree. Deliberately does NOT consider
-// product/order_type — corroboration is a best-effort "same economic trade", and
-// over-narrowing it would make a real match harder while the precedence already
-// prefers the two id-based rungs whenever they exist.
+// (symbol, side, quantity, price, TRIGGER price) all agree. Deliberately does NOT
+// consider product/order_type — corroboration is a best-effort "same economic
+// trade", and over-narrowing it would make a real match harder while the
+// precedence already prefers the two id-based rungs whenever they exist.
+//
+// THE TRIGGER IS THE ONE EXCEPTION TO THAT LENIENCE (IMP-11), because for a stop
+// it is not a detail — it IS the order. Two protective stops on the same symbol,
+// side and size, differing only in the level at which they arm, are DIFFERENT
+// orders with different risk. Matching on (symbol, side, qty, price) alone would
+// let this rung adopt a stop armed at the wrong level as though it were ours,
+// and the local order would then be marked resolved against a protection that
+// fires somewhere else entirely. `std::optional` equality also gives the right
+// answer at the boundary: an armed stop never corroborates an unarmed order.
 [[nodiscard]] bool attributes_match(const Order& a, const Order& b) noexcept {
   return a.intent.symbol == b.intent.symbol && a.intent.side == b.intent.side &&
-         a.intent.quantity == b.intent.quantity && a.intent.price == b.intent.price;
+         a.intent.quantity == b.intent.quantity && a.intent.price == b.intent.price &&
+         a.intent.trigger_price == b.intent.trigger_price;
 }
 
 }  // namespace

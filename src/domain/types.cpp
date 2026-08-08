@@ -36,6 +36,11 @@ std::string OrderIntent::to_string() const {
   out += quantity.to_string();
   out += ",price=";
   out += price.to_string();
+  // An ABSENT trigger prints "none" rather than "0.00": a log reader must be able
+  // to tell "not a stop order" from "a stop armed at zero" (the latter is a bug we
+  // want to be able to SEE in a log line, not one that hides behind a default).
+  out += ",trigger_price=";
+  out += trigger_price.has_value() ? trigger_price->to_string() : std::string("none");
   out += ",order_type=";
   out += domain::to_string(order_type);
   out += ",product=";

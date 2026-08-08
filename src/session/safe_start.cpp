@@ -1,8 +1,12 @@
 #include "broker_exec/session/safe_start.hpp"
 
+#include <cstddef>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include "broker_exec/domain/enums.hpp"
+#include "broker_exec/domain/types.hpp"
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/session/kite_session_establisher.hpp"
 
@@ -80,10 +84,67 @@ Result<ports::Ok> SafeStartGate::verify(const SafeStartContext& ctx) const {
   if (auto r = run_check("calendar", ctx.calendar_check); !r) {
     return r;
   }
+  // Before reconciliation: a projection still holding pre-IMP-11 stops is a world
+  // whose ORDER IDENTITY we cannot trust, so there is no point reconciling it.
+  if (auto r = run_check("legacy-stops", ctx.legacy_stop_check); !r) {
+    return r;
+  }
   if (auto r = run_check("reconciliation", ctx.reconciliation_check); !r) {
     return r;
   }
   return ports::ok();
+}
+
+bool is_legacy_trigger_less_stop(const domain::Order& order) noexcept {
+  const bool is_stop = order.intent.order_type == domain::OrderType::StopLoss ||
+                       order.intent.order_type == domain::OrderType::StopLossMarket;
+  if (!is_stop || order.intent.trigger_price.has_value()) {
+    return false;
+  }
+  // Only a WORKING order can still fire. A terminal row is history: it cannot be
+  // re-placed, so it must not block a start (otherwise the gate would be
+  // permanently stuck on a database that merely REMEMBERS an old stop).
+  switch (order.state) {
+    case domain::OrderState::Filled:
+    case domain::OrderState::Rejected:
+    case domain::OrderState::Cancelled:
+      return false;
+    default:
+      return true;
+  }
+}
+
+Result<ports::Ok> require_no_legacy_stops(const std::vector<domain::Order>& orders) {
+  std::size_t count = 0;
+  std::string first_ref;
+  for (const domain::Order& order : orders) {
+    if (!is_legacy_trigger_less_stop(order)) {
+      continue;
+    }
+    ++count;
+    if (first_ref.empty()) {
+      first_ref = order.intent.client_ref;
+    }
+  }
+  if (count == 0) {
+    return ports::ok();
+  }
+
+  // Redaction-safe: a count and a client_ref (an id the operator needs in order to
+  // act), never a price or a quantity.
+  Error e = make_error(
+      ErrorCategory::Validation,
+      "projection holds " + std::to_string(count) +
+          " working stop order(s) with no trigger price — these were placed by a "
+          "pre-IMP-11 binary, which stored the stop level in `price`. Their signal "
+          "signatures have changed, so restart dedupe cannot recognize them and they "
+          "could be placed a SECOND time. Flatten or cancel every outstanding stop "
+          "before deploying (see docs/upgrade-imp-11-stops.md). First: " +
+          (first_ref.empty() ? std::string("<no client_ref>") : first_ref));
+  // Validation's default action is DoNotRetry; this must HALT the runtime, and the
+  // fix is a human one, so state BlockStrategy explicitly.
+  e.action = SuggestedAction::BlockStrategy;
+  return fail(std::move(e));
 }
 
 Result<ports::Ok> session_state_to_result(SessionState state) {

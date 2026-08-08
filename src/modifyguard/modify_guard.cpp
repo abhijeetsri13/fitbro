@@ -3,6 +3,7 @@
 #include <string>
 
 #include "broker_exec/domain/enums.hpp"
+#include "broker_exec/domain/types.hpp"
 
 namespace broker_exec::modifyguard {
 
@@ -82,6 +83,22 @@ std::string_view to_string(ModifyVerdict verdict) noexcept {
       return "reject_not_modifiable";
   }
   return "unknown";
+}
+
+ModifyRequest make_modify_request(const domain::OrderIntent& current,
+                                  const domain::OrderIntent& amended) noexcept {
+  ModifyRequest req;
+  req.changes_quantity = current.quantity != amended.quantity;
+  // Every number the broker could work the order at. `trigger_price` is an
+  // optional, and std::optional's operator== treats engaged-vs-absent as a
+  // difference — so ARMING a stop (nullopt -> a value) and DISARMING one both
+  // register as price changes, not just moving an existing trigger.
+  req.changes_price = current.price != amended.price ||
+                      current.trigger_price != amended.trigger_price ||
+                      current.order_type != amended.order_type;
+  // The amended TOTAL, which is what Kite's `quantity` field means on a modify.
+  req.new_total_qty = amended.quantity.value();
+  return req;
 }
 
 ModifyResult evaluate_modify(const OrderModifyState& cur, const ModifyRequest& req,

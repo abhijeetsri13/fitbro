@@ -695,3 +695,146 @@ TEST_CASE("[conformance][kotak][capabilities] passing the kit does NOT flip any 
   CHECK_FALSE(set.require(caps::Capability::HeadlessSessionRefresh).has_value());
   CHECK_FALSE(set.require(caps::Capability::TagCarry).has_value());
 }
+
+// ── IMP-11 AC-2: the stop TRIGGER reaches the wire, and comes back ───────────
+//
+// Kotak is NOT symmetric about this field's name: the quick-place REQUEST carries
+// the trigger as jData `tp`, while the order REPORT spells the same datum
+// `trgPrc`. The recorded server reproduces exactly that asymmetry — it records the
+// `tp` it was sent and echoes it back under `trgPrc` — so an adapter that knew
+// only one spelling would fail here instead of passing on a fixture that flattered
+// it. Before OrderIntent carried a distinct trigger the adapter sent `price` as
+// BOTH `pr` and `tp`, so a live SL armed at its own limit.
+TEST_CASE("[conformance][kotak][IMP-11] SL sends a DISTINCT trigger and parses it back",
+          "[conformance][kotak][IMP-11]") {
+  const auto stop_intent = [](broker_exec::domain::OrderType type) {
+    broker_exec::domain::OrderIntent intent = make_intent();
+    intent.order_type = type;
+    intent.price = broker_exec::domain::Price::from_rupees(119);              // the LIMIT
+    intent.trigger_price = broker_exec::domain::Price::from_rupees(120, 50);  // the TRIGGER
+    return intent;
+  };
+
+  SECTION("stop-loss LIMIT (SL): jData carries pr AND tp, and they DIFFER") {
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+
+    REQUIRE(owner.adapter.place(stop_intent(broker_exec::domain::OrderType::StopLoss)).has_value());
+
+    // Decode the jData frame and assert the FIELD NAMES, not just that the digits
+    // appear somewhere in the body: a substring hit would pass even if the trigger
+    // had gone out under the wrong key.
+    REQUIRE(owner.server->place_bodies().size() == 1);
+    const nlohmann::json sent =
+        broker_exec::conformance::kotak_fixture::parse_jdata(owner.server->place_bodies().front());
+    CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "pr") == "119.00");   // the limit
+    CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "tp") == "120.50");   // the trigger
+    CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "pt") == "SL");
+
+    auto orders = owner.adapter.fetch_orders();
+    REQUIRE(orders.has_value());
+    REQUIRE(orders.value().size() == 1);
+    const broker_exec::domain::Order& back = orders.value().front();
+    REQUIRE(back.intent.client_ref == kClientRef);  // correlated, so the tuple is published
+    // The ORDER TYPE round-trips (report spelling `prcTp`) — without it the row
+    // would come back as a Market carrying a trigger, a shape the gate refuses.
+    CHECK(back.intent.order_type == broker_exec::domain::OrderType::StopLoss);
+    REQUIRE(back.intent.trigger_price.has_value());
+    // 120.50, NOT the 119.00 limit a duplicated `price` would have produced.
+    CHECK(*back.intent.trigger_price == broker_exec::domain::Price::from_paise(12050));
+    CHECK(back.intent.price == broker_exec::domain::Price::from_paise(11900));
+  }
+
+  SECTION("a plain LIMIT order sends tp=0 and reports NO trigger") {
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+
+    REQUIRE(owner.adapter.place(make_intent()).has_value());  // Limit, no trigger
+
+    REQUIRE(owner.server->place_bodies().size() == 1);
+    const nlohmann::json sent =
+        broker_exec::conformance::kotak_fixture::parse_jdata(owner.server->place_bodies().front());
+    CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "tp") == "0");
+    CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "pt") == "L");
+
+    auto orders = owner.adapter.fetch_orders();
+    REQUIRE(orders.has_value());
+    REQUIRE(orders.value().size() == 1);
+    CHECK(orders.value().front().intent.order_type == broker_exec::domain::OrderType::Limit);
+    // Kotak's "no trigger" encoding is 0, not an absent key. Reading it as an
+    // ENGAGED trigger of zero would make every reconciled limit order look like a
+    // stop (and fail the gate's shape check on the next touch).
+    CHECK_FALSE(orders.value().front().intent.trigger_price.has_value());
+  }
+
+  SECTION("a stop with NO trigger sends tp=0 rather than falling back to the limit") {
+    // The adapter's own fail-closed backstop: Kotak rejects a stop with no
+    // trigger, which is a definitive verdict. Arming a real stop at the limit
+    // price — the pre-IMP-11 behavior — would be silently wrong instead.
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+
+    broker_exec::domain::OrderIntent unarmed =
+        stop_intent(broker_exec::domain::OrderType::StopLoss);
+    unarmed.trigger_price.reset();
+    REQUIRE(owner.adapter.place(unarmed).has_value());
+
+    REQUIRE(owner.server->place_bodies().size() == 1);
+    const nlohmann::json sent =
+        broker_exec::conformance::kotak_fixture::parse_jdata(owner.server->place_bodies().front());
+    CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "tp") == "0");
+    CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "pr") == "119.00");  // NOT copied
+
+    auto orders = owner.adapter.fetch_orders();
+    REQUIRE(orders.has_value());
+    REQUIRE(orders.value().size() == 1);
+    CHECK_FALSE(orders.value().front().intent.trigger_price.has_value());
+  }
+
+  SECTION("an UNRECOGNIZED prcTp falls closed to Market AND drops the trigger") {
+    // The fail-safe pairing, Kotak side. Its field spellings are an unverified
+    // tier-2 assumption, so "the report names a price type we do not know" is a
+    // first-class hazard here — and the answer must be BOTH halves at once:
+    // Market, and no trigger. Publishing a Market that carries a trigger is a
+    // shape the validation gate refuses outright.
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+
+    REQUIRE(owner.adapter.place(stop_intent(broker_exec::domain::OrderType::StopLoss)).has_value());
+    owner.server->set_price_type_override("BO-SL");
+
+    auto orders = owner.adapter.fetch_orders();
+    REQUIRE(orders.has_value());
+    REQUIRE(orders.value().size() == 1);
+    const broker_exec::domain::Order& back = orders.value().front();
+    REQUIRE(back.intent.client_ref == kClientRef);  // still correlated by broker id
+    CHECK(back.intent.order_type == broker_exec::domain::OrderType::Market);
+    CHECK_FALSE(back.intent.trigger_price.has_value());
+    // And crucially the row is NOT failed to Unknown: an unknown price type is a
+    // vocabulary gap, not a corrupt row, so reconciliation still proceeds.
+    CHECK(back.state != broker_exec::domain::OrderState::Unknown);
+  }
+
+  SECTION("a non-numeric trgPrc fails the row closed, but `tp` is never read") {
+    // MEDIUM-6: `tp` is the REQUEST spelling and is deliberately NOT a read
+    // candidate. first_paise() flags a key that is PRESENT but unparseable as
+    // malformed, which fails the whole row closed to Unknown — so if we read `tp`
+    // on a report, a broker sending a non-numeric `tp` would turn EVERY row
+    // Unknown and the resulting all-Unknown book would freeze entries via the
+    // UNKNOWN-pause. Reading a field we were never promised is not worth a
+    // self-inflicted trading halt.
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+
+    REQUIRE(owner.adapter.place(make_intent()).has_value());
+    owner.server->set_report_tp("N/A");  // garbage under the REQUEST spelling
+
+    auto orders = owner.adapter.fetch_orders();
+    REQUIRE(orders.has_value());
+    REQUIRE(orders.value().size() == 1);
+    // Untouched: the row parsed cleanly because `tp` was never consulted.
+    CHECK(orders.value().front().state != broker_exec::domain::OrderState::Unknown);
+    CHECK(orders.value().front().intent.client_ref == kClientRef);
+    CHECK_FALSE(orders.value().front().intent.trigger_price.has_value());
+  }
+}

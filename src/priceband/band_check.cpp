@@ -24,18 +24,25 @@ namespace {
   return band.lower <= price && price <= band.upper;
 }
 
-// Market-style orders carry NO limit price the band can enforce: a plain Market,
-// and a stop-loss-MARKET (SL-M), which fires a market order once its trigger is
-// crossed. We cannot pre-clamp a market price, so these are MarketUnchecked.
-[[nodiscard]] bool is_market_style(domain::OrderType t) noexcept {
-  return t == domain::OrderType::Market || t == domain::OrderType::StopLossMarket;
+// Which of an order's prices the band can actually enforce. Mirrors the shape
+// matrix the validation gate owns (risk/validation_gate.cpp): Limit and SL work
+// at a LIMIT; SL and SL-M are armed by a TRIGGER.
+[[nodiscard]] bool has_limit_to_check(domain::OrderType t) noexcept {
+  return t == domain::OrderType::Limit || t == domain::OrderType::StopLoss;
 }
 
-// A stop-LIMIT (Kite `StopLoss` / SL) has BOTH a trigger and a limit price, so
-// both must be validated against the band. A plain Limit validates the limit
-// alone; this distinguishes the two.
-[[nodiscard]] bool is_stop_limit(domain::OrderType t) noexcept {
-  return t == domain::OrderType::StopLoss;
+// SL-M IS INCLUDED HERE DELIBERATELY, AND THAT IS A FIX, NOT AN OVERSIGHT.
+//
+// An SL-M was previously lumped in with plain Market as "market-style, nothing to
+// check". But an SL-M is not price-less: the exchange REJECTS a stop whose
+// TRIGGER sits outside the circuit/LPP band, exactly as it rejects an out-of-band
+// limit — the fact that the order FIRES as a market order says nothing about
+// where it is allowed to be armed. Skipping it meant the one order type whose
+// whole job is to survive a violent move was the one type we never validated, so
+// a protective SL-M armed just outside a fast-moving band was silently
+// unprotected. Only a PLAIN Market has genuinely nothing to check.
+[[nodiscard]] bool has_trigger_to_check(domain::OrderType t) noexcept {
+  return t == domain::OrderType::StopLoss || t == domain::OrderType::StopLossMarket;
 }
 
 }  // namespace
@@ -79,21 +86,25 @@ BandCheckResult check_price_band(domain::Side side, domain::OrderType order_type
     return result;
   }
 
-  // ── Step 3: market-style order — no limit price to enforce ────────────────
+  // ── Step 3: PLAIN market order — genuinely no price to enforce ────────────
   // CAVEAT (documented): the exchange MAY still reject a market order out-of-band
-  // on a fast instrument, but there is no limit price for us to pre-clamp.
-  if (is_market_style(order_type)) {
+  // on a fast instrument, but there is no price of ours for it to reject.
+  // NOTE this is now a PLAIN Market only — an SL-M falls through to the trigger
+  // check below (see has_trigger_to_check).
+  const bool check_limit = has_limit_to_check(order_type);
+  const bool check_trigger = has_trigger_to_check(order_type);
+  if (!check_limit && !check_trigger) {
     result.verdict = BandVerdict::MarketUnchecked;
     result.blocked = false;
     result.detail = "market order — band not price-enforceable";
     return result;
   }
 
-  // ── Step 4: LIMIT / STOP-LIMIT — gather every price that must be in band ──
-  // The limit is always checked; a stop-limit ALSO checks its trigger. In-band is
-  // inclusive of both edges.
-  const bool limit_in = in_band(limit_price, band);
-  const bool check_trigger = is_stop_limit(order_type);
+  // ── Step 4: gather every price this order type actually USES ──────────────
+  // Limit -> the limit. SL -> the limit AND the trigger. SL-M -> the trigger
+  // alone (it has no limit; checking `limit_price` there would validate a number
+  // no broker receives). In-band is inclusive of both edges.
+  const bool limit_in = !check_limit || in_band(limit_price, band);
   const bool trigger_in = !check_trigger || in_band(trigger_price, band);
   if (limit_in && trigger_in) {
     result.verdict = BandVerdict::WithinBand;
@@ -103,11 +114,14 @@ BandCheckResult check_price_band(domain::Side side, domain::OrderType order_type
   }
 
   // ── Step 5: OUT OF BAND — exit clamps, entry blocks (THE SPINE) ───────────
-  // The suggested limit is the order's limit pulled inside the band. For a STOP-
-  // LIMIT, the trigger is clamped too — suggesting only the limit while leaving the
-  // trigger out of band would still be exchange-rejected, defeating the clamp.
-  result.suggested_limit = clamp(limit_price, band.lower, band.upper);
-  result.has_suggestion = true;
+  // A suggestion is offered for each price the type actually uses, and ONLY for
+  // those: suggesting a limit for an SL-M would hand the caller a number to apply
+  // to a field the broker never sees, while clamping only the limit of a stop-
+  // LIMIT and leaving its trigger outside would still be exchange-rejected.
+  if (check_limit) {
+    result.suggested_limit = clamp(limit_price, band.lower, band.upper);
+    result.has_suggestion = true;
+  }
   if (check_trigger) {
     result.suggested_trigger = clamp(trigger_price, band.lower, band.upper);
     result.has_trigger_suggestion = true;
@@ -154,6 +168,34 @@ Result<ports::Ok> require_band_ok(domain::Side side, domain::OrderType order_typ
           std::string(domain::to_string(side)) + ") — entry outside circuit/LPP band");
   err.action = errors::SuggestedAction::BlockStrategy;
   return fail(err);
+}
+
+// ── Intent-driven overloads (IMP-11) ────────────────────────────────────────
+// One place converts an intent's price pair into the Money vocabulary this module
+// works in, so a caller can no longer pair the wrong two numbers. `Price` and
+// `Money` are both exact integer paise, so this is a relabelling, not a
+// conversion — no float, no rounding.
+namespace {
+
+[[nodiscard]] domain::Money as_money(domain::Price price) noexcept {
+  return domain::Money::from_paise(price.paise());
+}
+
+}  // namespace
+
+BandCheckResult check_price_band(const domain::OrderIntent& intent, const PriceBand& band,
+                                 bool is_exit) {
+  // An absent trigger becomes zero Money. Safe by construction: the trigger is
+  // only READ for a stop-limit, and the gate's shape matrix refuses a stop-limit
+  // with no trigger long before it can reach a band check.
+  return check_price_band(intent.side, intent.order_type, as_money(intent.price),
+                          as_money(intent.trigger_price.value_or(domain::Price{})), band, is_exit);
+}
+
+Result<ports::Ok> require_band_ok(const domain::OrderIntent& intent, const PriceBand& band,
+                                  bool is_exit) {
+  return require_band_ok(intent.side, intent.order_type, as_money(intent.price),
+                         as_money(intent.trigger_price.value_or(domain::Price{})), band, is_exit);
 }
 
 }  // namespace broker_exec::priceband

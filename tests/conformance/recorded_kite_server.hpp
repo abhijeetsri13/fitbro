@@ -196,6 +196,15 @@ class RecordedKiteServer final : public HttpClient {
   // How many orders BROKER TRUTH holds, regardless of what the caller observed.
   [[nodiscard]] std::size_t book_size() const noexcept { return book_.size(); }
 
+  // Report every order row under a DIFFERENT `order_type` than the one that was
+  // placed. Kite's order-type vocabulary is not frozen (cover orders, iceberg and
+  // AMO variants have all arrived over time), so "the broker names a type we do
+  // not know" is a real condition, not a hypothetical — and the adapter's answer
+  // to it is load-bearing: an unrecognized type must fall closed to Market AND
+  // suppress the trigger, because publishing a Market that carries a trigger
+  // produces a shape the validation gate refuses outright.
+  void set_order_type_override(std::string type) { order_type_override_ = std::move(type); }
+
  private:
   struct Record {
     std::string order_id;
@@ -204,7 +213,9 @@ class RecordedKiteServer final : public HttpClient {
     std::string qty;
     std::string price;
     std::string symbol;
-    std::string side;  // Kite `transaction_type`: "BUY" / "SELL"
+    std::string side;        // Kite `transaction_type`: "BUY" / "SELL"
+    std::string trigger;     // Kite `trigger_price`; EMPTY when the form omitted it
+    std::string order_type;  // Kite `order_type`: MARKET / LIMIT / SL / SL-M
   };
 
   // Quantities arrive as TEXT on this wire. Digits-only, stops at the first
@@ -286,6 +297,12 @@ class RecordedKiteServer final : public HttpClient {
     rec.qty = field(form, "quantity");
     rec.price = field(form, "price");
     rec.side = field(form, "transaction_type");
+    // Recorded under the EXACT wire name Kite uses. An adapter that emitted the
+    // trigger under any other key (or duplicated `price` into it) leaves this
+    // empty, so the orderbook echo below cannot round-trip — which is what makes
+    // the round-trip assertion a real test of the field name.
+    rec.trigger = field(form, "trigger_price");
+    rec.order_type = field(form, "order_type");
     rec.status = "COMPLETE";  // the fake's deterministic immediate-fill model
     book_.push_back(rec);
 
@@ -327,6 +344,18 @@ class RecordedKiteServer final : public HttpClient {
       o["tradingsymbol"] = rec.symbol;
       o["filled_quantity"] = rec.qty;  // string form; the adapter parses either
       o["average_price"] = rec.price;  // rupee-decimal string; no float in fixture
+      // Kite reports `trigger_price` on EVERY order row, sending "0.00" for a
+      // non-stop order rather than omitting the key — so the fixture does the
+      // same. That "0 means no trigger" case is exactly what the adapter's
+      // optional parse has to collapse to nullopt.
+      o["trigger_price"] = rec.trigger.empty() ? std::string("0.00") : rec.trigger;
+      // Kite reports the order type on every row. It is what tells a reconciler
+      // that a row IS a stop — without it a recovered stop would come back looking
+      // like a Market order that happens to carry a trigger, which the validation
+      // gate refuses outright.
+      o["order_type"] = order_type_override_.empty()
+                            ? (rec.order_type.empty() ? std::string("MARKET") : rec.order_type)
+                            : order_type_override_;
       arr.push_back(o);
     }
     if (fault_.out_of_order_events) {
@@ -407,6 +436,9 @@ class RecordedKiteServer final : public HttpClient {
   broker_exec::ports::ClockPort& clock_;
   FaultConfig fault_;
   std::chrono::steady_clock::time_point start_steady_;
+
+  // Empty => report each row's own placed type (see set_order_type_override).
+  std::string order_type_override_;
 
   // Stateful broker truth; mutable because HttpClient::send() is const.
   mutable std::vector<Record> book_;

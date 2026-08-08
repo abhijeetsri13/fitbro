@@ -56,11 +56,40 @@ namespace broker_exec::idempotency {
 // Deterministic SHA-256 signature (lowercase 64-char hex) of an order *signal*.
 //
 // It hashes the stable, order-defining fields of the intent — strategy, symbol,
-// side, quantity, price, order_type, product — in a fixed canonical form, so the
-// SAME signal always produces the SAME signature and any one field change yields
-// a different one. The client_ref is deliberately EXCLUDED (it is the output of
-// idempotency, not an input) as is any non-order-defining field. Reuses
-// intentlog::sha256_hex; this is an integrity/dedup hash, not a secret.
+// side, quantity, price, order_type, product, and the TRIGGER price when the
+// intent carries one — in a fixed canonical form, so the SAME signal always
+// produces the SAME signature and any one field change yields a different one.
+// The client_ref is deliberately EXCLUDED (it is the output of idempotency, not
+// an input) as is any non-order-defining field. Reuses intentlog::sha256_hex;
+// this is an integrity/dedup hash, not a secret.
+//
+// UPGRADE COMPATIBILITY (IMP-11) — WHAT IS PRESERVED, AND WHAT IS NOT.
+//
+// PRESERVED — every NON-STOP order (Market / Limit). The trigger contributes to
+// the canonical bytes ONLY when present, so an intent without one hashes to
+// exactly the signature the pre-IMP-11 build produced. A replayed pre-upgrade
+// Market/Limit signal still matches its own intent-log record, so the restart
+// dedupe holds. A golden hex literal in idempotency_test.cpp pins this; if it
+// ever fails, the legacy dedupe has silently broken.
+//
+// NOT PRESERVED — STOP orders (SL / SL-M). SAY IT PLAINLY: a pre-IMP-11 stop
+// carried its activation level in `price`, because there was nowhere else to put
+// it. The same economic order now carries that level in `trigger_price` (and an
+// SL-M's `price` is canonicalized to 0, since neither adapter transmits it), so
+// its signature NECESSARILY changes across the upgrade. THE CONSEQUENCE IS REAL:
+// a working stop placed by the old binary, replayed by the new one, will not
+// match its own record — reserve() sees a fresh signal and the order can be
+// PLACED A SECOND TIME. No signature scheme can avoid this; the two builds
+// genuinely disagree about which field holds the stop level.
+//
+// The mitigation is therefore operational, not cryptographic, and it is enforced
+// at COLD BOOT rather than left to a release note: session::require_no_legacy_stops
+// (wired as SafeStartContext::legacy_stop_check) refuses to start when the
+// projection still holds a WORKING stop with no trigger — the exact fingerprint
+// of a pre-upgrade stop — and tells the operator to flatten or cancel stops
+// first. See docs/upgrade-imp-11-stops.md for the procedure and its rollback.
+//
+// Two stops that differ only in trigger level are (correctly) different signals.
 [[nodiscard]] std::string signal_signature(const domain::OrderIntent& intent);
 
 // The first 8 hex chars of a signature (the `sig8` embedded in a client-ref).
@@ -72,6 +101,22 @@ namespace broker_exec::idempotency {
 // rebuild_from_log can recover the signal on replay. It is a compact JSON object
 // carrying the order-defining fields AND the precomputed "sig" (so rebuild does
 // not need to reconstruct domain types). See rebuild_from_log for how it is read.
+//
+// SCHEMA-VERSION TOLERANT (IMP-11): `trigger_price_paise` is emitted only when the
+// intent has a trigger, and the payload schema marker is UNCHANGED — a record
+// written before the field existed simply lacks the key and replays to nullopt.
+// (Bumping the marker instead would make rebuild_from_log skip every committed
+// pre-IMP-11 record, emptying the dedupe index on the first boot after upgrade.)
+//
+// BINDING ON EVERY SCHEMA-1 READER: `trigger_price_paise` is OPTIONAL. A reader
+// must treat its absence as "no trigger" and MUST NOT reject or skip a record for
+// lacking it — schema 1 now spans both spellings, in both directions (an older
+// binary reading a newer record must likewise ignore the unknown key, not fail).
+//
+// NOTE ON RECOMPUTING `sig` FROM THIS PAYLOAD: `price_paise` records the intent's
+// literal price, INCLUDING for an SL-M where the signature canonicalizes it to 0.
+// A recomputing reader must apply that rule itself; `order_type` is in the
+// payload precisely so it can.
 [[nodiscard]] std::string intent_payload_json(const domain::OrderIntent& intent);
 
 // ── Client-ref construction / parsing ──────────────────────────────────────

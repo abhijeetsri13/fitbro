@@ -86,8 +86,64 @@ TEST_CASE("over-freeze fans out into lot-aligned children that sum to qty") {
     CHECK(child.order_type == parent.order_type);
     CHECK(child.product == parent.product);
     CHECK(child.strategy == parent.strategy);
+    CHECK(child.trigger_price == parent.trigger_price);
   }
   CHECK(sum == 4000);
+}
+
+// ── IMP-11 AC-4: children inherit the parent's trigger UNCHANGED ─────────────
+TEST_CASE("slicing an over-freeze STOP carries the trigger to every child",
+          "[slicing][IMP-11]") {
+  // The hazard this pins: slicing changes SIZE, never price. If a child lost the
+  // trigger it would be placed as a plain order — so an over-freeze protective
+  // stop would fan out into pieces that are not stops at all, and the position
+  // would sit unprotected behind an order the caller believes is armed.
+  const FreezeSlicer slicer;
+  OrderIntent parent = make_parent(4000);
+  parent.order_type = OrderType::StopLoss;
+  // A well-formed BUY stop (make_parent is a Buy): it arms as the market rises
+  // through 120 and then works UP to 121 — limit >= trigger, the shape the
+  // validation gate requires for a Buy.
+  parent.trigger_price = Price::from_rupees(120);  // the level that arms it
+  parent.price = Price::from_rupees(121);          // the limit it then works at
+
+  const auto result = slicer.slice(parent, make_instrument());
+  REQUIRE(result);
+  const std::vector<OrderIntent>& children = result.value();
+  REQUIRE(children.size() == 3);
+
+  for (const OrderIntent& child : children) {
+    REQUIRE(child.trigger_price.has_value());
+    // UNCHANGED, not merely present: every child arms at the parent's level.
+    CHECK(*child.trigger_price == Price::from_rupees(120));
+    CHECK(child.price == Price::from_rupees(121));  // and the two stay distinct
+    CHECK(child.order_type == OrderType::StopLoss);
+  }
+}
+
+TEST_CASE("a NON-stop parent's children stay trigger-free", "[slicing][IMP-11]") {
+  // The other direction: slicing must not FABRICATE a trigger (which would make
+  // every sliced limit order fail the gate's shape check).
+  const FreezeSlicer slicer;
+  const auto result = slicer.slice(make_parent(4000), make_instrument());
+  REQUIRE(result);
+  for (const OrderIntent& child : result.value()) {
+    CHECK_FALSE(child.trigger_price.has_value());
+  }
+}
+
+TEST_CASE("an under-freeze STOP passes through with its trigger intact", "[slicing][IMP-11]") {
+  // The not-over-freeze path returns the parent itself; assert it is a genuine
+  // pass-through rather than a rebuild that could drop a field.
+  const FreezeSlicer slicer;
+  OrderIntent parent = make_parent(100);
+  parent.order_type = OrderType::StopLossMarket;
+  parent.trigger_price = Price::from_rupees(120);
+
+  const auto result = slicer.slice(parent, make_instrument());
+  REQUIRE(result);
+  REQUIRE(result.value().size() == 1);
+  CHECK(result.value().front() == parent);  // whole-value equality, trigger included
 }
 
 TEST_CASE("exact multiple of chunk produces no remainder child") {

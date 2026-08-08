@@ -414,3 +414,14 @@ loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier
   test needed answering secret provider (kite REST fetches secrets pre-transport). 49/49 green.
   FOLLOW-UP (tracked): total-outage lane (place-429+read-429) needs kit change; MatchKind weak-match signal;
   refdata/kite migration onto domain/decimal_paise.hpp.
+- ITER 4 / 6-5b DONE (7800a42): platform FileLock (create-exclusive + nonce read-back; stale takeover =
+  rename-claim -> immediate re-occupy -> re-check, no two winners; still_ours/touch), accounts module
+  (AccountDataDir lowercase-only ids [NTFS case collision], SharedRefdataCache double-checked lock +
+  atomic publish + bounded rename retry + debris sweep + enforced outside-account-tree), SupervisorPlan
+  per-account isolation (never-started=down), systemd StateDirectory unit + alarm unit + docs.
+  Review FIX-REQUIRED: H1 two-winners race (rename window), H2 AB/ab dir collision (confirmed), M1-M9,
+  L1-L6. 50/50 green. ===== EPIC 6 COMPLETE -> ALL EPICS 1-6 DONE (56 stories) =====
+  Iterations 5+ = tier-2 follow-up backlog: (a) SL distinct trigger/limit on OrderIntent + gate + adapters;
+  (b) runtime composition root wiring funds_check+calendar+guards into the gate (2-8 invariant);
+  (c) Kite/Kotak square_off real flatten + exchange-via-instrument-master; (d) decimal_paise migration +
+  provenance non-scrubbed fields; (e) freeze-qty table source; (f) kit total-outage lane.

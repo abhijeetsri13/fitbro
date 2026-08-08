@@ -75,6 +75,14 @@ Result<std::vector<domain::OrderIntent>> FreezeSlicer::slice(const domain::Order
   // and lot-aligned. (freeze >= lot was validated above, so chunk >= lot > 0.)
   const std::int64_t chunk = (freeze / lot) * lot;
 
+  // EACH CHILD IS A COPY OF THE PARENT with only `quantity` and `client_ref`
+  // changed. That is the rule, and it is what makes the trigger price (IMP-11)
+  // inherit for free: an over-freeze stop-loss fans out into children that arm at
+  // the SAME level as the parent, because slicing changes SIZE, never price. A
+  // slicer that rebuilt children field-by-field would drop the trigger the day a
+  // new field was added — the children of a stop would place as plain orders,
+  // unprotected. Copy-then-override keeps that class of bug impossible.
+  //
   // full full-chunk children, then a remainder child iff rem > 0. Because qty is
   // a multiple of lot and chunk is a multiple of lot, rem = qty % chunk is a
   // non-negative multiple of lot; when non-zero it is in [lot, chunk). Hence the

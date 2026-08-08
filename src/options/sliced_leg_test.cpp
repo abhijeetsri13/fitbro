@@ -149,6 +149,43 @@ TEST_CASE("AC-1 deterministic slice: over-freeze parent => refs #1..#3 in order,
   CHECK(alerts.count() == 0);
 }
 
+// ── IMP-11 AC-4: the trigger reaches the CHILDREN the executor actually places ─
+
+TEST_CASE("IMP-11: a sliced STOP leg places children that are still stops",
+          "[options][slicing][IMP-11]") {
+  // freeze_slicer_test pins that the SLICER copies the trigger. This pins the
+  // thing that actually matters end-to-end: the intents handed to `place_child`
+  // — i.e. what would go on the wire — are still armed stops. An executor that
+  // rebuilt a child intent instead of forwarding the slicer's would silently
+  // place plain orders here, leaving the leg unprotected.
+  std::vector<domain::OrderIntent> placed;
+  SpyAlertSink alerts;
+
+  domain::OrderIntent parent = over_freeze_parent();
+  parent.order_type = domain::OrderType::StopLoss;
+  // A well-formed BUY stop (over_freeze_parent leaves the default Buy side):
+  // arms at 100, then works UP to 101 — limit >= trigger, as the gate requires.
+  parent.trigger_price = domain::Price::from_rupees(100);
+  parent.price = domain::Price::from_rupees(101);
+
+  SlicedLegSeams seams;
+  seams.place_child = [&](const domain::OrderIntent& child) -> PlaceResult {
+    placed.push_back(child);
+    return ack_place(order_id_for(child.client_ref));
+  };
+
+  const SlicedLegResult result = execute_sliced_leg(parent, instrument(), seams, alerts);
+
+  CHECK(result.outcome == SlicedLegOutcome::FilledSliced);
+  REQUIRE(placed.size() == 3);
+  for (const domain::OrderIntent& child : placed) {
+    CHECK(child.order_type == domain::OrderType::StopLoss);
+    REQUIRE(child.trigger_price.has_value());
+    CHECK(*child.trigger_price == domain::Price::from_rupees(100));
+    CHECK(child.price == domain::Price::from_rupees(101));
+  }
+}
+
 // ── AC-2: SIGKILL recovery / no duplicate ────────────────────────────────────
 
 TEST_CASE("AC-2 SIGKILL recovery: #1,#2 already placed => only #3 re-sent, deduped 2, FilledSliced") {

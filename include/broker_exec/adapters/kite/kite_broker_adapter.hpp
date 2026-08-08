@@ -61,10 +61,19 @@ namespace broker_exec::adapters::kite {
 //     those letters (e.g. "PETRONET" matches "PE" -> wrongly NFO). Production MUST
 //     resolve the exchange from the instrument master (Story 2.6), not the heuristic.
 //
-//   * For a StopLoss (SL) order the adapter sends the SAME value as both the limit
-//     `price` and the `trigger_price`, because OrderIntent has a single `price`
-//     field. A real SL-limit needs DISTINCT trigger and limit prices; that requires
-//     a second price on the intent before live use.
+// RESOLVED (IMP-11): a StopLoss (SL) order no longer sends the same number as both
+// the limit `price` and the `trigger_price`. OrderIntent carries a distinct
+// `std::optional<Price> trigger_price`, so SL sends the real pair (`price` +
+// `trigger_price`) and SL-M sends the trigger alone. A stop intent that reaches
+// this adapter with NO trigger emits no `trigger_price` field at all — Kite
+// rejects it definitively, which is strictly safer than arming a live stop at the
+// limit price. fetch_orders() parses `order_type` (MARKET/LIMIT/SL/SL-M) and
+// `trigger_price` back into the domain; the trigger is published ONLY on a row
+// that is actually a stop and carries a positive trigger (Kite reports 0 for
+// non-stop orders -> nullopt). An unrecognized `order_type` falls CLOSED to Market
+// AND suppresses the trigger — a Market carrying a trigger is a shape the
+// validation gate refuses outright, so a row we do not understand is never
+// published as an armed stop.
 
 class KiteBrokerAdapter final : public ports::BrokerPort {
  public:

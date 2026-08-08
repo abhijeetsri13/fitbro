@@ -37,6 +37,7 @@
 #include <string_view>
 
 #include "broker_exec/domain/enums.hpp"
+#include "broker_exec/domain/types.hpp"
 
 namespace broker_exec::modifyguard {
 
@@ -83,12 +84,35 @@ struct OrderModifyState {
 struct ModifyRequest {
   // The modify alters quantity.
   bool changes_quantity = false;
-  // The modify alters price / trigger.
+  // The modify alters ANY price the order works at — the limit, the TRIGGER, or
+  // the order type that decides which of them the broker reads. All three are one
+  // flag because the guard's rule is the same for all of them: a price-only
+  // modify is the safe kind, a quantity modify is the dangerous kind.
   bool changes_price = false;
   // Requested new TOTAL quantity (Kite: `quantity` sets the TOTAL, not pending).
   // Ignored when !changes_quantity.
   std::int64_t new_total_qty = 0;
 };
+
+// Derive a ModifyRequest by DIFFING the live intent against the amended one.
+// PURE / NO-THROW.
+//
+// WHY THIS EXISTS (IMP-11). `changes_price` has always been hand-set by the
+// caller, and a caller who moved a stop's TRIGGER while leaving the limit alone
+// could easily set neither flag — the guard would then evaluate a "modify that
+// changes nothing" and Allow it on an order it should have refused. Now that the
+// trigger is a real, separate field on OrderIntent, the diff can be computed
+// instead of asserted:
+//
+//   changes_quantity <- quantity differs (new_total_qty = the amended TOTAL)
+//   changes_price    <- limit price, TRIGGER price, or order_type differs
+//
+// order_type counts as a price change because it re-points the broker at a
+// different number (SL-M -> SL starts honouring a limit that was previously
+// ignored). Callers that already compute the flags themselves are unaffected —
+// this is additive.
+[[nodiscard]] ModifyRequest make_modify_request(const domain::OrderIntent& current,
+                                                const domain::OrderIntent& amended) noexcept;
 
 // The guard's decision. DEFAULTS ARE FAIL-CLOSED: an unassigned result denies
 // the modify (RejectNotModifiable, allowed=false), so a forgotten assignment on

@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <random>
@@ -371,33 +372,65 @@ TEST_CASE("tick alignment is enforced for every price-bearing order type", "[ris
 
   // 100.03 = 10003 paise; 10003 % 5 != 0 -> not tick-aligned.
   SECTION("StopLossMarket trigger price must be tick-aligned (regression: was skipped)") {
+    // PRE-IMP-11 this section drove `price`, because the gate tick-checked an SL-M's
+    // limit as a stand-in for a trigger the domain could not carry. It now drives
+    // the REAL field, which is the whole point of the change.
     OrderIntent intent = make_entry_intent();
     intent.order_type = OrderType::StopLossMarket;
-    intent.price = Price::from_paise(10003);
+    intent.trigger_price = Price::from_paise(10003);
     GateContext ctx = base_entry(intent, instrument);
     const Result<GateOutcome> r = gate.validate(ctx);
     REQUIRE_FALSE(r.has_value());
     CHECK(r.error().category == ErrorCategory::Validation);
     CHECK(names(r.error(), "tick"));
+    // And it names WHICH price, so an SL's two numbers are distinguishable.
+    CHECK(r.error().message.find("trigger price") != std::string::npos);
   }
 
   SECTION("StopLoss limit price must be tick-aligned") {
     OrderIntent intent = make_entry_intent();
     intent.order_type = OrderType::StopLoss;
+    intent.side = Side::Sell;  // so limit <= trigger holds and ORDERING is not what fires
     intent.price = Price::from_paise(10003);
+    intent.trigger_price = Price::from_paise(10005);  // trigger fine, limit is not
     GateContext ctx = base_entry(intent, instrument);
     const Result<GateOutcome> r = gate.validate(ctx);
     REQUIRE_FALSE(r.has_value());
     CHECK(names(r.error(), "tick"));
   }
 
+  SECTION("StopLoss TRIGGER price must be tick-aligned independently of the limit") {
+    OrderIntent intent = make_entry_intent();
+    intent.order_type = OrderType::StopLoss;
+    intent.price = Price::from_paise(10005);         // limit fine
+    intent.trigger_price = Price::from_paise(10003);  // trigger is not
+    GateContext ctx = base_entry(intent, instrument);
+    const Result<GateOutcome> r = gate.validate(ctx);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(names(r.error(), "tick"));
+    CHECK(r.error().message.find("trigger price") != std::string::npos);
+  }
+
   SECTION("a tick-aligned StopLossMarket trigger passes the tick check") {
     OrderIntent intent = make_entry_intent();
     intent.order_type = OrderType::StopLossMarket;
-    intent.price = Price::from_paise(10005);  // 10005 % 5 == 0
+    intent.trigger_price = Price::from_paise(10005);  // 10005 % 5 == 0
     GateContext ctx = base_entry(intent, instrument);
     const Result<GateOutcome> r = gate.validate(ctx);
     REQUIRE(r.has_value());  // no calendar/funds wired -> Allow
+  }
+
+  SECTION("an SL-M's IGNORED limit price is not tick-checked") {
+    // SL-M fires a market order; its `price` never reaches the broker, so
+    // tick-checking it would refuse a perfectly well-formed protective order over
+    // a leftover number. See the shape matrix in validation_gate.cpp.
+    OrderIntent intent = make_entry_intent();
+    intent.order_type = OrderType::StopLossMarket;
+    intent.price = Price::from_paise(10003);          // misaligned, and ignored
+    intent.trigger_price = Price::from_paise(10005);  // the number that matters
+    GateContext ctx = base_entry(intent, instrument);
+    const Result<GateOutcome> r = gate.validate(ctx);
+    REQUIRE(r.has_value());
   }
 
   SECTION("a Market order has no price and skips the tick check") {
@@ -408,6 +441,177 @@ TEST_CASE("tick alignment is enforced for every price-bearing order type", "[ris
     const Result<GateOutcome> r = gate.validate(ctx);
     REQUIRE(r.has_value());
   }
+}
+
+// ── IMP-11 AC-1: the (order_type x price fields) SHAPE MATRIX ────────────────
+//
+// Four order types x trigger-present/absent = eight cells, all asserted below.
+// The matrix is fail-closed in BOTH directions: a stop with no trigger is refused
+// (it would reach the broker unarmed or be rejected), and a non-stop carrying a
+// trigger is refused too (the adapters do not transmit it, so accepting it would
+// place an UNPROTECTED order for a caller who believes a stop is armed).
+TEST_CASE("order-shape: SL/SL-M require a trigger, Limit/Market forbid one",
+          "[risk][gate][IMP-11]") {
+  const Instrument instrument = make_instrument();
+  const ValidationGate gate;
+  const Price kAligned = Price::from_paise(10005);  // tick 5 paise
+
+  // Build an intent of `type`, optionally armed, with tick-clean prices so the
+  // ONLY thing under test is the shape.
+  const auto intent_of = [&](OrderType type, bool with_trigger) {
+    OrderIntent intent = make_entry_intent();
+    intent.order_type = type;
+    intent.price = kAligned;
+    if (with_trigger) {
+      intent.trigger_price = kAligned;
+    }
+    return intent;
+  };
+
+  SECTION("the four WELL-FORMED cells are allowed") {
+    const auto ok_case = [&](OrderType type, bool with_trigger) {
+      const OrderIntent intent = intent_of(type, with_trigger);
+      GateContext ctx = base_entry(intent, instrument);
+      const Result<GateOutcome> r = gate.validate(ctx);
+      REQUIRE(r.has_value());
+      CHECK(r.value() == GateOutcome::Allow);
+    };
+    ok_case(OrderType::Market, /*with_trigger=*/false);
+    ok_case(OrderType::Limit, /*with_trigger=*/false);
+    ok_case(OrderType::StopLoss, /*with_trigger=*/true);
+    ok_case(OrderType::StopLossMarket, /*with_trigger=*/true);
+  }
+
+  SECTION("the four MALFORMED cells are refused, naming the order-shape check") {
+    const auto bad_case = [&](OrderType type, bool with_trigger) {
+      const OrderIntent intent = intent_of(type, with_trigger);
+      GateContext ctx = base_entry(intent, instrument);
+      const Result<GateOutcome> r = gate.validate(ctx);
+      REQUIRE_FALSE(r.has_value());
+      CHECK(r.error().category == ErrorCategory::Validation);
+      CHECK(names(r.error(), "order-shape"));
+    };
+    bad_case(OrderType::StopLoss, /*with_trigger=*/false);        // stop with no trigger
+    bad_case(OrderType::StopLossMarket, /*with_trigger=*/false);  // ditto
+    bad_case(OrderType::Limit, /*with_trigger=*/true);            // trigger on a limit
+    bad_case(OrderType::Market, /*with_trigger=*/true);           // trigger on a market
+  }
+
+  SECTION("an SL requires a POSITIVE limit price as well as a trigger") {
+    OrderIntent intent = intent_of(OrderType::StopLoss, /*with_trigger=*/true);
+    intent.side = Side::Sell;             // 0 <= trigger, so ORDERING passes...
+    intent.price = Price::from_paise(0);  // ...and the missing limit is what fires
+    GateContext ctx = base_entry(intent, instrument);
+    const Result<GateOutcome> r = gate.validate(ctx);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(names(r.error(), "tick"));  // the "must be positive" branch
+  }
+}
+
+// ── IMP-11 MEDIUM-5: an SL's two prices must be SIDE-ORDERED ─────────────────
+//
+// A stop-loss limit only works if its limit sits on the far side of its trigger.
+// A swapped pair is a shape bug the BROKER ACCEPTS HAPPILY: a sell stop whose
+// limit sits above its trigger arms only once the market has fallen past a level
+// it then refuses to sell at, so it sits unfillable through the entire move it
+// existed to escape. The caller believes they are protected and they are not,
+// which is why this has to be caught here rather than at the exchange.
+TEST_CASE("order-shape: an SL's limit must be on the correct side of its trigger",
+          "[risk][gate][IMP-11]") {
+  const Instrument instrument = make_instrument();  // tick 5 paise
+  const ValidationGate gate;
+
+  const auto sl = [&](Side side, std::int64_t limit_paise, std::int64_t trigger_paise) {
+    OrderIntent intent = make_entry_intent();
+    intent.order_type = OrderType::StopLoss;
+    intent.side = side;
+    intent.price = Price::from_paise(limit_paise);
+    intent.trigger_price = Price::from_paise(trigger_paise);
+    return intent;
+  };
+  const auto verdict = [&](const OrderIntent& intent, bool is_exit) {
+    GateContext ctx = base_entry(intent, instrument);
+    ctx.is_risk_reducing = is_exit;
+    return gate.validate(ctx);
+  };
+
+  SECTION("SELL SL: limit BELOW trigger is well-formed; ABOVE is refused") {
+    // Arms as the market falls through 100.00, then works down to 99.50.
+    CHECK(verdict(sl(Side::Sell, 9950, 10000), false).has_value());
+
+    const Result<GateOutcome> bad = verdict(sl(Side::Sell, 10050, 10000), false);
+    REQUIRE_FALSE(bad.has_value());
+    CHECK(bad.error().category == ErrorCategory::Validation);
+    CHECK(names(bad.error(), "order-shape"));
+    CHECK(bad.error().message.find("wrong side") != std::string::npos);
+  }
+
+  SECTION("BUY SL: limit ABOVE trigger is well-formed; BELOW is refused") {
+    // Arms as the market rises through 100.00, then works up to 100.50.
+    CHECK(verdict(sl(Side::Buy, 10050, 10000), false).has_value());
+
+    const Result<GateOutcome> bad = verdict(sl(Side::Buy, 9950, 10000), false);
+    REQUIRE_FALSE(bad.has_value());
+    CHECK(names(bad.error(), "order-shape"));
+  }
+
+  SECTION("BOUNDARY: limit == trigger is allowed on both sides") {
+    // The common "stop at the touch" order; refusing it would be a false positive
+    // on the single most ordinary stop shape there is.
+    CHECK(verdict(sl(Side::Sell, 10000, 10000), false).has_value());
+    CHECK(verdict(sl(Side::Buy, 10000, 10000), false).has_value());
+  }
+
+  SECTION("the ordering rule applies to EXITS too") {
+    // An exit is exempt from the entry-only blocks, never from shape validation —
+    // and a malformed exit stop is the dangerous one: it is the leg standing
+    // between a live position and an unbounded loss.
+    const Result<GateOutcome> bad = verdict(sl(Side::Sell, 10050, 10000), /*is_exit=*/true);
+    REQUIRE_FALSE(bad.has_value());
+    CHECK(names(bad.error(), "order-shape"));
+
+    // ...and a correctly-ordered exit stop still sails through.
+    CHECK(verdict(sl(Side::Sell, 9950, 10000), /*is_exit=*/true).has_value());
+  }
+
+  SECTION("SL-M has no limit, so no ordering rule constrains it") {
+    // Its `price` is ignored end-to-end; an absurd value must not be read as a
+    // swapped pair and refuse a perfectly good protective order.
+    OrderIntent slm = sl(Side::Sell, 99900, 10000);  // limit far ABOVE the trigger
+    slm.order_type = OrderType::StopLossMarket;
+    CHECK(verdict(slm, false).has_value());
+  }
+}
+
+TEST_CASE("order-shape is NOT exit-exempt: a malformed protective order is still refused",
+          "[risk][gate][IMP-11]") {
+  // A risk-reducing op skips the ENTRY-ONLY blocks, never shape validation. A stop
+  // exit with no trigger is not protection — it is a broker rejection at the exact
+  // moment protection was needed, so it must be refused here and not sent.
+  const Instrument instrument = make_instrument();
+  const ValidationGate gate;
+
+  OrderIntent intent = make_entry_intent();
+  intent.order_type = OrderType::StopLossMarket;  // and NO trigger
+  GateContext ctx = base_entry(intent, instrument);
+  ctx.is_risk_reducing = true;
+  ctx.kill_entry_block = true;      // exempt
+  ctx.unknown_pause_active = true;  // exempt
+
+  const Result<GateOutcome> r = gate.validate(ctx);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(names(r.error(), "order-shape"));
+
+  // The SAME exit, correctly shaped, sails through every entry-only block.
+  OrderIntent armed = intent;
+  armed.trigger_price = Price::from_paise(10005);
+  GateContext ok_ctx = base_entry(armed, instrument);
+  ok_ctx.is_risk_reducing = true;
+  ok_ctx.kill_entry_block = true;
+  ok_ctx.unknown_pause_active = true;
+  const Result<GateOutcome> ok = gate.validate(ok_ctx);
+  REQUIRE(ok.has_value());
+  CHECK(ok.value() == GateOutcome::Allow);
 }
 
 TEST_CASE("an instrument with no exchange is rejected, naming the exchange check", "[risk][gate][AC1]") {

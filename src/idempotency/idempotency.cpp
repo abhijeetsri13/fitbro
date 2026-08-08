@@ -24,6 +24,28 @@ constexpr int kPayloadSchema = 1;
 // cannot appear in a symbol/strategy id, so field boundaries are unambiguous.
 constexpr char kSep = '\x1f';
 
+// The limit price AS THE WIRE SEES IT — the only version of it that can define
+// an order.
+//
+// A StopLossMarket fires a MARKET order once its trigger is crossed: the gate
+// does not check its `price`, and NEITHER adapter transmits one (Kite omits the
+// field, Kotak sends pr="0"). The number is therefore pure residue on an SL-M —
+// and residue is usually a live mark. A strategy that re-derives `price` from the
+// tape each tick would mint a DIFFERENT signature for a byte-identical wire
+// order, defeating the dedupe: the second call looks like a fresh signal, gets a
+// fresh client_ref, and a SECOND live stop goes on. Both then fire and the
+// position ends up inverted — naked in the opposite direction.
+//
+// MARKET IS DELIBERATELY LEFT ALONE. Its `price` is equally meaningless, but
+// zeroing it here would change the signature of every plain market order ever
+// written, breaking the legacy-stability property this function otherwise holds
+// (see signal_signature's contract). SL-M signatures are ALREADY moving in this
+// release — the stop level relocated from `price` to `trigger_price` — so folding
+// this correction into the same break costs nothing extra.
+[[nodiscard]] std::int64_t defining_price_paise(const domain::OrderIntent& intent) {
+  return intent.order_type == domain::OrderType::StopLossMarket ? 0 : intent.price.paise();
+}
+
 // Build the canonical signature input over the order-defining fields ONLY, in a
 // fixed order with explicit field tags and a stable separator. Tagging each
 // field (not just concatenating values) avoids ambiguity (e.g. strategy "a-b"
@@ -46,13 +68,32 @@ constexpr char kSep = '\x1f';
   s += std::to_string(intent.quantity.value());
   s += kSep;
   s += "price=";
-  s += std::to_string(intent.price.paise());
+  s += std::to_string(defining_price_paise(intent));  // 0 for SL-M; see above
   s += kSep;
   s += "order_type=";
   s += domain::to_string(intent.order_type);
   s += kSep;
   s += "product=";
   s += domain::to_string(intent.product);
+  // The TRIGGER is order-defining (IMP-11): two stops on the same symbol/qty/limit
+  // that arm at DIFFERENT levels are different signals, and folding them onto one
+  // signature would make the second look like a duplicate of the first and never
+  // be sent — a protective order silently dropped.
+  //
+  // APPENDED ONLY WHEN PRESENT, AND THAT IS LOAD-BEARING, NOT TIDINESS. A signal's
+  // signature is the dedupe key across a BINARY UPGRADE: the intent log stores the
+  // signature that was computed at write time, and reserve() recomputes one from
+  // the live intent. If this field always appeared, every signature would change
+  // on the upgrade, so a replayed pre-upgrade signal would no longer match its own
+  // record and could be placed a SECOND time. No pre-IMP-11 intent could carry a
+  // trigger (the field did not exist), so leaving it off when absent makes every
+  // legacy signature byte-identical to what the old build produced — the dedupe
+  // survives the upgrade, and only genuinely-new stop shapes get new keys.
+  if (intent.trigger_price.has_value()) {
+    s += kSep;
+    s += "trigger=";
+    s += std::to_string(intent.trigger_price->paise());
+  }
   return s;
 }
 
@@ -84,6 +125,16 @@ std::string intent_payload_json(const domain::OrderIntent& intent) {
   j["price_paise"] = intent.price.paise();
   j["order_type"] = std::string(domain::to_string(intent.order_type));
   j["product"] = std::string(domain::to_string(intent.product));
+  // The trigger is written ONLY when the intent has one, so the key's ABSENCE on
+  // replay is the record's way of saying nullopt. This is deliberately an ADDITIVE
+  // field at the SAME kPayloadSchema: rebuild_from_log() only reads `schema` and
+  // `sig`, and it SKIPS any record whose schema marker it does not recognize —
+  // bumping the marker would therefore make every committed pre-IMP-11 record
+  // unreadable and silently empty the dedupe index on the first boot after an
+  // upgrade. Old records replay to nullopt; new records carry the value.
+  if (intent.trigger_price.has_value()) {
+    j["trigger_price_paise"] = intent.trigger_price->paise();
+  }
   return j.dump();
 }
 

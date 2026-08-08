@@ -317,6 +317,48 @@ enum class StatusClass { Unrecognized, Working, Complete, Rejected, Cancelled };
   return type == domain::OrderType::StopLoss || type == domain::OrderType::StopLossMarket;
 }
 
+// The `tp` (trigger price) value for an intent, as Kotak wants it: rupee-decimal
+// TEXT, "0" meaning "no trigger". Reads the intent's REAL `trigger_price` (IMP-11)
+// instead of duplicating `price`.
+//
+// A stop order that arrives with NO trigger sends "0", which Kotak rejects
+// outright — a definitive broker verdict the dispatcher handles safely. The
+// pre-IMP-11 fallback (send `price` as the trigger) would instead arm a live stop
+// at the limit price, silently. `tp` is ALWAYS emitted because the key is part of
+// the recorded jData shape; omitting a documented key is its own rejection risk.
+[[nodiscard]] std::string trigger_field(const domain::OrderIntent& intent) {
+  if (!is_triggered(intent.order_type) || !intent.trigger_price.has_value()) {
+    return std::string("0");
+  }
+  return domain::paise_to_decimal(intent.trigger_price->paise());
+}
+
+// Map a Kotak `prcTp` price-type string BACK onto the domain enum, folded through
+// the same casing/separator normalizer the status vocabulary uses (Kotak's
+// spellings are not consistent across endpoint generations).
+//
+// An unrecognized value falls CLOSED to Market — and the caller then suppresses
+// the trigger for that row (see fetch_orders), because "Market carrying a
+// trigger" is a shape the validation gate refuses outright: publishing it would
+// poison the order the next time anything touched it.
+[[nodiscard]] domain::OrderType parse_price_type(std::string_view raw) {
+  // Every arm is an EXACT match on the folded form (not a prefix test), which is
+  // what keeps "SL" and "SL-M" from shadowing each other: the fold turns '-' into
+  // a space, so the wire's "SL-M" arrives here as "sl m" and can never collide
+  // with the "sl" arm.
+  const std::string s = fold_status(raw);  // lowercased, '-'/'_' -> space, trimmed
+  if (s == "l" || s == "lmt" || s == "limit") {
+    return domain::OrderType::Limit;
+  }
+  if (s == "sl m" || s == "slm" || s == "sl mkt") {
+    return domain::OrderType::StopLossMarket;
+  }
+  if (s == "sl" || s == "sll" || s == "stoploss") {
+    return domain::OrderType::StopLoss;
+  }
+  return domain::OrderType::Market;  // MKT, absent, or unrecognized
+}
+
 // Restates `runtime::Dispatcher::is_reconcile_first` — an adapter may not link the
 // runtime, and this decision has to agree with it or the two layers disagree about
 // whether an order might be live. TRUE means "the outcome is ambiguous, the order
@@ -344,8 +386,7 @@ enum class StatusClass { Unrecognized, Working, Complete, Rejected, Cancelled };
   params["pt"] = kotak_price_type(intent.order_type);
   params["qt"] = std::to_string(intent.quantity.value());
   params["rt"] = "DAY";  // retention / validity
-  params["tp"] = is_triggered(intent.order_type) ? domain::paise_to_decimal(intent.price.paise())
-                                                 : std::string("0");
+  params["tp"] = trigger_field(intent);
   params["ts"] = intent.symbol;
   params["tt"] = side_code(intent.side);
   // NOTE THE ABSENCE: no client tag is sent. Kotak's echo of any such field is
@@ -369,8 +410,7 @@ enum class StatusClass { Unrecognized, Working, Complete, Rejected, Cancelled };
                                               : std::string("0");
   params["pt"] = kotak_price_type(intent.order_type);
   params["qt"] = std::to_string(intent.quantity.value());
-  params["tp"] = is_triggered(intent.order_type) ? domain::paise_to_decimal(intent.price.paise())
-                                                 : std::string("0");
+  params["tp"] = trigger_field(intent);
   params["ts"] = intent.symbol;
   params["vd"] = "DAY";
   return params;
@@ -416,6 +456,13 @@ struct RawOrder {
   std::int64_t filled = 0;
   std::int64_t price_paise = 0;
   std::int64_t avg_paise = 0;
+  // NULLOPT means "this row is not a stop order". Kept optional (unlike the other
+  // money fields, which default to 0) because 0 and absent mean the SAME thing for
+  // a trigger and BOTH must map to the domain's nullopt.
+  std::optional<std::int64_t> trigger_paise;
+  // Fails CLOSED to Market on an absent/unrecognized `prcTp`, which suppresses the
+  // trigger for the row (a Market carrying a trigger is a refused shape).
+  domain::OrderType order_type = domain::OrderType::Market;
   std::string status;
   bool malformed = false;  // a field was PRESENT but unparseable -> fail this row closed
 };
@@ -431,6 +478,25 @@ struct RawOrder {
   raw.price_paise = first_paise(row, {"prc", "pr", "ordPrc"}, raw.malformed).value_or(0);
   raw.avg_paise =
       first_paise(row, {"avgPrc", "avgPrice", "fldPrc", "flPrc"}, raw.malformed).value_or(0);
+  // The TRIGGER, round-tripped back out of broker truth. Kotak is NOT symmetric
+  // about this datum: the quick-place REQUEST spells it `tp`, the order REPORT
+  // spells it `trgPrc`.
+  //
+  // `tp` IS DELIBERATELY NOT A READ CANDIDATE. It is the request-side spelling, so
+  // on a report it is at best a coincidence and at worst something else entirely —
+  // and `first_paise` flags a key that is PRESENT but unparseable as `malformed`,
+  // which fails the whole row closed to Unknown. A live report carrying a
+  // non-numeric `tp` would therefore turn EVERY row Unknown, and an all-Unknown
+  // book freezes entries via the UNKNOWN-pause. Reading a field we were never
+  // promised is not worth a self-inflicted trading halt.
+  //
+  // A NON-POSITIVE value is Kotak's "no trigger" encoding and collapses to
+  // nullopt, so a plain limit order never comes back looking like a stop.
+  raw.trigger_paise = first_paise(row, {"trgPrc", "trigPrc", "triggerPrice"}, raw.malformed);
+  if (raw.trigger_paise.has_value() && *raw.trigger_paise <= 0) {
+    raw.trigger_paise.reset();
+  }
+  raw.order_type = parse_price_type(first_str(row, {"prcTp", "prcType", "pt"}));
   raw.status = first_str(row, {"ordSt", "status", "ordStatus"});
 
   // A negative order quantity is nonsense, and treating it as real would let it
@@ -688,6 +754,20 @@ Result<std::vector<domain::Order>> KotakBrokerAdapter::fetch_orders() {
         order.intent.quantity = domain::Quantity::of(*raw.quantity);
       }
       order.intent.price = domain::Price::from_paise(raw.price_paise);
+      // The order TYPE and the trigger travel with the rest of the correlation
+      // tuple, and for the same reason: they are published only for a row we
+      // POSITIVELY correlated. The type is set FIRST because it gates the trigger.
+      order.intent.order_type = raw.order_type;
+      // A trigger is published ONLY on a row that is actually a stop. An
+      // absent/unrecognized `prcTp` fell closed to Market above and therefore
+      // suppresses it — a row we did not understand is never published as an armed
+      // stop, and "Market carrying a trigger" (a shape the validation gate refuses)
+      // can never be synthesized here.
+      const bool is_stop = raw.order_type == domain::OrderType::StopLoss ||
+                           raw.order_type == domain::OrderType::StopLossMarket;
+      if (is_stop && raw.trigger_paise.has_value()) {
+        order.intent.trigger_price = domain::Price::from_paise(*raw.trigger_paise);
+      }
     }
     out.push_back(std::move(order));
   }

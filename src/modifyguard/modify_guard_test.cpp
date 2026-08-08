@@ -3,8 +3,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <string>
 
 #include "broker_exec/domain/enums.hpp"
+#include "broker_exec/domain/money.hpp"
+#include "broker_exec/domain/types.hpp"
 
 using broker_exec::domain::OrderState;
 using broker_exec::modifyguard::evaluate_modify;
@@ -201,4 +204,95 @@ TEST_CASE("to_string yields the stable verdict names", "[modifyguard]") {
   CHECK(to_string(ModifyVerdict::RejectRacedFill) == "reject_raced_fill");
   CHECK(to_string(ModifyVerdict::RejectTerminal) == "reject_terminal");
   CHECK(to_string(ModifyVerdict::RejectNotModifiable) == "reject_not_modifiable");
+}
+
+// ── IMP-11 AC-3: the request is DIFFED off the intents, not asserted by hand ──
+//
+// `changes_price` used to be a caller-set boolean. A caller that moved a stop's
+// TRIGGER while leaving the limit alone could easily set neither flag, and the
+// guard would then evaluate a "modify that changes nothing". Now that the trigger
+// is a real field, make_modify_request() computes the flags from the two intents.
+
+namespace {
+
+[[nodiscard]] broker_exec::domain::OrderIntent stop_intent() {
+  broker_exec::domain::OrderIntent intent;
+  intent.client_ref = "alpha-1a2b3c4d-uuid";
+  intent.symbol = "NIFTY26JUL24000CE";
+  intent.side = broker_exec::domain::Side::Sell;
+  intent.quantity = broker_exec::domain::Quantity::of(50);
+  intent.price = broker_exec::domain::Price::from_rupees(99);
+  intent.trigger_price = broker_exec::domain::Price::from_rupees(100);
+  intent.order_type = broker_exec::domain::OrderType::StopLoss;
+  intent.strategy = "alpha";
+  return intent;
+}
+
+}  // namespace
+
+TEST_CASE("make_modify_request: moving ONLY the trigger is a price change",
+          "[modifyguard][IMP-11]") {
+  const broker_exec::domain::OrderIntent current = stop_intent();
+  broker_exec::domain::OrderIntent amended = current;
+  amended.trigger_price = broker_exec::domain::Price::from_rupees(101);  // trail the stop
+
+  const ModifyRequest req = broker_exec::modifyguard::make_modify_request(current, amended);
+  CHECK(req.changes_price);          // the hazard: this used to be missable
+  CHECK_FALSE(req.changes_quantity);  // and it is NOT a quantity modify
+  CHECK(req.new_total_qty == 50);
+
+  // A price-only modify stays safe even on a PARTIAL — the whole reason the
+  // distinction matters (a qty modify there could cancel the working remainder).
+  OrderModifyState partial = working_clean();
+  partial.state = OrderState::PartiallyFilled;
+  partial.filled_qty = 20;
+  CHECK(evaluate_modify(partial, req, 20).allowed);
+}
+
+TEST_CASE("make_modify_request: arming and disarming a stop both count as price changes",
+          "[modifyguard][IMP-11]") {
+  broker_exec::domain::OrderIntent unarmed = stop_intent();
+  unarmed.trigger_price.reset();
+  const broker_exec::domain::OrderIntent armed = stop_intent();
+
+  // nullopt -> value (arming) and value -> nullopt (disarming) are both changes:
+  // std::optional's operator== treats engaged-vs-absent as different.
+  CHECK(broker_exec::modifyguard::make_modify_request(unarmed, armed).changes_price);
+  CHECK(broker_exec::modifyguard::make_modify_request(armed, unarmed).changes_price);
+}
+
+TEST_CASE("make_modify_request: an identical intent changes nothing", "[modifyguard][IMP-11]") {
+  const broker_exec::domain::OrderIntent current = stop_intent();
+  const ModifyRequest req = broker_exec::modifyguard::make_modify_request(current, current);
+  CHECK_FALSE(req.changes_price);
+  CHECK_FALSE(req.changes_quantity);
+}
+
+TEST_CASE("make_modify_request: a quantity change carries the amended TOTAL",
+          "[modifyguard][IMP-11]") {
+  const broker_exec::domain::OrderIntent current = stop_intent();
+  broker_exec::domain::OrderIntent amended = current;
+  amended.quantity = broker_exec::domain::Quantity::of(30);  // Kite: the new TOTAL
+
+  const ModifyRequest req = broker_exec::modifyguard::make_modify_request(current, amended);
+  CHECK(req.changes_quantity);
+  CHECK_FALSE(req.changes_price);
+  CHECK(req.new_total_qty == 30);
+
+  // And the guard still refuses to shrink a total to at-or-below what is filled.
+  OrderModifyState cur = working_clean();
+  cur.filled_qty = 30;
+  CHECK(evaluate_modify(cur, req, 30).verdict == ModifyVerdict::RejectShrinkBelowFilled);
+}
+
+TEST_CASE("make_modify_request: changing order_type is a price change too",
+          "[modifyguard][IMP-11]") {
+  // SL-M -> SL re-points the broker at a limit it previously ignored, so the
+  // order works at a different price even though no number moved.
+  broker_exec::domain::OrderIntent current = stop_intent();
+  current.order_type = broker_exec::domain::OrderType::StopLossMarket;
+  broker_exec::domain::OrderIntent amended = current;
+  amended.order_type = broker_exec::domain::OrderType::StopLoss;
+
+  CHECK(broker_exec::modifyguard::make_modify_request(current, amended).changes_price);
 }

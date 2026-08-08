@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -47,13 +48,63 @@ using errors::make_error;
   return std::find(allowed.begin(), allowed.end(), exchange) != allowed.end();
 }
 
-// Every non-Market order carries a price that must be tick-aligned: Limit and
-// StopLoss carry a limit price, and StopLossMarket carries a TRIGGER price (also
-// exchange-tick-constrained). Only a plain Market order has no price to check.
-// Missing StopLossMarket here would let a non-tick-aligned SL-M trigger reach
-// the broker.
-[[nodiscard]] bool has_price_to_tick_check(domain::OrderType type) {
-  return type != domain::OrderType::Market;
+// ── The (order_type x price fields) SHAPE MATRIX ────────────────────────────
+//
+// Since OrderIntent carries a DISTINCT `trigger_price` (IMP-11), each order type
+// has an exact required shape. These two predicates are the single statement of
+// it and everything below (the shape check AND the tick check) reads them, so the
+// two can never disagree about which numbers a given type actually uses:
+//
+//   type            limit price          trigger price
+//   ────────────    ─────────────────    ───────────────────
+//   Market          ignored              FORBIDDEN
+//   Limit           REQUIRED             FORBIDDEN
+//   StopLoss (SL)   REQUIRED             REQUIRED
+//   SL-M            ignored              REQUIRED
+//
+// WHY "ignored" AND NOT "forbidden" FOR THE MARKET-STYLE LIMIT: `price` is a
+// non-optional field that ALWAYS holds a value, so a Market/SL-M intent built
+// from a position snapshot, a store row, or a broker read inevitably carries some
+// leftover number in it. Rejecting that would refuse a protective SL-M exit for a
+// field the adapters do not even transmit — a fail-closed check that costs
+// safety instead of buying it. The TRIGGER is different: it is an optional whose
+// absence is expressible, so a trigger on a Limit/Market order is an unambiguous
+// caller error (the adapters would silently drop it) and IS refused.
+
+// True iff `type` works at a limit price that must be present and tick-aligned.
+[[nodiscard]] bool uses_limit_price(domain::OrderType type) noexcept {
+  return type == domain::OrderType::Limit || type == domain::OrderType::StopLoss;
+}
+
+// True iff `type` is armed by a trigger price that must be present and
+// tick-aligned. (This is the check that used to run on the SYNTHESIZED value: the
+// 2-8 gate tick-checked SL-M's `price` because the domain had nowhere else to put
+// a trigger. It now reads the real field.)
+[[nodiscard]] bool uses_trigger_price(domain::OrderType type) noexcept {
+  return type == domain::OrderType::StopLoss || type == domain::OrderType::StopLossMarket;
+}
+
+// Tick-alignment of ONE price, as a named-check Error or nothing. `label` names
+// the price in the message ("price" / "trigger price") so a failure says WHICH of
+// an SL's two numbers is misaligned.
+[[nodiscard]] std::optional<Error> tick_violation(std::int64_t price, std::int64_t tick,
+                                                  const char* label) {
+  if (price <= 0) {
+    return gate_error(ErrorCategory::Validation, "tick",
+                      std::string(label) + " " + std::to_string(price) +
+                          " paise must be positive");
+  }
+  if (tick <= 0) {
+    return gate_error(ErrorCategory::Validation, "tick",
+                      "instrument tick size " + std::to_string(tick) + " is invalid");
+  }
+  if (price % tick != 0) {
+    return gate_error(ErrorCategory::Validation, "tick",
+                      std::string(label) + " " + std::to_string(price) +
+                          " paise is not aligned to tick size " + std::to_string(tick) +
+                          " paise");
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -120,27 +171,82 @@ Result<GateOutcome> ValidationGate::validate(const GateContext& ctx) const {
                                " is not a multiple of lot size " + std::to_string(lot)));
   }
 
-  // ── 7. tick (limit / SL-with-price only; Market / SL-M skip) ─────────────
-  if (has_price_to_tick_check(ctx.intent.order_type)) {
-    const std::int64_t price = ctx.intent.price.paise();
-    const std::int64_t tick = ctx.instrument.tick_size.paise();
-    if (price <= 0) {
-      return fail(gate_error(ErrorCategory::Validation, "tick",
-                             "price " + std::to_string(price) + " paise must be positive"));
-    }
-    if (tick <= 0) {
-      return fail(gate_error(ErrorCategory::Validation, "tick",
-                             "instrument tick size " + std::to_string(tick) + " is invalid"));
-    }
-    if (price % tick != 0) {
-      return fail(gate_error(ErrorCategory::Validation, "tick",
-                             "price " + std::to_string(price) +
-                                 " paise is not aligned to tick size " + std::to_string(tick) +
-                                 " paise"));
+  // ── 7. order-shape (applies to exits too — see below) ────────────────────
+  // The (order_type x price fields) matrix, FAIL-CLOSED. A risk-reducing exit is
+  // exempt from the ENTRY-ONLY blocks above, never from SHAPE validation: a
+  // malformed protective order is not protection, it is a broker rejection at the
+  // worst possible moment. So this check runs for exits exactly as for entries.
+  const bool needs_trigger = uses_trigger_price(ctx.intent.order_type);
+  const bool has_trigger = ctx.intent.trigger_price.has_value();
+  if (needs_trigger && !has_trigger) {
+    return fail(gate_error(ErrorCategory::Validation, "order-shape",
+                           std::string("order type '") +
+                               std::string(domain::to_string(ctx.intent.order_type)) +
+                               "' requires a trigger price"));
+  }
+  if (!needs_trigger && has_trigger) {
+    // Refused rather than dropped: the adapters do not transmit a trigger for a
+    // Limit/Market order, so accepting one would silently place an UNPROTECTED
+    // order for a caller who believes a stop is armed.
+    return fail(gate_error(ErrorCategory::Validation, "order-shape",
+                           std::string("order type '") +
+                               std::string(domain::to_string(ctx.intent.order_type)) +
+                               "' must not carry a trigger price"));
+  }
+  // SIDE-RELATIVE ORDERING of an SL's two prices. A stop-loss LIMIT only works if
+  // its limit sits on the far side of its trigger:
+  //
+  //   SELL SL  arms as the market FALLS through the trigger, then works down to
+  //            the limit  =>  price <= trigger.
+  //   BUY  SL  arms as the market RISES through the trigger, then works up to the
+  //            limit      =>  price >= trigger.
+  //
+  // A SWAPPED PAIR IS A SHAPE BUG, NOT A PRICING CHOICE. A sell stop whose limit
+  // sits ABOVE its trigger arms only once the market has already fallen past a
+  // level it then refuses to sell at, so it sits unfillable through the entire
+  // move it existed to escape — the caller believes they are protected and they
+  // are not. The broker accepts it happily, which is exactly why it has to be
+  // caught here. EQUAL IS ALLOWED: price == trigger is the common "stop at the
+  // touch" order.
+  //
+  // Enforced for EXITS TOO. This is shape validation, and an exit's malformed
+  // stop is the dangerous one — it is the leg standing between a live position
+  // and an unbounded loss.
+  if (ctx.intent.order_type == domain::OrderType::StopLoss) {
+    const domain::Price limit = ctx.intent.price;
+    const domain::Price trigger = *ctx.intent.trigger_price;  // presence proven above
+    const bool ordered = ctx.intent.side == domain::Side::Sell ? limit <= trigger : limit >= trigger;
+    if (!ordered) {
+      return fail(gate_error(
+          ErrorCategory::Validation, "order-shape",
+          std::string("a ") + std::string(domain::to_string(ctx.intent.side)) +
+              " stop-loss limit price " + std::to_string(limit.paise()) +
+              " paise is on the wrong side of its trigger " + std::to_string(trigger.paise()) +
+              " paise (SELL requires limit <= trigger, BUY requires limit >= trigger); "
+              "the order would arm and then never fill"));
     }
   }
 
-  // ── 8. freeze (over-freeze => slice in slice-mode; reject otherwise) ─────
+  // ── 8. tick (every price the type actually USES; see the shape matrix) ───
+  // Limit -> the limit. SL -> BOTH the limit and the trigger. SL-M -> the trigger
+  // only (its limit is ignored, so tick-checking it would reject a well-formed
+  // order). Market -> nothing.
+  {
+    const std::int64_t tick = ctx.instrument.tick_size.paise();
+    if (uses_limit_price(ctx.intent.order_type)) {
+      if (auto bad = tick_violation(ctx.intent.price.paise(), tick, "price")) {
+        return fail(std::move(*bad));
+      }
+    }
+    if (needs_trigger) {
+      // has_trigger is guaranteed by the shape check above.
+      if (auto bad = tick_violation(ctx.intent.trigger_price->paise(), tick, "trigger price")) {
+        return fail(std::move(*bad));
+      }
+    }
+  }
+
+  // ── 9. freeze (over-freeze => slice in slice-mode; reject otherwise) ─────
   // In slice-mode an over-freeze order is NOT an error: it becomes
   // AllowWithSlicing. We REMEMBER that decision and keep running the remaining
   // checks (time-window / funds / risk / hedge) so a later failure still wins.
@@ -157,28 +263,28 @@ Result<GateOutcome> ValidationGate::validate(const GateContext& ctx) const {
     }
   }
 
-  // ── 9. time-window (entry-only; propagate the calendar's MarketClosed) ───
+  // ── 10. time-window (entry-only; propagate the calendar's MarketClosed) ──
   if (is_entry && ctx.calendar != nullptr) {
     if (auto allowed = ctx.calendar->require_entry_allowed(); !allowed) {
       return fail(wrap_error("time-window", std::move(allowed.error())));
     }
   }
 
-  // ── 10. funds (entry-only; fail-closed on stale DataStale) ───────────────
+  // ── 11. funds (entry-only; fail-closed on stale DataStale) ───────────────
   if (is_entry && ctx.funds_check) {
     if (auto funds = ctx.funds_check(); !funds) {
       return fail(wrap_error("funds", std::move(funds.error())));
     }
   }
 
-  // ── 11. risk (applies to exits too) ──────────────────────────────────────
+  // ── 12. risk (applies to exits too) ──────────────────────────────────────
   if (ctx.risk_check) {
     if (auto risk = ctx.risk_check(); !risk) {
       return fail(wrap_error("risk", std::move(risk.error())));
     }
   }
 
-  // ── 12. hedge (applies to exits too) ─────────────────────────────────────
+  // ── 13. hedge (applies to exits too) ─────────────────────────────────────
   if (ctx.hedge_check) {
     if (auto hedge = ctx.hedge_check(); !hedge) {
       return fail(wrap_error("hedge", std::move(hedge.error())));

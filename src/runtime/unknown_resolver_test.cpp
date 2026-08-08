@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -201,6 +202,72 @@ TEST_CASE("resolve: attribute corroboration when neither id matches",
   // The corroborated order adopts the broker's id.
   CHECK(result.value().resolved->broker_order_id == broker_id);
   CHECK(h.alerts.count() == 0);
+}
+
+// ── (c2) IMP-11: the TRIGGER is part of attribute corroboration ───────────────
+//
+// For a stop, the trigger is not a detail — it IS the order. Two protective stops
+// on the same symbol, side and size, differing only in the level at which they
+// arm, are different orders carrying different risk. Corroborating on
+// (symbol, side, qty, price) alone would let this rung adopt a stop armed at the
+// WRONG level as though it were ours, and the local order would then be marked
+// resolved against protection that fires somewhere else entirely.
+TEST_CASE("resolve: stops at DIFFERENT trigger levels do not cross-corroborate",
+          "[runtime][unknown][resolve][IMP-11]") {
+  const auto stop_intent = [](std::string ref, std::int64_t trigger_rupees) {
+    OrderIntent intent = sample_intent(std::move(ref));
+    intent.order_type = OrderType::StopLoss;
+    intent.price = Price::from_rupees(123, 50);  // identical limit on both
+    intent.trigger_price = Price::from_rupees(trigger_rupees);
+    return intent;
+  };
+
+  SECTION("a different trigger level blocks the match -> fails closed to NoMatch") {
+    Harness h;
+    h.seed_broker(stop_intent("broker-side-ref-zzzz", /*trigger=*/124));
+
+    Order local;
+    local.intent = stop_intent("alpha-dddd-0004", /*trigger=*/125);  // armed elsewhere
+    local.state = OrderState::Unknown;
+    REQUIRE(h.store.insert_order(local).has_value());
+
+    auto result = h.resolver.resolve(local);
+    REQUIRE(result.has_value());
+    CHECK(result.value().kind == MatchKind::NoMatch);
+    CHECK_FALSE(result.value().resolved_ok);
+    CHECK(h.alerts.count() == 1);  // fail-closed escalation, nothing adopted
+  }
+
+  SECTION("the SAME trigger level still corroborates") {
+    Harness h;
+    h.seed_broker(stop_intent("broker-side-ref-zzzz", /*trigger=*/124));
+
+    Order local;
+    local.intent = stop_intent("alpha-eeee-0005", /*trigger=*/124);
+    local.state = OrderState::Unknown;
+    REQUIRE(h.store.insert_order(local).has_value());
+
+    auto result = h.resolver.resolve(local);
+    REQUIRE(result.has_value());
+    CHECK(result.value().kind == MatchKind::AttributeCorroboration);
+    CHECK(result.value().resolved_ok);
+  }
+
+  SECTION("an ARMED stop never corroborates an UNARMED order") {
+    // std::optional equality gives the right answer at the boundary: absent is
+    // not "zero", so a plain order can never stand in for a stop.
+    Harness h;
+    h.seed_broker(sample_intent("broker-side-ref-zzzz"));  // plain Limit, no trigger
+
+    Order local;
+    local.intent = stop_intent("alpha-ffff-0006", /*trigger=*/124);
+    local.state = OrderState::Unknown;
+    REQUIRE(h.store.insert_order(local).has_value());
+
+    auto result = h.resolver.resolve(local);
+    REQUIRE(result.has_value());
+    CHECK(result.value().kind == MatchKind::NoMatch);
+  }
 }
 
 // ── (d) NoMatch fails closed: stays Unknown, alert raised, NOTHING sent ───────

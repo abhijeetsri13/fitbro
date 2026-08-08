@@ -45,6 +45,7 @@
 
 #include "broker_exec/domain/enums.hpp"
 #include "broker_exec/domain/money.hpp"
+#include "broker_exec/domain/types.hpp"
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/ports/ports_common.hpp"
 #include "broker_exec/result.hpp"
@@ -59,9 +60,10 @@ namespace broker_exec::priceband {
 //   OutsideBandExitClamped   — an EXIT priced outside the band; NOT blocked —
 //                              the suggested limit is clamped to the band edge so
 //                              the protective exit still survives.
-//   MarketUnchecked          — a market-style order has no limit price to enforce
-//                              (the exchange may still reject it, but we cannot
-//                              pre-clamp a market price).
+//   MarketUnchecked          — a PLAIN market order carries no price of ours to
+//                              enforce (the exchange may still reject it, but we
+//                              cannot pre-clamp a market price). An SL-M does NOT
+//                              land here: its TRIGGER is enforceable.
 //   BandUnknown              — band unavailable or malformed; price NOT validated
 //                              (non-freezing default — let it through, but flag).
 enum class BandVerdict {
@@ -120,21 +122,30 @@ struct BandCheckResult {
 //   2. band NOT known -> BandUnknown: blocked = false (a missing band is its own
 //      outage; we do NOT freeze trading on it), no suggestion. The caller MAY
 //      escalate — we fail toward letting the order through, but flag it.
-//   3. MARKET-STYLE order (Market / StopLossMarket — no limit price to enforce)
-//      -> MarketUnchecked: blocked = false. CAVEAT: the exchange may still reject
-//      a market order out-of-band; we cannot pre-clamp a market price.
-//   4. LIMIT or STOP-LIMIT order: the price(s) to validate = the limit_price, AND
-//      for a stop-limit ALSO the trigger_price. A price is IN BAND iff
-//      lower <= price <= upper (INCLUSIVE). All checked prices in band ->
-//      WithinBand, blocked = false.
+//   3. PLAIN MARKET order (no price of ours at all) -> MarketUnchecked:
+//      blocked = false. CAVEAT: the exchange may still reject a market order
+//      out-of-band; we cannot pre-clamp a market price. NOTE an SL-M is NOT here
+//      — see step 4.
+//   4. Otherwise, validate exactly the prices the type USES (mirroring the shape
+//      matrix the validation gate owns):
+//        Limit -> the limit.  SL -> the limit AND the trigger.
+//        SL-M  -> the TRIGGER alone (it has no limit; `limit_price` is ignored).
+//      An SL-M is band-checked even though it FIRES at market, because the
+//      exchange rejects a stop whose TRIGGER is outside the band regardless of
+//      how the order fires — skipping it left the one order type meant to survive
+//      a violent move as the only type never validated.
+//      A price is IN BAND iff lower <= price <= upper (INCLUSIVE). All checked
+//      prices in band -> WithinBand, blocked = false.
 //   5. OUT OF BAND (any checked price outside [lower, upper]):
 //        * is_exit == true  -> OutsideBandExitClamped: blocked = FALSE (a
-//          protective exit must NEVER be blocked), has_suggestion = true,
-//          suggested_limit = the limit clamped into [lower, upper]. For a stop-
-//          limit, the caller should likewise clamp the trigger.
+//          protective exit must NEVER be blocked), with a clamped suggestion for
+//          each price the type uses.
 //        * is_exit == false -> OutsideBandBlocked: blocked = TRUE (an out-of-band
-//          entry would be exchange-rejected), has_suggestion = true (the clamped
-//          limit, for the caller's information).
+//          entry would be exchange-rejected), with the same clamped suggestions
+//          for the caller's information.
+//      Suggestions are offered ONLY for prices the type uses: `has_suggestion` is
+//      false for an SL-M (no limit field exists to apply it to) and
+//      `has_trigger_suggestion` is false for a plain Limit.
 [[nodiscard]] BandCheckResult check_price_band(domain::Side side, domain::OrderType order_type,
                                                domain::Money limit_price,
                                                domain::Money trigger_price, const PriceBand& band,
@@ -149,5 +160,28 @@ struct BandCheckResult {
                                                 domain::Money limit_price,
                                                 domain::Money trigger_price, const PriceBand& band,
                                                 bool is_exit);
+
+// ── INTENT-DRIVEN OVERLOADS (IMP-11) ────────────────────────────────────────
+//
+// The four-price-argument forms above exist because OrderIntent used to carry ONE
+// price: a caller had to SYNTHESIZE the trigger (usually by passing `price`
+// twice), which meant the band check validated a number the broker would never
+// see. OrderIntent now carries a distinct `std::optional<Price> trigger_price`,
+// so these overloads read the REAL pair straight off the intent — the caller can
+// no longer pair the wrong two numbers, or forget to pass a trigger at all.
+//
+// PREFER THESE. The explicit-price forms are KEPT (removing them would ripple
+// through every caller for no safety gain) and are the right tool when the prices
+// under test are not an intent's own — e.g. probing a hypothetical replacement
+// price before building the amended intent.
+//
+// An ABSENT trigger maps to a zero Money. That is harmless by construction: the
+// trigger is only ever CHECKED for a stop-limit (SL), and the shape matrix at the
+// validation gate refuses an SL with no trigger before it can reach a band check.
+[[nodiscard]] BandCheckResult check_price_band(const domain::OrderIntent& intent,
+                                               const PriceBand& band, bool is_exit);
+
+[[nodiscard]] Result<ports::Ok> require_band_ok(const domain::OrderIntent& intent,
+                                                const PriceBand& band, bool is_exit);
 
 }  // namespace broker_exec::priceband

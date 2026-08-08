@@ -198,9 +198,26 @@ namespace broker_exec::adapters::kotak {
 //     contains those letters (e.g. "PETRONET" matches "PE"). Production MUST
 //     resolve the segment from the instrument master (Story 2.6).
 //
-//   * For a StopLoss (SL) order the adapter sends the SAME value as both the
-//     limit price and the trigger price, because OrderIntent has ONE price field.
-//     A real SL-limit needs distinct trigger and limit prices.
+//   * RESOLVED (IMP-11), with ONE spelling caveat. A StopLoss (SL) order no
+//     longer sends the same number as both the limit price and the trigger:
+//     OrderIntent carries a distinct `std::optional<Price> trigger_price`, so
+//     `pr` is the limit and `tp` is the real trigger ("0" when there is none).
+//     THE CAVEAT: Kotak is NOT symmetric about this field's name. The quick-place
+//     REQUEST spells it `tp` (the recorded jData vocabulary this adapter sends,
+//     pinned by the committed fixtures) while the ORDER REPORT spells it `trgPrc`.
+//     fetch_orders() therefore reads `trgPrc` / `trigPrc` / `triggerPrice` and
+//     DELIBERATELY NOT `tp`: a money key that is present but unparseable fails the
+//     whole row closed to Unknown, so reading a request-side spelling we were
+//     never promised on a report would let one odd `tp` value turn the ENTIRE
+//     order book Unknown — and an all-Unknown book freezes entries via the
+//     UNKNOWN-pause. Both spellings remain a tier-2 recorded ASSUMPTION like every
+//     other field name here; the live smoke verifies them.
+//
+//   * fetch_orders() also parses the price type back (`prcTp` / `prcType` / `pt`,
+//     values MKT/L/SL/SL-M). An unrecognized value falls CLOSED to Market AND
+//     suppresses the trigger for that row — publishing a Market that carries a
+//     trigger would be a shape the validation gate refuses outright, so a row we
+//     do not understand is never published as an armed stop.
 //
 //   * fetch_positions() reports net quantity but leaves `avg_price` ZERO unless
 //     the payload carries an explicit average-price field: Kotak reports buy/sell

@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -147,6 +148,20 @@ namespace {
   return 0;
 }
 
+// A money field read as an OPTIONAL, so ABSENT is distinguishable from ZERO.
+// `json_paise` collapses both to 0, which is right for an average price but wrong
+// for a TRIGGER: absent (and Kite's `trigger_price: 0` on a non-stop order) mean
+// "this order is not a stop", while a real armed trigger is always > 0. Anything
+// non-positive therefore comes back as nullopt — the domain's "not a stop order".
+[[nodiscard]] std::optional<std::int64_t> json_trigger_paise(const json& obj, const char* key) {
+  const auto it = obj.find(key);
+  if (it == obj.end() || it->is_null()) {
+    return std::nullopt;
+  }
+  const std::int64_t paise = json_paise(obj, key);
+  return paise > 0 ? std::optional<std::int64_t>{paise} : std::nullopt;
+}
+
 // Render integer paise as a Kite rupee-decimal string ("12350" -> "123.50"),
 // no float. Used for the place price param.
 [[nodiscard]] std::string paise_to_decimal(std::int64_t paise) {
@@ -197,6 +212,24 @@ namespace {
       return "SL-M";
   }
   return "MARKET";
+}
+
+// Map a Kite `order_type` string BACK onto the domain enum. An unrecognized value
+// falls CLOSED to Market — and the caller then suppresses the trigger for that
+// row (see fetch_orders), because "Market carrying a trigger" is a shape the
+// validation gate refuses outright: publishing it would poison the order the next
+// time anything touched it.
+[[nodiscard]] domain::OrderType parse_order_type(const std::string& text) noexcept {
+  if (text == "LIMIT") {
+    return domain::OrderType::Limit;
+  }
+  if (text == "SL") {
+    return domain::OrderType::StopLoss;
+  }
+  if (text == "SL-M") {
+    return domain::OrderType::StopLossMarket;
+  }
+  return domain::OrderType::Market;  // MARKET, absent, or unrecognized
 }
 
 [[nodiscard]] const char* kite_product(domain::Product product) noexcept {
@@ -262,9 +295,17 @@ namespace {
       intent.order_type == domain::OrderType::StopLoss) {
     params["price"] = paise_to_decimal(intent.price.paise());
   }
-  if (intent.order_type == domain::OrderType::StopLoss ||
-      intent.order_type == domain::OrderType::StopLossMarket) {
-    params["trigger_price"] = paise_to_decimal(intent.price.paise());
+  // The TRIGGER is its own number now (IMP-11), read from the intent's
+  // `trigger_price` rather than duplicated from `price`. A stop order whose
+  // trigger is ABSENT emits NO `trigger_price` field at all: Kite then rejects the
+  // SL/SL-M outright, which is a definitive broker verdict the dispatcher handles
+  // safely. Falling back to `price` (the pre-IMP-11 behavior) would instead arm a
+  // real stop at the wrong level, silently. The gate refuses this shape upstream;
+  // this is the adapter's own fail-closed backstop.
+  if (intent.trigger_price.has_value() &&
+      (intent.order_type == domain::OrderType::StopLoss ||
+       intent.order_type == domain::OrderType::StopLossMarket)) {
+    params["trigger_price"] = paise_to_decimal(intent.trigger_price->paise());
   }
   return params;
 }
@@ -387,6 +428,25 @@ Result<std::vector<domain::Order>> KiteBrokerAdapter::fetch_orders() {
     order.state = map_status(json_str(ko, "status"));
     order.filled_qty = domain::Quantity::of(json_int(ko, "filled_quantity"));
     order.avg_price = domain::Price::from_paise(json_paise(ko, "average_price"));
+    // The ORDER TYPE has to come back too, and it has to come back BEFORE the
+    // trigger is published: a reconciled stop that reported as Market while
+    // carrying a trigger would be a shape the validation gate refuses (see the
+    // matrix in risk/validation_gate.cpp), so the next touch of that order would
+    // fail closed on data we invented.
+    order.intent.order_type = parse_order_type(json_str(ko, "order_type"));
+    // Round-trip the trigger back into the domain WHERE THE PAYLOAD CARRIES ONE
+    // *AND* the row is actually a stop. Kite reports `trigger_price: 0` for every
+    // non-stop order, so the optional stays nullopt unless a real (positive)
+    // trigger is present; and an unrecognized order_type fell closed to Market
+    // above, which suppresses the trigger here — a row we did not understand
+    // never gets published as an armed stop.
+    const bool is_stop = order.intent.order_type == domain::OrderType::StopLoss ||
+                         order.intent.order_type == domain::OrderType::StopLossMarket;
+    if (is_stop) {
+      if (const auto trigger = json_trigger_paise(ko, "trigger_price")) {
+        order.intent.trigger_price = domain::Price::from_paise(*trigger);
+      }
+    }
     out.push_back(std::move(order));
   }
   return out;

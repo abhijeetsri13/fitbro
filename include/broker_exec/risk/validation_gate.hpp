@@ -15,6 +15,26 @@
 // hedge-completion / emergency) is EXEMPT from the entry-only blocks — a
 // protective leg is never frozen.
 //
+// STOP-ORDER SHAPE (IMP-11). OrderIntent carries a distinct
+// `std::optional<Price> trigger_price`, so the gate owns the (order_type x price
+// fields) matrix and enforces it FAIL-CLOSED as the `order-shape` check:
+//
+//   Market    limit ignored   trigger FORBIDDEN
+//   Limit     limit REQUIRED  trigger FORBIDDEN
+//   StopLoss  limit REQUIRED  trigger REQUIRED   (SL — a stop-loss LIMIT)
+//   SL-M      limit ignored   trigger REQUIRED   (fires a market order)
+//
+// An SL's two prices must also be SIDE-ORDERED — SELL requires limit <= trigger,
+// BUY requires limit >= trigger (equal allowed). A swapped pair is a shape bug the
+// broker accepts happily: the stop arms and then sits unfillable through the whole
+// move it existed to escape.
+//
+// The trigger is tick-checked exactly as the limit is (the pre-IMP-11 gate
+// tick-checked SL-M's `price` because the domain had nowhere else to carry a
+// trigger; it now reads the real field). SHAPE VALIDATION IS NOT EXIT-EXEMPT: an
+// exit skips the entry-only blocks but never the shape/tick checks, because a
+// malformed protective order is a broker rejection, not protection.
+//
 // BOUNDARY: risk depends INWARD only on domain, errors, refdata, capabilities
 // and ports. No transport/adapter/SDK dependency.
 //

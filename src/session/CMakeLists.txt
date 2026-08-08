@@ -27,10 +27,13 @@ target_compile_features(broker_exec_session PUBLIC cxx_std_20)
 # CMake still propagates a static lib's PRIVATE deps to the final link. OpenSSL
 # (SHA-256), nlohmann_json (envelope parse), and warnings/sanitizers are likewise
 # implementation details -> PRIVATE.
+# domain::Order appears in safe_start.hpp's public API (require_no_legacy_stops /
+# is_legacy_trigger_less_stop — the IMP-11 cold-boot guard), so domain is PUBLIC.
 target_link_libraries(broker_exec_session
   PUBLIC
     broker_exec_ports
     broker_exec_errors
+    broker_exec_domain
   PRIVATE
     broker_exec_kite
     broker_exec_secrets
@@ -47,6 +50,7 @@ if(BROKER_EXEC_BUILD_TESTS)
       broker_exec_secrets          # real TokenStore for persistence assertions
       broker_exec_refdata          # real InstrumentMaster::require_fresh (safe-start AC-3)
       broker_exec_clock            # TestClock drives the real InstrumentMaster (AC-3)
+      broker_exec_domain           # domain::Order construction (IMP-11 legacy-stop guard)
       nlohmann_json::nlohmann_json # json appears directly in the test body
       Catch2::Catch2WithMain
       broker_exec_warnings
