@@ -17,11 +17,23 @@
 // endpoint exists or behaves that way. Marking a capability Supported on
 // self-authored evidence is exactly how a strategy dies mid-trade.
 //
+// AND EVERYTHING IS STILL UNKNOWN AFTER STORY 6.2. The Kotak adapter now passes
+// the same conformance kit that certifies Kite, with zero duplicates across the
+// full fault matrix — but that is TIER-1 (recorded-fixture) certification of the
+// adapter's LOGIC, not of the broker's wire contract. Fixture certification
+// deliberately flips NOTHING here.
+//
+// THE TIER-2 FLIP GATE IS `docs/kotak-min-qty-smoke.md` — the operator-run live
+// min-qty smoke. Its steps are mapped one-to-one onto the Unknowns they resolve
+// (see the promotion table in kotak_capabilities.cpp).
+//
 // Consequences, all intended: the capability gate rejects Kotak order flow until
-// a tier-2 LIVE verification promotes these entries; HeadlessSessionRefresh stays
+// that live verification promotes these entries; HeadlessSessionRefresh stays
 // Unknown so the runtime blocks and the operator re-establishes rather than
-// silently auto-refreshing; OrderUpdateWebsocket stays Unknown because the
-// protocol layer exists but no socket transport does until Story 6.2.
+// silently auto-refreshing; OrderUpdateWebsocket stays Unknown because the pure
+// protocol layer exists but no socket transport does; TagCarry stays Unknown,
+// which is why the adapter refuses to send a speculative client tag and
+// correlates by order id plus attribute corroboration instead.
 //
 // Nothing is marked Unsupported either — that is a CERTIFIED ABSENCE, and we have
 // certified nothing.

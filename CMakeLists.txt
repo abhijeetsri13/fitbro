@@ -90,15 +90,17 @@ add_subdirectory(src/options)          # hedge-first option execution: never mom
 add_subdirectory(src/isolation)        # per-strategy virtual book + global limit + independent stop (6.4)
 add_subdirectory(src/supervisor)       # supervisor decision core: exit-code contract + restart-backoff + absence alarm (6.5)
 add_subdirectory(src/brokerreason)     # versioned canonical rejection/status classifier: fail-closed reason + retry posture
-# Kotak Neo transport (6.1): REST client + multi-step auth + pure WS protocol.
-# Placed after brokerreason/secrets/capabilities, the modules it links.
+add_subdirectory(src/fillnorm)         # canonical fill normalizer: drive state off filled qty not event type; a push is never authoritative (exit only off a reconciled fill)
+# Kotak Neo adapter (6.1 transport + 6.2 BrokerPort impl).
+# Placed after brokerreason/fillnorm/secrets/capabilities, the modules it links —
+# 6.2's OrderState mapping drives off fillnorm's quantity-first normalizer.
 add_subdirectory(src/adapters/kotak)
 add_subdirectory(src/protection)       # library-owned protective-stop supervisor: never trust the GTT; re-arm on fired-but-unfilled
 add_subdirectory(src/modifyguard)      # modify-order safety guard: never let a modify cancel a working/partially-filled remainder
 add_subdirectory(src/priceband)        # pre-submission circuit/LPP price-band validator: block out-of-band entry, clamp out-of-band exit
 add_subdirectory(src/sessionguard)     # mid-session re-auth guard: detect a token that died DURING the session -> freeze entries, keep exits/reconcile alive, alert
 add_subdirectory(src/marginsafety)     # margin safety buffer: fail-closed buffer over the under-counting broker margin API + worst-case multi-leg
-add_subdirectory(src/fillnorm)         # canonical fill normalizer: drive state off filled qty not event type; a push is never authoritative (exit only off a reconciled fill)
+# NOTE: src/fillnorm is added ABOVE (before src/adapters/kotak), which links it.
 add_subdirectory(src/feedsub)          # websocket resubscribe guard: on every (re)connect re-issue the FULL subscription set + verify a first tick per token by a deadline -> flag connected-but-mute tokens (not tradable)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session

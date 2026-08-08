@@ -384,3 +384,14 @@ merged; no PR). NEW dep-free safety modules wire over injected seams; real trans
 REMAINING (future, dep/ripple-heavy, NOT done): Kotak adapter chain 6-1/6-2/6-3 + 6-5 process wiring (IXWebSocket);
 SL distinct trigger/limit on domain::OrderIntent (ripples across all constructors); wire the 10 new guards into a
 runtime composition root; per-broker freeze-qty + dated scrip-master data loaders.
+
+============== 20-ITERATION LOOP (2026-08-08+) ==============
+Mandate: "complete un-implemented stories, plan with fable (main), implement/fix/test with opus (subagents),
+loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier-2 follow-ups.
+- ITER 1 / 6-1 DONE (741baab): broker_exec::adapters::kotak — 3-leg auth (OAuth->view->MPIN) -> encrypted
+  bundle (nothing persisted on failed leg); KotakRestClient (Kite-surface parity, jData/sId); single-point
+  error map; pure WS protocol layer; all-Unknown caps. Review FIX-REQUIRED: C1 5xx-outranks-phrasing (502
+  "throttle" was RetrySafe = double-place), H1 validate() Healthy on captive-portal 200, H2 404->DoNotRetry
+  abandoned live orders, H3 scrip-master returned Not_Ok envelope as data; +M1-M6 (sid/auth redact, mutation
+  RetrySafe downgrade, "instrument token"!=session death, refusal allowlist, caps->Unknown, dump no-throw).
+  46/46 green. NOTE: .agents/ added to .gitignore (first commit swept it; reset+redone clean).

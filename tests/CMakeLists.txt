@@ -85,6 +85,39 @@ target_link_libraries(broker_exec_kite_conformance_tests
     broker_exec_sanitizers)
 add_test(NAME broker_exec_kite_conformance_tests COMMAND broker_exec_kite_conformance_tests)
 
+# ── Kotak Neo adapter conformance (Story 6.2) ───────────────────────────────
+# The SAME broker-agnostic kit again, now gating the real KotakBrokerAdapter via a
+# stateful recorded Kotak-HTTP server (synthetic session bundle, no live creds).
+# Deliberately mirrors the Kite target above line-for-line — same kit, same bar,
+# a different BrokerFactory — which is the whole portability claim (FR-37, CAP-13).
+#
+# TIER-1 ONLY: green here does NOT promote any entry in kotak_capabilities(); they
+# stay Unknown until the operator-run live smoke in docs/kotak-min-qty-smoke.md
+# passes (architecture TO-6).
+add_executable(broker_exec_kotak_conformance_tests
+  conformance/kotak_conformance_test.cpp)
+target_include_directories(broker_exec_kotak_conformance_tests
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/conformance)
+target_link_libraries(broker_exec_kotak_conformance_tests
+  PRIVATE
+    broker_exec_adapters_kotak  # KotakBrokerAdapter + REST client + HttpClient seam
+    broker_exec_capabilities    # the AC-2 "tier-1 flips nothing" capability guard
+    broker_exec_runtime
+    broker_exec_fake_broker     # FaultConfig (the per-scenario fault selector)
+    broker_exec_intentlog
+    broker_exec_store
+    broker_exec_idempotency
+    broker_exec_lifecycle
+    broker_exec_clock
+    broker_exec_ports
+    broker_exec_domain
+    broker_exec_errors
+    nlohmann_json::nlohmann_json  # the recorded server builds Kotak JSON directly
+    Catch2::Catch2WithMain
+    broker_exec_warnings
+    broker_exec_sanitizers)
+add_test(NAME broker_exec_kotak_conformance_tests COMMAND broker_exec_kotak_conformance_tests)
+
 # ── SIGKILL worker (plain exe — NO Catch2) ──────────────────────────────────
 # A standalone `int main(argc,argv)` spawned by the SIGKILL test. It installs the
 # Dispatcher pre-send barrier (std::_Exit, the portable uncatchable-kill analog)

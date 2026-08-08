@@ -1,6 +1,7 @@
-# broker_exec::adapters_kotak — the native Kotak Neo transport: multi-step auth,
-# REST protocol, error mapping and the pure websocket protocol layer (Story 6.1,
-# FR-1/FR-25, IBR-6).
+# broker_exec::adapters_kotak — the native Kotak Neo adapter: multi-step auth,
+# REST protocol, error mapping, the pure websocket protocol layer (Story 6.1,
+# FR-1/FR-25, IBR-6) and the BrokerPort implementation itself (Story 6.2,
+# FR-1/FR-2/FR-37).
 #
 # An ADAPTER (outer layer): the only place a transport/SDK may live (hexagonal
 # boundary enforced). It reuses the broker-agnostic HttpClient seam that shipped
@@ -14,6 +15,7 @@ add_library(broker_exec_adapters_kotak STATIC
   kotak_rest_client.cpp
   kotak_ws_protocol.cpp
   kotak_capabilities.cpp
+  kotak_broker_adapter.cpp
 )
 add_library(broker_exec::adapters_kotak ALIAS broker_exec_adapters_kotak)
 
@@ -24,22 +26,25 @@ target_compile_features(broker_exec_adapters_kotak PUBLIC cxx_std_20)
 
 # PUBLIC: the Result<T>/Error vocabulary, the SecretProvider port, the TokenStore
 # (KotakSessionEstablisher's ctor), the CapabilitySet returned by
-# kotak_capabilities(), and nlohmann_json (the REST methods return
-# Result<nlohmann::json>) all appear in the public headers.
-# PRIVATE: domain (scrub) and brokerreason (the canonical reject classifier) are
-# implementation details of the .cpp files, as are warnings/sanitizers.
+# kotak_capabilities(), nlohmann_json (the REST methods return
+# Result<nlohmann::json>), and — since Story 6.2 — the domain types + BrokerPort
+# that KotakBrokerAdapter's public header speaks in.
+# PRIVATE: brokerreason (the canonical reject classifier) and fillnorm (the
+# canonical, quantity-first fill normalizer that drives the OrderState mapping)
+# are implementation details of the .cpp files, as are warnings/sanitizers.
 # NOTE: broker_exec_kite is deliberately NOT linked — only its header-only
 # HttpClient seam is included, and the include path is already PUBLIC above.
 target_link_libraries(broker_exec_adapters_kotak
   PUBLIC
     broker_exec_ports
+    broker_exec_domain
     broker_exec_errors
     broker_exec_secrets
     broker_exec_capabilities
     nlohmann_json::nlohmann_json
   PRIVATE
-    broker_exec_domain
     broker_exec_brokerreason
+    broker_exec_fillnorm
     broker_exec_warnings
     broker_exec_sanitizers)
 
