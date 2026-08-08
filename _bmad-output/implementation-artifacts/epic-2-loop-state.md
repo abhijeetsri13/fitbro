@@ -404,3 +404,13 @@ loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier
   -> broker-truth tally), H3 working+unknown-total-field -> terminal Filled (absorbing), H4 resolver rung-3
   overrode adapter refusal (attrs now published only for positively-correlated rows + stack pin test);
   M1 fill clamp, M2 money-parse overflow UB, M5 square_off NotSupported. 47/47 green.
+- ITER 3 / 6-3 DONE (b240ca3): broker_exec::composition — make_broker(config,deps) w/ capability gate BEFORE
+  construction, mandatory declaration (empty must be explicit), per-call mutation gate on admitted caps,
+  FixtureCertification quarantined type + assert_production_posture; portability proof: one strategy TU vs
+  both recorded servers via config flip (entry+exit), adapter-freedom LINK-enforced (OBJECT lib), source-scan
+  test, boundary rules extended (domain/ports forbid kite/kotak/composition targets). Review FIX-REQUIRED:
+  H1 default BrokerOptions{} = vacuous gate (ungated live-order port on all-Unknown Kotak), H2 ungated
+  mutation surface (square_off mid-trade divergence), M1-M4, L1-L4. One orchestrator inline fix: ownership
+  test needed answering secret provider (kite REST fetches secrets pre-transport). 49/49 green.
+  FOLLOW-UP (tracked): total-outage lane (place-429+read-429) needs kit change; MatchKind weak-match signal;
+  refdata/kite migration onto domain/decimal_paise.hpp.

@@ -53,9 +53,12 @@ add_subdirectory(third_party/sqlite3)
 # ORCHESTRATOR-OWNED INTEGRATION POINT: later stories append their module
 # subdirectories below (one add_subdirectory per module target). Module
 # CMakeLists files are self-contained so parallel work does not collide here.
-add_subdirectory(src/platform)   # cross-platform OS seam (fsync/_commit, perms, ...)
-add_subdirectory(src/domain)
+# `errors` owns Result<T>/Error and depends on nothing, so it is added FIRST:
+# `platform` now returns a typed Result<FileLock> from its cross-process file
+# lock (Story 6.5b) and therefore links it PUBLICly.
 add_subdirectory(src/errors)
+add_subdirectory(src/platform)   # cross-platform OS seam (fsync/_commit, perms, file lock, ...)
+add_subdirectory(src/domain)
 add_subdirectory(src/ports)
 add_subdirectory(src/clock)      # SystemClock/TestClock + skew/stall detector (impl of ClockPort)
 add_subdirectory(src/adapters)
@@ -88,7 +91,8 @@ add_subdirectory(src/cli)              # thin operator CLI + localhost health en
 add_subdirectory(src/options)          # hedge-first option execution: never momentarily naked (5.1)
 # --- Epic 6 ---
 add_subdirectory(src/isolation)        # per-strategy virtual book + global limit + independent stop (6.4)
-add_subdirectory(src/supervisor)       # supervisor decision core: exit-code contract + restart-backoff + absence alarm (6.5)
+add_subdirectory(src/supervisor)       # supervisor decision core: exit-code contract + restart-backoff + absence alarm (6.5) + multi-account SupervisorPlan (6.5b)
+add_subdirectory(src/accounts)         # multi-account process wiring (6.5b): per-account data-dir layout + shared refdata cache behind the cross-process file lock
 add_subdirectory(src/brokerreason)     # versioned canonical rejection/status classifier: fail-closed reason + retry posture
 add_subdirectory(src/fillnorm)         # canonical fill normalizer: drive state off filled qty not event type; a push is never authoritative (exit only off a reconciled fill)
 # Kotak Neo adapter (6.1 transport + 6.2 BrokerPort impl).

@@ -1,0 +1,121 @@
+# broker-exec@.service — systemd TEMPLATE unit, one instance per account.
+#
+# This is the OS-level half of FR-33 (architecture ID-1). The library ships a
+# supervision DECISION core (broker_exec::supervisor::SupervisorPlan); systemd
+# does the actual spawning, restarting and backing off. The library never forks,
+# never execs and never spawns a process — that split is deliberate, and this
+# file is the other side of it.
+#
+# ── INSTALL ─────────────────────────────────────────────────────────────────
+#   sudo install -m 0644 broker-exec@.service broker-exec-alarm@.service \
+#        /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now broker-exec@kite-primary.service
+#
+# `%i` is the instance name — the ACCOUNT ID after the "@". It MUST match the
+# library's account-id charset [a-z0-9_-]{1,64} (see
+# broker_exec::accounts::validate_account_id): LOWERCASE ONLY, no dots, no
+# slashes. systemd would otherwise escape it and the unit's paths would stop
+# matching the data directory.
+#
+# ── EXIT-CODE CONTRACT (broker_exec::supervisor) ────────────────────────────
+#   0   clean shutdown        -> no restart (Restart=on-failure ignores success)
+#   70  fail-closed, needs a human -> NO restart, ever (RestartPreventExitStatus)
+#   any other code / signal   -> crash -> restart with backoff, bounded by the
+#                                start limit below (systemd's crash-loop breaker)
+#
+# ── EDIT BEFORE USE ─────────────────────────────────────────────────────────
+# ExecStart and User/Group are deployment-specific placeholders.
+
+[Unit]
+Description=Broker-neutral execution engine (account %i)
+After=network-online.target
+Wants=network-online.target
+
+# CRASH-LOOP CIRCUIT BREAKER (systemd's mirror of SupervisorPolicy's breaker):
+# more than 5 starts in 10 minutes and the unit is left FAILED for a human,
+# rather than flapping against the broker API forever.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+# Page a human when this instance gives up (crash-loop breaker tripped, or a
+# fail-closed exit). OnFailure fires for a FAILED unit, which is exactly those
+# two cases — a clean exit(0) is not a failure and does not trigger it.
+OnFailure=broker-exec-alarm@%i.service
+
+[Service]
+Type=simple
+
+# ONE SERVICE USER FOR EVERY ACCOUNT. The shared reference-data cache is written
+# by whichever instance wins the download and read by all the others, and
+# StateDirectoryMode=0700 below makes it owner-only. Running instances as
+# DIFFERENT users would therefore break the cache (and the cross-process lock)
+# outright. If per-account OS users are a hard requirement, do NOT use
+# StateDirectory for the shared path: give the shared cache its own group,
+# chgrp/chmod 2770 it, and switch StateDirectoryMode to 0750 — see
+# docs/multi-account.md.
+User=broker-exec
+Group=broker-exec
+
+# systemd CREATES these under /var/lib, owned by User:Group, before ExecStart —
+# and it also grants read-write access to exactly these paths and nothing else,
+# which is what ReadWritePaths would have had to do by hand (and would silently
+# fail on if the directory did not exist yet).
+#   /var/lib/broker-exec/accounts/%i     — this account's private tree
+#   /var/lib/broker-exec/shared/refdata  — the cache shared by every instance
+StateDirectory=broker-exec/accounts/%i broker-exec/shared/refdata
+StateDirectoryMode=0700
+
+Environment=BROKER_EXEC_ACCOUNT_ID=%i
+Environment=BROKER_EXEC_DATA_ROOT=/var/lib/broker-exec/accounts
+Environment=BROKER_EXEC_SHARED_REFDATA=/var/lib/broker-exec/shared/refdata
+
+ExecStart=/usr/local/bin/broker-exec run \
+  --account %i \
+  --data-root ${BROKER_EXEC_DATA_ROOT} \
+  --shared-refdata ${BROKER_EXEC_SHARED_REFDATA}
+
+# ── Restart policy — the OS half of the exit-code contract above ────────────
+Restart=on-failure
+
+# Capped exponential backoff, mirroring SupervisorPolicy's schedule: start at 1s
+# and double up to a 300s ceiling. RestartSteps/RestartMaxDelaySec require
+# systemd >= 254.
+RestartSec=1
+RestartSteps=9
+RestartMaxDelaySec=300
+# FALLBACK for systemd < 254 — delete the three lines above and uncomment this
+# flat delay (no exponential growth; the start limit still bounds the loop):
+#RestartSec=5
+
+# 70 == "fail closed, a human is required". Restarting would just re-hit the same
+# wall (expired credentials, a tripped kill switch, a failed safe-start gate), so
+# the unit stays down and visible.
+RestartPreventExitStatus=70
+
+# Stop politely, then insist. The engine flushes its intent log on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# ── Hardening basics ────────────────────────────────────────────────────────
+NoNewPrivileges=true
+# Everything under /usr, /boot and /etc read-only; /var and /run inaccessible
+# except the StateDirectory paths granted above.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# Broker REST + WebSocket over IP; AF_UNIX for the local health socket.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# The per-account tree is created 0700 by AccountDataDir::ensure(); this keeps
+# anything the process creates itself just as tight.
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -5,6 +5,7 @@ Documentation for the **Broker-Neutral Trading Execution Library** (C++20). The 
 ## Start here
 - [Project README](../README.md) — what it is, the core promise, the stack.
 - [Architecture Overview](architecture-overview.md) — the design, the safety guarantees, and the C++ technology stack.
+- [Multi-account operation](multi-account.md) — process-per-account layout, the shared refdata cache and its cross-process lock, the exit-code contract, and the systemd template unit.
 - [Roadmap](roadmap.md) — the 6 epics and what ships in the MVP.
 
 ## The full design contract

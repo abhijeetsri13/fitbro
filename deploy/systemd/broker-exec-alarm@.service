@@ -1,0 +1,41 @@
+# broker-exec-alarm@.service — the OnFailure target of broker-exec@.service.
+#
+# WHAT IT IS FOR. `broker-exec@%i` reaches a FAILED state in exactly the two
+# cases the supervisor decision core calls "escalate":
+#   * a fail-closed exit (code 70) — RestartPreventExitStatus leaves it failed;
+#   * a crash loop that exhausted StartLimitBurst — the breaker tripped.
+# Both mean "this account is absent and a human is required". Without an
+# OnFailure hook that fact lives only in `systemctl status`, which nobody is
+# watching at 09:20 — the absence alarm the library raises in-process cannot be
+# raised by a process that is no longer running.
+#
+# WHAT IT DOES BY DEFAULT. Writes one redaction-safe line to the journal. That
+# is deliberately the floor, not the goal: point ExecStart at whatever your
+# operator actually reads (the library's own alerting CLI, an ntfy/Pushover
+# curl, a Telegram bot). Keep the payload to the account id and the unit state —
+# never a token, never a broker response body.
+#
+# INSTALL: alongside broker-exec@.service; no `enable` needed (it is triggered
+# by OnFailure, not by a target).
+#
+#   systemctl list-units 'broker-exec-alarm@*'   # what has fired
+#   journalctl -u 'broker-exec-alarm@*' -f
+
+[Unit]
+Description=Absence alarm for broker-exec account %i
+# Do not let a broken alarm unit stop the operator from restarting the account.
+After=broker-exec@%i.service
+
+[Service]
+Type=oneshot
+User=broker-exec
+Group=broker-exec
+
+# REPLACE THIS with a real notification. `%i` is the account id.
+ExecStart=/usr/bin/logger --tag broker-exec-alarm --priority daemon.crit \
+  "ABSENCE ALARM: account %i is FAILED (fail-closed exit 70 or crash-loop breaker). Manual action required: journalctl -u broker-exec@%i, then 'systemctl reset-failed broker-exec@%i' once the cause is fixed."
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true

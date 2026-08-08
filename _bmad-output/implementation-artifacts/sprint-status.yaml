@@ -107,10 +107,10 @@ development_status:
   epic-5-retrospective: optional
 
   # ── Epic 6: Breadth — Kotak Neo Adapter & Multi-Account ──
-  epic-6: in-progress
+  epic-6: done
   6-1-kotak-neo-rest-websocket-client-and-multi-step-auth: done
   6-2-kotak-neo-adapter-certification: done
   6-3-broker-portability-proof: done
   6-4-multi-strategy-isolation: done
-  6-5-multi-account-process-per-account-with-supervisor: in-progress
+  6-5-multi-account-process-per-account-with-supervisor: done
   epic-6-retrospective: optional

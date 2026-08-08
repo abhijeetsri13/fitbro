@@ -54,11 +54,38 @@ A strategy says *"sell this NIFTY option, hedge-first."* The library validates i
 |---|---|
 | [docs/](docs/) | Documentation index |
 | [docs/architecture-overview.md](docs/architecture-overview.md) | Design, safety guarantees, C++ stack |
+| [docs/multi-account.md](docs/multi-account.md) | Running several accounts: process-per-account, shared refdata cache, exit-code contract, systemd |
 | [docs/roadmap.md](docs/roadmap.md) | The 6 epics and MVP scope |
 | [Specification (SPEC.md + companions)](_bmad-output/specs/spec-broker-neutral-execution/SPEC.md) | The canonical contract — 34 capabilities |
 | [PRD](_bmad-output/planning-artifacts/prds/prd-fitbro-2026-06-17/prd.md) | 14 features, FR-1…FR-37 |
 | [Architecture](_bmad-output/planning-artifacts/architecture.md) | Decisions, patterns, source tree, adversarial review |
 | [Epics & Stories](_bmad-output/planning-artifacts/epics.md) | 6 epics, 49 implementable stories |
+
+## Multi-account operation
+
+Several broker accounts on one machine run as **one OS process per account** — an
+account is a blast radius, and the OS is the only isolation boundary that holds
+under a segfault, an OOM kill or a stuck socket. Each process owns a private
+`0700` data directory (intent log, SQLite projection, token store, ledger, kill
+journal) derived from a validated account id, so two accounts can never share a
+file.
+
+The one thing they *do* share is reference data: the instrument master and
+trading calendar are identical per `(broker, segment, trading_date)`, so a
+**shared cache behind a cross-process file lock** lets exactly one process
+download while the rest read its atomically published artifact — one download for
+N accounts, and a fail-closed `DataStale` error rather than a stampede if the
+lock cannot be had.
+
+Supervision is split on purpose: the library owns the **decision**
+(`SupervisorPlan` — per-account restart backoff, crash-loop breaker and absence
+alarm, with account A's crash loop provably unable to affect account B), and
+**systemd owns the spawning** through the template unit in
+[`deploy/systemd/broker-exec@.service`](deploy/systemd/broker-exec@.service). The
+library never forks, execs or spawns.
+
+See [docs/multi-account.md](docs/multi-account.md) for the layout, the exit-code
+contract table and the systemd usage.
 
 ## Roadmap (epics)
 
