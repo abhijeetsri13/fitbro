@@ -425,3 +425,10 @@ loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier
   (b) runtime composition root wiring funds_check+calendar+guards into the gate (2-8 invariant);
   (c) Kite/Kotak square_off real flatten + exchange-via-instrument-master; (d) decimal_paise migration +
   provenance non-scrubbed fields; (e) freeze-qty table source; (f) kit total-outage lane.
+- ITER 5 / IMP-11 DONE (b9449a0): OrderIntent.trigger_price optional; gate shape matrix + side-relative
+  ordering + trigger tick; Kite trigger_price field (SL-M omits price), Kotak pr=0+tp write / trgPrc-only
+  read; order_type parse-back (no Market+trigger); priceband SL-M trigger check; resolver trigger
+  discriminator; store migration 2 nullable column; idempotency SL-M price->0 canonical (mark wobble no
+  longer mints duplicate stop) + golden-hex pins + safe-start require_no_legacy_stops (pre-upgrade working
+  stop = refuse boot, docs/upgrade-imp-11-stops.md). Review FIX-REQUIRED: H1 SL-M price in dedupe key,
+  H2 upgrade overclaim, M1-M6. 50/50 green.
