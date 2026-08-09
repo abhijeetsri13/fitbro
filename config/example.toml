@@ -52,3 +52,42 @@ log_dir = "/var/log/broker_exec"
 # Verbosity: "trace" | "debug" | "info" | "warn" | "error".
 # (env: BROKER_EXEC_LOGGING_LEVEL)
 level = "info"
+
+[strategies]
+# The strategies this deployment DECLARES, by name (IMP-19). Optional: an absent
+# or empty list is legal (a host that registers strategies programmatically
+# declares none here). The list is VALIDATED, not required.
+#
+# EVERY ENTRY IS CHECKED AT LOAD and a bad one FAILS the load, naming the entry
+# (as `strategies.names entry #N`) and the rule it broke. A name must be 1..64
+# bytes drawn from [A-Za-z0-9_-], carry at least one letter or digit, and have
+# every '-'/'_'-separated segment either ALL LETTERS or ALL HEX/DIGITS:
+#
+#   accepted:  "alpha"  "S-1"  "IRON_CONDOR"  "atm-straddle-9-20"  "momentum-v-2"
+#   rejected:  "S1"  "momentum-v2"  "iron condor v2"  "a.b"  "a#b"  "-"  ""
+#
+# That is not cosmetic. The name is the FIRST SEGMENT of every client_ref it mints
+# ("<strategy>-<sig8>-<uuid>"), and the redaction scrubber only lets a provenance
+# column through verbatim when every segment is homogeneous — so "S1" makes every
+# alert and every ledger entry about that strategy's orders read
+# `client_ref=***REDACTED***`, unlinkable to the store and the intent log. The
+# loader PRINTS THE FIX where one exists ("S1" -> use 'S-1'). The same rule is
+# re-checked at cold boot by the safe-start gate.
+#
+# SCOPE: this list is a DECLARATION, not a whitelist the order path enforces. A
+# host that fills OrderIntent::strategy directly is not checked against it.
+#
+# RENAMING IS NOT FREE: the strategy name is hashed into the signal signature, so
+# a rename changes the signature of every signal that strategy emits and restart
+# dedupe will not recognise its own in-flight orders. Rename BETWEEN sessions,
+# FLAT, never with working orders outstanding.
+#
+# ENV OVERRIDE (BROKER_EXEC_STRATEGIES_NAMES, comma-separated) — note the exact
+# semantics, they are load-bearing:
+#   * it REPLACES THE WHOLE LIST rather than adding to it;
+#   * ASCII spaces/tabs around each entry are trimmed ("alpha, S-1" is two names);
+#   * an EMPTY or all-blank variable means an EMPTY LIST (not "one empty name");
+#   * a TRAILING COMMA is NOT ignored: "alpha," yields a second, EMPTY entry, and
+#     an empty name FAILS the load. That is deliberate — a typo is named rather
+#     than silently guessed away.
+names = ["alpha", "S-1", "atm-straddle-9-20"]

@@ -108,9 +108,10 @@ inline constexpr std::string_view kRedactionMarker = "***REDACTED***";
 //     allowlist and is scrubbed. An id column that stops looking like an id is
 //     precisely when redaction is wanted.
 //
-// THE `strategy` COLUMN — A REAL, ACCEPTED COST, NOT AN OVERSIGHT. `strategy` is
-// caller-supplied and NOTHING in this library constrains its charset today (see
-// idempotency::make_client_ref, which concatenates it into the client_ref as-is).
+// THE `strategy` COLUMN — THE COST THAT MOTIVATED is_valid_strategy_name BELOW.
+// `strategy` is caller-supplied and NOTHING inside this block constrains its
+// charset (see idempotency::make_client_ref, which concatenates it into the
+// client_ref as-is).
 // A perfectly ordinary strategy name with a SPACE — "iron condor v2" — is
 // therefore not id-shaped, survives scrub() untouched, and is then rejected
 // WHOLESALE by the block guard, so it reaches the operator as
@@ -128,14 +129,39 @@ inline constexpr std::string_view kRedactionMarker = "***REDACTED***";
 // to scrub() and is destroyed. A strategy called "S1" makes every alert about its
 // orders say `client_ref=***REDACTED***`. Spelling it "S-1" fixes it entirely.
 //
-// STATUS: DOCUMENTED AND PINNED, NOT YET ENFORCED. The binding requirement is
-// stated on make_client_ref (idempotency.hpp) — [A-Za-z0-9_-], with homogeneous
-// separator-delimited segments — and both outcomes above are pinned by a test in
-// redaction_test.cpp so they are a DECISION rather than an accident. Enforcing it is
-// deliberately left to its own story: the only real boundary is reserve()/place(),
-// where rejecting a name means REFUSING TO PLACE AN ORDER — a trading-behaviour
-// change that must be introduced with its own operator-facing migration, not
-// smuggled in as a side effect of a redaction fix.
+// STATUS SINCE IMP-19: ENFORCED WHERE A NAME IS DECLARED, NOT WHERE ONE IS USED.
+// The rule is `is_valid_strategy_name()` below (derived from
+// is_provenance_id_shape, in this same file, so the two cannot drift), and it is
+// applied at the two places a strategy name is CONFIGURATION rather than per-order
+// data:
+//   * config::load() rejects an invalid `strategies.names` entry outright, and
+//   * session::require_valid_strategy_names(), wired as the REQUIRED safe-start
+//     check `SafeStartContext::strategy_name_check`, refuses to start.
+// Both name the offending name AND why, so the operator fixes it before trading.
+//
+//   WHAT THIS IS NOT: IT IS NOT CONTAINMENT. Do not read the above as "an invalid
+//   name cannot reach a client_ref". `config::StrategiesConfig::names` is a
+//   DECLARATION and has no other consumer in this tree; the name that ACTUALLY
+//   mints a ref is `domain::OrderIntent::strategy`, which a host fills in directly
+//   and which Dispatcher::place() never cross-checks against any list. THE LIBRARY
+//   ITSELF TAKES THAT ROUTE: the square-off exit path sets
+//   `exit.strategy = "square_off"` (src/adapters/kite/kite_broker_adapter.cpp and
+//   src/adapters/kotak/kotak_broker_adapter.cpp) — a name no configuration list
+//   contains. It happens to be a VALID name, which is the point: the bypass is not
+//   hypothetical, it is in the shipping code and it is fine only by luck of
+//   spelling. Closing that residual needs a check ON THE ORDER PATH, deliberately
+//   NOT taken here because it would mean refusing to place an order mid-session.
+//   SECONDARY (pre-existing, and true of all ten safe-start checks): nothing in
+//   this repo constructs a SafeStartContext outside tests, so the cold-boot check
+//   has no production caller yet either.
+//
+// The previous story deferred this because it framed the only boundary as
+// reserve()/place(), where rejecting means REFUSING TO PLACE AN ORDER mid-session.
+// That framing was wrong: a strategy name is known at startup, so it belongs in
+// the cold-boot gate that already exists for exactly this class of "fail visibly
+// before trading" problem. THE ORDER PATH IS UNCHANGED — reserve()/place() gained
+// no new rejection, and both outcomes described above are still pinned by their
+// test in redaction_test.cpp (they document what an UNVALIDATED name still costs).
 
 // The longest value still considered an identifier. make_client_ref() mints
 // `<strategy>-<8 hex sig8>-<uuid>` where <uuid> is the CANONICAL RFC-4122 v4
@@ -156,6 +182,163 @@ inline constexpr std::size_t kMaxProvenanceIdChars = 128;
 // The single definition of the fail-closed rule, so no two consumers can drift.
 // Never throws as part of its logic (only std::bad_alloc, as with any string op).
 [[nodiscard]] std::string scrub_provenance_column(std::string_view value);
+
+// ── Strategy names (IMP-19) — the INPUT side of the id shape ─────────────────
+//
+// THE RULE IS DERIVED FROM is_provenance_id_shape ABOVE, NOT INVENTED. A strategy
+// name is the FIRST SEGMENT (or first few segments) of every client_ref
+// idempotency::make_client_ref mints — `<strategy>-<sig8>-<uuid>` — whose other
+// segments are hex by construction, so the ref is id-shaped exactly when the
+// strategy part contributes only well-formed segments. This predicate is that
+// condition, stated on the name alone:
+//
+//   V1. ATTRIBUTABLE: NON-EMPTY, AND CARRYING AT LEAST ONE LETTER OR DIGIT. An
+//       empty name mints `-<sig8>-<uuid>`, which is still id-shaped, but it renders
+//       the `strategy=` column as nothing at all — an order nobody can attribute.
+//       A name of nothing but separators (`-`, `___`, `-_-`) passes every OTHER
+//       rule here — it mints an id-shaped ref and survives its own column — and is
+//       EXACTLY as unattributable, so it is refused by the same rule rather than
+//       left as an inconsistency. Both halves are rejected because they are
+//       useless, not because they are unsafe. (Implementation note: the
+//       alphanumeric half is checked AFTER V4 so that an ill-formed or
+//       out-of-charset name is still DIAGNOSED as ill-formed or out-of-charset,
+//       which is the more useful thing to tell the operator.)
+//   V2. AT MOST kMaxStrategyNameChars BYTES — A POLICY NUMBER WITH HEADROOM, NOT
+//       AN ARITHMETIC ONE. The DERIVED ceiling is 78: a parent ref is len(name)+46
+//       chars (1 + sig8 + 1 + a 36-char canonical UUID), the widest child suffix in
+//       the tree is the slicer's `#999` at 4 bytes, and 78+46+4 = 128 =
+//       kMaxProvenanceIdChars exactly. 64 is a deliberate round number chosen BELOW
+//       that: a strategy name is a human label, 64 is already generous for one, and
+//       the remaining 14 bytes are headroom for a wider child suffix (a 5- or
+//       6-digit slice counter) so nobody has to redo this arithmetic to add one.
+//       Do not read 64 as derived — if the ref format or the child suffix grows it
+//       is the 78 that moves first, and 64 has slack for a while yet. The child
+//       suffixes must ALSO stay id-shaped: they are the client_ref an alert about a
+//       slice carries.
+//   V3. VALID UTF-8, in domain::canonical_text's sense — i.e. canonical_text(name)
+//       == name. Implied by V4 (the charset is ASCII), but checked first and
+//       separately so an ill-formed name is DIAGNOSED as ill-formed instead of as
+//       a stray character. An ill-formed name is otherwise carried raw through the
+//       store and the idempotency index and is only normalised at the log writer,
+//       where hash preimage and stored bytes then disagree (the IMP-17 defect).
+//   V4. EVERY BYTE IN [A-Za-z0-9_-]. That is the id charset MINUS '#', and the
+//       exclusion is derived too: idempotency::is_child_ref/parent_of key on '#',
+//       so a '#' inside a strategy name would make a PARENT ref parse as a CHILD
+//       of a truncated parent. A space, '.', '/', ':' or '=' is rejected here for
+//       the reason the block guard rejects it there ("iron condor v2").
+//   V5. EVERY '-'/'_'-SEPARATED SEGMENT IS HOMOGENEOUS — all letters, or all hex
+//       (all digits being a subset). This is rule 3b above, applied to the name:
+//       `S1` is one letter plus one digit in a single run, so a ref minted from it
+//       is NOT id-shaped and the whole ~48-char ref is destroyed by scrub().
+//   V6. THE NAME SURVIVES ITS OWN COLUMN: scrub_provenance_column(name) == name.
+//       Stated behaviourally, against the real scrubber, rather than restated as a
+//       second charset rule — so it cannot drift from scrub(). It bites in exactly
+//       one case V1-V5 leave open: a name that is a SINGLE segment is not
+//       id-shaped (rule 3a wants two), so it falls to scrub(), whose bare
+//       high-entropy rule destroys any >=20-char run mixing letters and digits.
+//       A 20-char all-hex name like `abcdef0123456789abcd` mints a perfectly
+//       id-shaped ref while its own `strategy=` column is redacted; splitting it
+//       with one '-' fixes both.
+//
+// WHAT V1-V6 BUY, AND WHERE IT IS PROVEN: for every accepted name, BOTH
+//   * `is_provenance_id_shape(make_client_ref(name, sig, uuid))`, and its `#<k>` /
+//     `#X` children, and
+//   * `scrub_provenance_column(name) == name`
+// hold. The first is the actual contract and is proven with the REAL minter in
+// idempotency_test.cpp ("IMP-19: every accepted strategy name mints an id-shaped
+// ref") — a predicate tested in isolation would only prove itself. It is proven
+// EXHAUSTIVELY, not by example: the companion case ("EXHAUSTIVE — every accepted
+// name over a small alphabet round-trips") sweeps every string of length <=5 over
+// {a,g,F,0,9,-,_} — one letter that is hex, one that is not, an uppercase, two
+// digits, both separators — and checks the ref, its `#1`/`#999`/`#X` children and
+// the name's own column for each name the rule accepts. LOOSEN V1-V6 AND THAT
+// SWEEP IS WHAT FAILS, which is the point of writing it that way.
+//
+// WHAT IT COSTS, STATED PLAINLY: `momentum-v2` IS REJECTED. `v2` is one letter
+// plus one digit, which is precisely the shape rule 3b exists to reject, and rule
+// 3b is what keeps a base64url credential out of a typed column. THE ENTIRE COST
+// IS ONE DASH, ONCE, AT CONFIG TIME, and the operator is not left to guess where:
+// the rejection message PRINTS THE REPLACEMENT (`momentum-v2` -> "use
+// 'momentum-v-2'"). `atm-straddle-9-20`, `alpha`, `S-1` and `IRON_CONDOR` are
+// accepted unchanged.
+//
+// THE ALTERNATIVE — RELAXING 3b FOR THE "STRATEGY SLOT" — WAS CONSIDERED AND
+// REJECTED. There are two versions of it and they fail for different reasons.
+//
+//   THE NARROW VERSION DOES NOT EVEN WORK. The strategy slot is not ONE segment;
+//   it is as many segments as the operator writes. In `momentum-v2-<sig8>-<uuid>`
+//   the offending segment `v2` is the SECOND, so a "first segment only" exemption
+//   admits nothing that is not already admitted.
+//
+//   THE VERSION THAT WOULD WORK IS TAIL-ANCHORING: recognise the minted tail
+//   `-<8 hex>-<8-4-4-4-12 hex>` and relax the head in front of it. That is a real
+//   option — it is rejected on its own merits, below, and NOT on the argument
+//   originally written here, which was false:
+//     NOT A REASON (the claim this text used to make): "it would fix the wrong
+//       half, because the bare `strategy=` column would still be destroyed by
+//       scrub()". That is true ONLY for a name of >=20 token chars MIXING letters
+//       and digits — `momentum-breakout-v2-intraday`, 29 chars. It is NOT true of
+//       the flagship example: `momentum-v2` is 11 chars, under scrub()'s 20-char
+//       high-entropy threshold, and renders fine as a bare column TODAY, as do
+//       `iron-condor-v2` and `bnf-15m`. For exactly these names tail-anchoring
+//       would have fixed the only thing that was broken. Do not reuse that
+//       argument.
+//     (a) THE TAIL IS UNAUTHENTICATED — ANYONE CAN FORGE IT FOR FREE. It is 46
+//         bytes of fixed shape: no secret, no signature, nothing a third party
+//         cannot type. Anchoring on it converts an UNCONDITIONAL structural
+//         property ("every segment is homogeneous") into one GATED BY A SHAPE THAT
+//         COSTS NOTHING TO MINT. That is the difference between a structural rule
+//         and a password, and this predicate is not holding a password.
+//     (b) THE PREDICATE IS SHARED WITH A BROKER-CONTROLLED COLUMN. The same
+//         is_provenance_id_shape decides `broker_order_id` — in
+//         render_provenance_block (src/domain/redaction.cpp) and in
+//         structured_logger's sentinel swap. Under tail-anchoring THE BROKER would
+//         choose which branch ITS OWN VALUE is evaluated under, by appending 46
+//         forgeable bytes: into a Critical alert body, and into the ledger's hash
+//         preimage. A guard whose subject selects its own rule is not a guard.
+//     (c) THE HEAD RULE HAS NO SAFE FORM AT THIS ALTITUDE. The natural head rule
+//         (charset + length) admits a 32-char Kite access token outright. Even the
+//         careful one — "the head must itself survive scrub()" — admits a 16-char
+//         mixed-alnum API key, because scrub()'s bare rule needs 20 chars before it
+//         fires. The worked counterexample, admitted VERBATIM from a typed column
+//         under tail-anchoring and REJECTED by the rule as shipped:
+//
+//           Xk29mZpQ7rTb4Lw8-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab
+//
+//         (16-char credential head, then a perfectly well-formed sig8 and UUID.)
+//     (d) DONE PROPERLY IT IS NOT A RELAXATION AT ALL — it is a SPLIT of
+//         ProvenanceField::Kind::Id into MintedRef (first-party: this library built
+//         the value) and ForeignId (broker-controlled), so a tail exemption could
+//         apply to the first and never to the second. That is a story of its own —
+//         a new column kind and every call site re-classified — not a loosened
+//         predicate, and it is the only shape in which (a)-(c) are answerable.
+// The cost of the rule as shipped is one '-' in a name; the cost of relaxing 3b in
+// place is a weaker credential guarantee on a broker-controlled column. That trade
+// is not close.
+//
+// RENAMING IS NOT FREE — SAY IT OUT LOUD. `strategy` is hashed into
+// idempotency::signal_signature, so renaming `S1` to `S-1` CHANGES THE SIGNATURE
+// OF EVERY SIGNAL that strategy emits: the restart dedupe will not recognise its
+// own in-flight orders, exactly as in the IMP-11 stop upgrade. Rename BETWEEN
+// sessions, FLAT, never with working orders outstanding. This is also why the
+// enforcement REJECTS a bad name instead of silently normalising it — a silent
+// rewrite would move every signature with no operator involved at all.
+inline constexpr std::size_t kMaxStrategyNameChars = 64;
+
+// True iff `name` satisfies V1-V6. Never throws as part of its logic (only a
+// std::bad_alloc, as with any string operation — it is deliberately expressed in
+// terms of canonical_text()/scrub_provenance_column() rather than reimplementing
+// either, so it allocates and is NOT noexcept). Cheap enough for a config-time /
+// cold-boot check, which are its only intended call sites.
+[[nodiscard]] bool is_valid_strategy_name(std::string_view name);
+
+// "" when `name` is valid; otherwise ONE operator-facing sentence naming the
+// offender and the rule it broke, with a suggested spelling where one exists
+// (e.g. "strategy name 'S1': segment 'S1' mixes letters and digits; spell it
+// 'S-1'"). Suitable for an Error message: the echoed name is TRUNCATED to
+// kMaxStrategyNameChars and every byte outside [A-Za-z0-9_-] is shown as '?', so
+// a hostile name can neither forge a provenance block nor overrun an alert.
+[[nodiscard]] std::string explain_invalid_strategy_name(std::string_view name);
 
 // ── Instrument-symbol columns (a SEPARATE shape, deliberately) ────────────────
 //
@@ -267,8 +450,20 @@ inline constexpr std::size_t kMaxInstrumentSymbolChars = 32;
 // (`... [client_ref=alpha-1]`), and a reader that greps for ` [k=v]` cannot tell
 // that substring from the block this function appended. The block's authenticity
 // therefore rests on an INVARIANT ON CALLERS, not on a check here: NO PRODUCTION
-// BODY MAY CARRY BROKER- OR STRATEGY-SUPPLIED TEXT. Today every body is a
-// first-party literal plus integers/enums, so the invariant holds by inspection.
+// BODY MAY CARRY BROKER- OR STRATEGY-SUPPLIED TEXT.
+//
+//   IT NO LONGER HOLDS "BY INSPECTION" — IMP-19 ENDED THAT, AND THE OLD WORDING
+//   HERE IS STALE. Almost every body is still a first-party literal plus
+//   integers/enums, but session::require_valid_strategy_names
+//   (src/session/safe_start.cpp) builds an Error message that EMBEDS
+//   CONFIG-SUPPLIED TEXT: the offending strategy name, the offending segment, and
+//   the suggested spelling. It is safe — but by a CHECK, not by inspection.
+//   domain::explain_invalid_strategy_name truncates the echo to
+//   kMaxStrategyNameChars and reduces every byte outside [A-Za-z0-9_-] to '?'
+//   before embedding it, so what reaches the body is inside the block charset by
+//   construction (brute-forced in redaction_test.cpp). ANY NEW BODY THAT ECHOES
+//   CALLER TEXT MUST DO THE SAME; nothing here will catch it if it does not.
+//
 // Making it structural would mean escaping or rejecting '[' in the body, which
 // changes every alert's text; it is deliberately deferred rather than assumed.
 //

@@ -335,3 +335,146 @@ TEST_CASE("a missing TOML file is reported as an error naming the path", "[confi
   CHECK(result.error().category == ErrorCategory::Validation);
   CHECK(result.error().message.find("not found") != std::string::npos);
 }
+
+// ── IMP-19: strategy names are configuration, and they are VALIDATED ──────────
+//
+// A strategy name is the FIRST SEGMENT of every client_ref it mints, so an
+// ill-shaped one makes every alert and every ledger entry about that strategy's
+// orders read `client_ref=***REDACTED***`. The rule and the diagnostic both come
+// from domain::is_valid_strategy_name / explain_invalid_strategy_name, so config
+// cannot drift from the redaction contract it is enforcing.
+
+TEST_CASE("strategy names load from the TOML and from a comma-separated env override",
+          "[config][IMP-19]") {
+  const TempToml file("strategies", R"toml(
+[engine]
+account_id = "acct"
+[broker]
+name = "kite"
+[paths]
+data_dir = "/data"
+[strategies]
+names = ["alpha", "S-1", "atm-straddle-9-20"]
+)toml");
+
+  // The one env key under test, spelled once.
+  const auto names_env = [](std::string value) {
+    return env_from({{"BROKER_EXEC_STRATEGIES_NAMES", std::move(value)}});
+  };
+
+  const auto from_file = load(file.path, env_from({}));
+  REQUIRE(from_file.has_value());
+  REQUIRE(from_file.value().strategies.names.size() == 3);
+  CHECK(from_file.value().strategies.names[0] == "alpha");
+  CHECK(from_file.value().strategies.names[2] == "atm-straddle-9-20");
+
+  // env WINS and REPLACES the whole list; surrounding spaces are trimmed.
+  const auto from_env = load(file.path, names_env("beta, momentum-v-2"));
+  REQUIRE(from_env.has_value());
+  REQUIRE(from_env.value().strategies.names.size() == 2);
+  CHECK(from_env.value().strategies.names[0] == "beta");
+  CHECK(from_env.value().strategies.names[1] == "momentum-v-2");
+
+  // An empty variable declares the EMPTY list, not a one-element list of "".
+  const auto cleared = load(file.path, names_env(""));
+  REQUIRE(cleared.has_value());
+  CHECK(cleared.value().strategies.names.empty());
+
+  // Absent everywhere -> empty list, and the config still loads.
+  const TempToml bare("no_strategies", R"toml(
+[engine]
+account_id = "acct"
+[broker]
+name = "kite"
+[paths]
+data_dir = "/data"
+)toml");
+  const auto none = load(bare.path, env_from({}));
+  REQUIRE(none.has_value());
+  CHECK(none.value().strategies.names.empty());
+}
+
+TEST_CASE("an ill-shaped strategy name fails the load, naming the entry and the fix",
+          "[config][IMP-19]") {
+  const TempToml file("bad_strategy", R"toml(
+[engine]
+account_id = "acct"
+[broker]
+name = "kite"
+[paths]
+data_dir = "/data"
+[strategies]
+names = ["alpha", "S1"]
+)toml");
+
+  const auto names_env = [](std::string value) {
+    return env_from({{"BROKER_EXEC_STRATEGIES_NAMES", std::move(value)}});
+  };
+
+  const auto result = load(file.path, env_from({}));
+  REQUIRE_FALSE(result.has_value());
+  CHECK(result.error().category == ErrorCategory::Validation);
+  CHECK(result.error().message.find("strategies.names") != std::string::npos);
+  CHECK(result.error().message.find("entry #2") != std::string::npos);
+  CHECK(result.error().message.find("segment 'S1'") != std::string::npos);
+  CHECK(result.error().message.find("use 'S-1'") != std::string::npos);
+
+  // The same name spelled the way the message suggests loads cleanly.
+  REQUIRE(load(file.path, names_env("alpha,S-1")).has_value());
+
+  // A name with a space ("iron condor v2") is refused too — and the offending byte
+  // is never echoed raw into the Error message.
+  const auto spaced = load(file.path, names_env("iron condor v2"));
+  REQUIRE_FALSE(spaced.has_value());
+  CHECK(spaced.error().message.find("iron?condor?v2") != std::string::npos);
+  CHECK(spaced.error().message.find("iron condor v2") == std::string::npos);
+
+  // A name of nothing but separators is refused for the same reason "" is: it
+  // renders a `strategy=` column that attributes an order to nothing at all. It is
+  // otherwise perfectly legal — it mints an id-shaped ref and survives its own
+  // column — so the rule, not the shape, is what stops it.
+  const auto separators = load(file.path, names_env("alpha,---"));
+  REQUIRE_FALSE(separators.has_value());
+  CHECK(separators.error().message.find("entry #2") != std::string::npos);
+  CHECK(separators.error().message.find("no letter or digit") != std::string::npos);
+
+  // A TRAILING COMMA in the env variable is NOT ignored: it yields a second, EMPTY
+  // entry, and an empty name fails the load. Documented in config/example.toml
+  // (the env-override semantics) and pinned here so the two cannot drift.
+  const auto trailing = load(file.path, names_env("alpha,"));
+  REQUIRE_FALSE(trailing.has_value());
+  CHECK(trailing.error().message.find("entry #2") != std::string::npos);
+  CHECK(trailing.error().message.find("EMPTY") != std::string::npos);
+}
+
+TEST_CASE("a non-array / non-string strategies.names is a typed error naming the field",
+          "[config][IMP-19]") {
+  const TempToml scalar("strategies_scalar", R"toml(
+[engine]
+account_id = "acct"
+[broker]
+name = "kite"
+[paths]
+data_dir = "/data"
+[strategies]
+names = "alpha"
+)toml");
+  const auto r1 = load(scalar.path, env_from({}));
+  REQUIRE_FALSE(r1.has_value());
+  CHECK(r1.error().message.find("strategies.names") != std::string::npos);
+  CHECK(r1.error().message.find("array of strings") != std::string::npos);
+
+  const TempToml mixed("strategies_mixed", R"toml(
+[engine]
+account_id = "acct"
+[broker]
+name = "kite"
+[paths]
+data_dir = "/data"
+[strategies]
+names = ["alpha", 7]
+)toml");
+  const auto r2 = load(mixed.path, env_from({}));
+  REQUIRE_FALSE(r2.has_value());
+  CHECK(r2.error().message.find("array of strings") != std::string::npos);
+}

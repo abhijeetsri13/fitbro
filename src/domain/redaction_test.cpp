@@ -3,14 +3,18 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <cstddef>
 #include <initializer_list>
 #include <string>
 #include <string_view>
 
+using broker_exec::domain::explain_invalid_strategy_name;
 using broker_exec::domain::is_instrument_symbol_shape;
 using broker_exec::domain::is_provenance_id_shape;
+using broker_exec::domain::is_valid_strategy_name;
 using broker_exec::domain::kMaxInstrumentSymbolChars;
 using broker_exec::domain::kMaxProvenanceIdChars;
+using broker_exec::domain::kMaxStrategyNameChars;
 using broker_exec::domain::kRedactionMarker;
 using broker_exec::domain::ProvenanceField;
 using broker_exec::domain::render_provenance_block;
@@ -578,4 +582,186 @@ TEST_CASE("DOCUMENTED, PINNED: an ordinary strategy name is WHOLLY REDACTED in e
   CHECK(render_provenance_block({{"strategy", "alpha"}}) == " [strategy=alpha]");
   CHECK(render_provenance_block({{"client_ref", kClientRef}}) ==
         " [client_ref=" + std::string(kClientRef) + "]");
+
+  // (4) IMP-19: the boundary now EXISTS, and it is exactly these names it refuses.
+  // The block's behaviour above is unchanged — nothing here was loosened; what
+  // changed is that config::load() and the safe-start gate no longer let a name
+  // that produces the outcomes above reach a trading session.
+  CHECK_FALSE(is_valid_strategy_name("iron condor v2"));
+  CHECK_FALSE(is_valid_strategy_name("S1"));
+  CHECK(is_valid_strategy_name("alpha"));
+  CHECK(is_valid_strategy_name("S-1"));
+}
+
+// ── IMP-19: is_valid_strategy_name — the INPUT side of the id shape ───────────
+
+TEST_CASE("IMP-19: an accepted strategy name survives its own typed column",
+          "[domain][redaction][provenance][strategy][IMP-19]") {
+  // V6 stated as a property: every accepted name is emitted VERBATIM from a
+  // `strategy=` column. (That the same name also mints an id-shaped client_ref is
+  // proven against the REAL make_client_ref in idempotency_test.cpp — a predicate
+  // checked only against itself would prove nothing.)
+  // In order: the common all-letter case; the documented fix for "S1"; the
+  // documented fix for "momentum-v2"; letters and digits each in their own
+  // segment; '_' separating just as '-' does; uppercase; a run that is all-hex AND
+  // all-letters; all-digits (a subset of all-hex); all-hex mixing letters and
+  // digits inside ONE segment; a single character; a 19-char hex run (just under
+  // scrub's 20-char high-entropy rule); and 21 chars in two all-letter segments.
+  const std::array<std::string_view, 12> accepted = {
+      "alpha",
+      "S-1",
+      "momentum-v-2",
+      "atm-straddle-9-20",
+      "IRON_CONDOR",
+      "ATM",
+      "deadbeef",
+      "12345",
+      "1a2b3c4d",
+      "x",
+      "abcdef0123456789abc",
+      "conservative-momentum",
+  };
+  for (const std::string_view name : accepted) {
+    INFO("name = " << name);
+    CHECK(is_valid_strategy_name(name));
+    CHECK(explain_invalid_strategy_name(name).empty());
+    CHECK(scrub_provenance_column(name) == name);
+    const std::string expected = " [strategy=" + std::string(name) + "]";
+    CHECK(render_provenance_block({{"strategy", name}}) == expected);
+  }
+}
+
+TEST_CASE("IMP-19: a rejected strategy name is named, with the rule it broke",
+          "[domain][redaction][provenance][strategy][IMP-19]") {
+  // V1 — empty.
+  CHECK_FALSE(is_valid_strategy_name(""));
+  CHECK(contains(explain_invalid_strategy_name(""), "EMPTY"));
+
+  // V1, second half — ATTRIBUTABLE. A name of nothing but separators satisfies
+  // every OTHER rule in the list: it is in charset, its (zero) segments are all
+  // vacuously homogeneous, and it survives its own typed column untouched — the
+  // ref `---1a2b3c4d-deadbeef-...` really is id-shaped. It is refused for the same
+  // reason "" is: `strategy=---` attributes an order to nothing at all. Rejecting
+  // one and accepting the other would have made V1's stated rationale a fiction.
+  for (const std::string_view unattributable : {"-", "_", "---", "___", "-_-", "__--__"}) {
+    INFO("name = " << unattributable);
+    CHECK_FALSE(is_valid_strategy_name(unattributable));
+    CHECK(contains(explain_invalid_strategy_name(unattributable), "no letter or digit"));
+    // ...and it is refused for THAT reason, not by accident of another rule.
+    CHECK(scrub_provenance_column(unattributable) == unattributable);
+  }
+  // One alphanumeric byte anywhere is enough — the rule is attribution, not shape.
+  CHECK(is_valid_strategy_name("-a"));
+  CHECK(is_valid_strategy_name("a-"));
+  CHECK(is_valid_strategy_name("_9_"));
+
+  // V2 — bounded, so `<name>-<sig8>-<uuid>` (+ a `#<k>` child) stays inside
+  // kMaxProvenanceIdChars. One under the limit passes; one over is refused.
+  const std::string at_limit(kMaxStrategyNameChars, 'a');
+  const std::string over_limit(kMaxStrategyNameChars + 1, 'a');
+  const std::string bound = std::to_string(kMaxStrategyNameChars);
+  CHECK(is_valid_strategy_name(at_limit));
+  CHECK_FALSE(is_valid_strategy_name(over_limit));
+  CHECK(contains(explain_invalid_strategy_name(over_limit), bound));
+  // The message ECHOES a bounded, sanitised name — never the raw one. An 8 KiB
+  // name must not become an 8 KiB alert (the unbounded-block hazard).
+  const std::string huge(8192, 'a');
+  CHECK(explain_invalid_strategy_name(huge).size() < std::size_t{512});
+
+  // V3 — valid UTF-8 (canonical_text's notion). A lone continuation byte and a
+  // truncated two-byte lead are both ill-formed.
+  CHECK_FALSE(is_valid_strategy_name(std::string("alpha\x80")));
+  CHECK(contains(explain_invalid_strategy_name(std::string("alpha\x80")), "not valid UTF-8"));
+  CHECK_FALSE(is_valid_strategy_name(std::string("\xC3(")));
+
+  // V4 — charset. A space is the "iron condor v2" case; '#' is excluded even
+  // though the id charset admits it, because idempotency's child-ref parser keys
+  // on it (proven in idempotency_test.cpp).
+  for (const std::string_view bad : {"iron condor v2", "a.b", "a/b", "a:b", "a=b", "a#b"}) {
+    INFO("name = " << bad);
+    CHECK_FALSE(is_valid_strategy_name(bad));
+    CHECK(contains(explain_invalid_strategy_name(bad), "[A-Za-z0-9_-]"));
+  }
+  // The offending byte is NEVER echoed raw: it is shown as '?', so an ill-formed
+  // or hostile name cannot forge a provenance block or inject a line break.
+  const std::string spaced = explain_invalid_strategy_name("iron condor v2");
+  CHECK(contains(spaced, "iron?condor?v2"));
+  CHECK_FALSE(contains(spaced, "iron condor v2"));
+
+  // V5 — segment homogeneity, THE rule that makes the minted ref id-shaped. The
+  // message names the SEGMENT and suggests a spelling that is actually accepted.
+  const std::string s1 = explain_invalid_strategy_name("S1");
+  CHECK_FALSE(is_valid_strategy_name("S1"));
+  CHECK(contains(s1, "segment 'S1'"));
+  CHECK(contains(s1, "mixes letters and digits"));
+  CHECK(contains(s1, "use 'S-1'"));
+  CHECK(is_valid_strategy_name("S-1"));
+
+  // Only the OFFENDING segment is named, and only it is rewritten in the
+  // suggestion — the valid part of the name is left exactly as the operator wrote it.
+  const std::string mv2 = explain_invalid_strategy_name("momentum-v2");
+  CHECK_FALSE(is_valid_strategy_name("momentum-v2"));
+  CHECK(contains(mv2, "segment 'v2'"));
+  CHECK(contains(mv2, "use 'momentum-v-2'"));
+  CHECK(is_valid_strategy_name("momentum-v-2"));
+
+  // V6 — a name that clears V1-V5 can STILL be destroyed as its own column: a
+  // single un-separated 20-char hex run is what scrub() cannot tell from a
+  // credential. One '-' fixes it. (19 chars is accepted above.)
+  constexpr std::string_view hex20 = "abcdef0123456789abcd";
+  CHECK(is_provenance_id_shape(std::string(hex20) + "-1a2b3c4d"));  // 2 segments: fine
+  CHECK_FALSE(is_valid_strategy_name(hex20));
+  CHECK(contains(explain_invalid_strategy_name(hex20), "credential"));
+  CHECK(is_valid_strategy_name("abcdef0123-456789abcd"));
+}
+
+TEST_CASE("IMP-19: the strategy rule does NOT touch is_provenance_id_shape",
+          "[domain][redaction][provenance][strategy][IMP-19]") {
+  // The alternative fix — exempting the FIRST segment from homogeneity so that
+  // `momentum-v2` would be admitted — was REJECTED, and this pins why: the
+  // credential guarantee is stated over the WHOLE value, and the strategy slot is
+  // not one segment but as many as the operator writes, so a "first segment only"
+  // exemption would not even have admitted `momentum-v2` (`v2` is the SECOND
+  // segment) while still weakening rule 3b. Nothing below changed.
+  // In order: a credential as one mixed run; a base64url credential carrying a
+  // '-'; a heterogeneous FIRST segment; a heterogeneous SECOND segment (which is
+  // where `momentum-v2`'s offending segment actually lands); and the real minted
+  // ref, which still passes.
+  CHECK_FALSE(is_provenance_id_shape(kFakeToken));
+  CHECK_FALSE(is_provenance_id_shape("Xk29mZpQ7rTb-4Lw8Nc1Vd6Ya"));
+  CHECK_FALSE(is_provenance_id_shape("S1-1a2b3c4d-deadbeef"));
+  CHECK_FALSE(is_provenance_id_shape("momentum-v2-1a2b3c4d"));
+  CHECK(is_provenance_id_shape(kClientRef));
+}
+
+TEST_CASE("IMP-19: why TAIL-ANCHORING was rejected, and why the OLD reason was wrong",
+          "[domain][redaction][provenance][strategy][IMP-19]") {
+  // The version of the relaxation that WOULD have worked is tail-anchoring:
+  // recognise the minted `-<8 hex>-<8-4-4-4-12 hex>` tail and relax the head in
+  // front of it. Both halves of the rationale in redaction.hpp are executable, so
+  // pin them here rather than leaving them as prose nobody can check.
+  //
+  // (1) THE REASON ORIGINALLY GIVEN WAS FALSE for its own flagship example. The
+  //     claim was "the bare `strategy=` column would be destroyed anyway". It is
+  //     not: scrub()'s bare high-entropy rule needs >=20 token chars mixing
+  //     letters and digits, and these names are far shorter. They render TODAY.
+  CHECK(scrub("momentum-v2") == "momentum-v2");
+  CHECK(scrub("iron-condor-v2") == "iron-condor-v2");
+  CHECK(scrub("bnf-15m") == "bnf-15m");
+  // The claim only becomes true at length: 29 chars mixing letters and digits.
+  CHECK(contains(scrub("momentum-breakout-v2-intraday"), kRedactionMarker));
+
+  // (2) THE REASON THAT IS REAL: no safe head rule exists at this altitude. The
+  //     worked counterexample — a 16-char mixed-alnum credential head (the first
+  //     half of kFakeToken) followed by a perfectly well-formed sig8 and UUID.
+  constexpr std::string_view kForgedTail =
+      "Xk29mZpQ7rTb4Lw8-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab";
+  // Even the CAREFUL head rule ("the head must itself survive scrub()") admits it,
+  // because 16 < 20 — so tail-anchoring would emit the whole thing VERBATIM from a
+  // typed column, including from the broker-controlled `broker_order_id`.
+  CHECK(scrub("Xk29mZpQ7rTb4Lw8") == "Xk29mZpQ7rTb4Lw8");
+  // The rule as shipped rejects it, and the block redacts it wholesale.
+  CHECK_FALSE(is_provenance_id_shape(kForgedTail));
+  CHECK(render_provenance_block({{"broker_order_id", kForgedTail}}) ==
+        " [broker_order_id=" + std::string(kRedactionMarker) + "]");
 }

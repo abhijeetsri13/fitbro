@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 
+#include "broker_exec/domain/utf8.hpp"
+
 namespace broker_exec::domain {
 
 namespace {
@@ -340,6 +342,203 @@ std::string scrub_provenance_column(std::string_view value) {
   // FAIL CLOSED: verbatim only for a value that IS an id shape; everything else
   // takes the ordinary, unchanged scrub path.
   return is_provenance_id_shape(value) ? std::string(value) : scrub(value);
+}
+
+// ── Strategy names (IMP-19) ──────────────────────────────────────────────────
+//
+// The INPUT-side twin of is_provenance_id_shape: the condition on a strategy name
+// that makes every client_ref minted from it id-shaped. Read the derivation
+// (V1-V6) in redaction.hpp; this file implements it and NOTHING beyond it.
+
+namespace {
+
+// V4: the provenance-id charset MINUS '#'. is_token_char IS [A-Za-z0-9_-]; the
+// '#' that is_provenance_id_char adds is excluded because idempotency's
+// is_child_ref/parent_of key on it, so a '#' in a name would make a PARENT ref
+// parse as a CHILD of a truncated parent.
+[[nodiscard]] bool is_strategy_name_char(char c) noexcept { return is_token_char(c); }
+
+// The FIRST '-'/'_'-separated segment of `name` that is neither all-letters nor
+// all-hex (V5), or an empty view when every segment is homogeneous. Deliberately
+// the same two homogeneity classes, computed the same way, as the loop in
+// is_provenance_id_shape — if that rule ever changes, this must change with it.
+[[nodiscard]] std::string_view first_mixed_segment(std::string_view name) noexcept {
+  std::size_t i = 0;
+  while (i < name.size()) {
+    if (!is_alnum(name[i])) {
+      ++i;  // a separator closes / precedes a segment
+      continue;
+    }
+    std::size_t j = i;
+    bool all_letters = true;
+    bool all_hex = true;
+    while (j < name.size() && is_alnum(name[j])) {
+      all_letters = all_letters && is_letter(name[j]);
+      all_hex = all_hex && is_hex_digit(name[j]);
+      ++j;
+    }
+    if (!all_letters && !all_hex) {
+      return name.substr(i, j - i);
+    }
+    i = j;
+  }
+  return {};
+}
+
+// `name` with a '-' inserted at every letter<->digit transition INSIDE a
+// heterogeneous segment ("momentum-v2" -> "momentum-v-2", "S1" -> "S-1"). A
+// homogeneous segment is copied untouched, so a valid part of the name is never
+// rewritten. Every produced piece is all-letters or all-digits, hence homogeneous.
+[[nodiscard]] std::string split_mixed_segments(std::string_view name) {
+  std::string out;
+  out.reserve(name.size() + 4);
+  std::size_t i = 0;
+  while (i < name.size()) {
+    if (!is_alnum(name[i])) {
+      out.push_back(name[i]);
+      ++i;
+      continue;
+    }
+    std::size_t j = i;
+    while (j < name.size() && is_alnum(name[j])) {
+      ++j;
+    }
+    const std::string_view segment = name.substr(i, j - i);
+    const bool homogeneous = first_mixed_segment(segment).empty();
+    for (std::size_t k = 0; k < segment.size(); ++k) {
+      if (!homogeneous && k > 0 && is_letter(segment[k]) != is_letter(segment[k - 1])) {
+        out.push_back('-');
+      }
+      out.push_back(segment[k]);
+    }
+    i = j;
+  }
+  return out;
+}
+
+// The name as it may appear in an Error message: TRUNCATED to the maximum a valid
+// name could be, with every byte outside [A-Za-z0-9_-] shown as '?'. An invalid
+// name is by definition untrusted text — echoing it raw would put arbitrary bytes
+// (and an arbitrary LENGTH) into an alert body, which is the exact hazard
+// render_provenance_block's allowlist + bound exist to close.
+[[nodiscard]] std::string sanitized_for_message(std::string_view name) {
+  const std::size_t shown =
+      name.size() < kMaxStrategyNameChars ? name.size() : kMaxStrategyNameChars;
+  std::string out;
+  out.reserve(shown);
+  for (std::size_t i = 0; i < shown; ++i) {
+    out.push_back(is_strategy_name_char(name[i]) ? name[i] : '?');
+  }
+  return out;
+}
+
+}  // namespace
+
+std::string explain_invalid_strategy_name(std::string_view name) {
+  // V1 (first half): non-empty. The second half — "carries at least one letter or
+  // digit" — is the same attributability rule and is checked after V4; see there.
+  if (name.empty()) {
+    return "strategy name is EMPTY; it must be 1.." + std::to_string(kMaxStrategyNameChars) +
+           " characters from [A-Za-z0-9_-], at least one of them a letter or digit, with each "
+           "'-'/'_'-separated segment all letters or all hex";
+  }
+
+  const std::string shown = sanitized_for_message(name);
+
+  // V2: bounded, so `<name>-<sig8>-<uuid>` (+ any `#<k>` child suffix) stays
+  // inside kMaxProvenanceIdChars.
+  if (name.size() > kMaxStrategyNameChars) {
+    return "strategy name '" + shown + "' (truncated here) is " + std::to_string(name.size()) +
+           " bytes; the maximum is " + std::to_string(kMaxStrategyNameChars) +
+           " so that every client_ref it mints stays inside the " +
+           std::to_string(kMaxProvenanceIdChars) + "-char provenance-id bound";
+  }
+
+  // V3: valid UTF-8, in canonical_text's sense (P1: valid input is a fixed point).
+  // Checked BEFORE the charset so an ill-formed name is diagnosed as ill-formed.
+  const std::string canonical = canonical_text(name);
+  if (std::string_view(canonical) != name) {
+    return "strategy name '" + shown +
+           "' (bytes outside [A-Za-z0-9_-] shown as '?') is not valid UTF-8; an ill-formed name "
+           "travels raw through the store and the idempotency index and is normalised only at the "
+           "log writer, where the hash preimage and the stored bytes then disagree";
+  }
+
+  // V4: charset.
+  for (const char c : name) {
+    if (!is_strategy_name_char(c)) {
+      return "strategy name '" + shown +
+             "' (bytes outside [A-Za-z0-9_-] shown as '?') contains a character that is not in "
+             "[A-Za-z0-9_-]; a space, '.', '/', ':' or '#' makes the strategy column and every "
+             "client_ref it mints unloggable (both are then wholly redacted)";
+    }
+  }
+
+  // V1 (second half): ATTRIBUTABLE. A name of nothing but separators ("-", "___",
+  // "-_-") clears every other rule — it mints a perfectly id-shaped ref and
+  // survives its own column — and is exactly as unattributable as the empty name
+  // rejected above, so it is refused for the SAME reason rather than left as an
+  // inconsistency between the rule and its stated rationale.
+  //
+  // CHECKED HERE, NOT BESIDE THE EMPTY TEST, ON PURPOSE: after V3/V4 we know every
+  // byte is in [A-Za-z0-9_-], so "no letter or digit" can only mean "all
+  // separators". Checked first, an ill-formed or out-of-charset name (which also
+  // has no alphanumeric) would be diagnosed with this message instead of the more
+  // useful one it gets above.
+  bool has_alnum = false;
+  for (const char c : name) {
+    has_alnum = has_alnum || is_alnum(c);
+  }
+  if (!has_alnum) {
+    return "strategy name '" + shown +
+           "' has no letter or digit; a name of only '-'/'_' separators renders a strategy "
+           "column that attributes an order to nothing at all, exactly as an empty name does";
+  }
+
+  // ── ORDER IS LOAD-BEARING BELOW THIS LINE: V4 MUST PRECEDE V5/V6 ─────────────
+  // Everything above echoes only `shown`, which sanitized_for_message has already
+  // reduced to [A-Za-z0-9_-] and truncated. V5's message below embeds the
+  // offending SEGMENT and the suggested spelling UN-SANITISED, straight from the
+  // caller's bytes — which is safe ONLY because V4 has already proved every byte
+  // of `name` is in the strategy charset. Reorder these blocks and a raw byte (a
+  // newline, a ']', a U+202E) reaches an alert body through
+  // session::require_valid_strategy_names, defeating the caller invariant that
+  // render_provenance_block's grammar depends on (see redaction.hpp).
+
+  // V5: every segment homogeneous — the rule that makes the minted ref id-shaped.
+  if (const std::string_view mixed = first_mixed_segment(name); !mixed.empty()) {
+    std::string msg = "strategy name '" + shown + "': segment '" + std::string(mixed) +
+                      "' mixes letters and digits (every segment of a client_ref must be all "
+                      "letters or all hex, or the WHOLE ref stops being id-shaped and is redacted "
+                      "in every alert and ledger entry)";
+    // Only suggest a spelling that would actually be accepted. The recursion
+    // through is_valid_strategy_name terminates at depth 2: every segment of
+    // `suggestion` is homogeneous by construction, so it cannot reach this branch.
+    if (const std::string suggestion = split_mixed_segments(name);
+        suggestion != name && is_valid_strategy_name(suggestion)) {
+      msg += "; use '" + suggestion + "'";
+    }
+    return msg;
+  }
+
+  // V6: the name must also survive its OWN typed column. Stated against the real
+  // scrubber rather than restated as a rule, so it cannot drift from scrub().
+  if (const std::string as_column = scrub_provenance_column(name);
+      std::string_view(as_column) != name) {
+    return "strategy name '" + shown +
+           "' is a single un-separated run that domain::scrub cannot distinguish from a "
+           "credential, so the strategy column itself would be redacted; separate it with a '-' "
+           "or '_' (a name with two or more segments is exempt as a whole typed column)";
+  }
+
+  return {};
+}
+
+bool is_valid_strategy_name(std::string_view name) {
+  // ONE definition of the rule: validity IS "there is nothing to explain". A
+  // second, independently-written predicate is exactly how a check and its
+  // diagnostic drift apart.
+  return explain_invalid_strategy_name(name).empty();
 }
 
 bool is_instrument_symbol_shape(std::string_view value) noexcept {

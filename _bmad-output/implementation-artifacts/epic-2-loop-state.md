@@ -591,3 +591,31 @@ loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier
   Tests: +6 TEST_CASEs domain/utf8_test.cpp (new file, folded into the EXISTING domain test target),
   +5 intentlog, +1 idempotency, +4 ledger. NO new ctest target — still 50. Zero existing assertions
   deleted (the B1 comment+addition is the one sanctioned change and is strictly stronger). NOT BUILT.
+- ITER 12 / IMP-19 DONE: strategy-name charset, ENFORCED AT SAFE-START (not the order path). Deferred twice
+  as "its own story" because the only enforcement point anyone had considered was reserve()/place(), where
+  rejecting means REFUSING TO PLACE AN ORDER. That framing was wrong: a strategy name is CONFIGURATION,
+  known at startup, so it belongs at the cold-boot gate — fail visibly before trading, never mid-session.
+  A strategy name is the first segment of every client_ref it mints, and IMP-15 requires every segment
+  homogeneous, so 'S1' made EVERY ref it minted non-id-shaped -> destroyed in every alert/ledger entry.
+  New domain::is_valid_strategy_name (V1-V6) + 10th required SafeCheck + config [strategies] names.
+  CENTRAL JUDGEMENT (dev stopped and escalated, as instructed): the derived rule REJECTS 'momentum-v2'
+  (v2 is a heterogeneous segment). Review CONFIRMED shipping it, but demolished the dev's stated reasoning
+  and supplied the real one: tail-anchoring (accept any head followed by the minted -<8hex>-<uuid> tail)
+  is NOT safe, because that 46-char tail is an UNAUTHENTICATED marker anyone can forge for free, and the
+  predicate is SHARED with the broker-controlled broker_order_id column — so the BROKER would select which
+  branch its own value is evaluated under, into a Critical alert body and a ledger hash preimage. Concrete
+  break: Xk29mZpQ7rTb4Lw8-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab (a 16-char API key + a forged tail)
+  is admitted verbatim under tail-anchoring, rejected by the strict rule. Cost is one dash, once, at config
+  time, with the exact replacement printed.
+  Review FIX-REQUIRED on CLAIMS, not logic (logic verified exhaustively, 86,499 accepted names, 0
+  counterexamples): F1 three headers claimed a containment the code does not have — strategies.names has
+  ZERO consumers, intent.strategy bypasses it, and the LIBRARY ITSELF does so (exit.strategy="square_off"
+  in both adapters); enforcement is ADVISORY and now says so. F2 the dev's reason for rejecting
+  tail-anchoring was false for its own flagship example (momentum-v2 is 11 chars, under scrub's 20-char
+  threshold, and renders FINE today). F4 IMP-19 falsified the "no production body carries strategy text"
+  invariant, and the V4-before-V5 ordering is load-bearing (V5 echoes the offending segment UNSANITISED,
+  safe only because V4 already proved the charset). F5 V1 rejected "" as unattributable while accepting
+  "---". F6 a policy number was presented as arithmetic. 50/50 green.
+  NOTE: no SafeStartContext is constructed outside tests — no safe-start check has a production caller yet
+  (pre-existing for all ten). Wiring the gate into a real entrypoint is the standing next step.
+

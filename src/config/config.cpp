@@ -11,9 +11,11 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <toml++/toml.hpp>
 
+#include "broker_exec/domain/redaction.hpp"
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/result.hpp"
 
@@ -229,6 +231,62 @@ std::optional<Error> scan_secrets(const toml::table& table, const std::string& p
   return std::nullopt;
 }
 
+// A list-valued field: a TOML array of strings, overridable WHOLESALE by a
+// comma-separated env variable (env wins, exactly as for a scalar — it REPLACES
+// the list rather than appending, so an operator can always see the effective list
+// in one place). Surrounding ASCII spaces are trimmed off each entry; an env value
+// that is empty or all-whitespace means "the empty list", which is a legal
+// declaration and not a parse error.
+[[nodiscard]] std::optional<Error> apply_string_list(const toml::table& table, const EnvLookup& env,
+                                                     std::string_view section,
+                                                     std::string_view field,
+                                                     std::vector<std::string>& out) {
+  if (auto node = table[section][field]) {
+    const toml::array* arr = node.as_array();
+    if (arr == nullptr) {
+      return field_error(section, field, "must be an array of strings");
+    }
+    std::vector<std::string> parsed;
+    parsed.reserve(arr->size());
+    for (const toml::node& element : *arr) {
+      auto value = element.value<std::string>();
+      if (!value) {
+        return field_error(section, field, "must be an array of strings");
+      }
+      parsed.push_back(std::move(*value));
+    }
+    out = std::move(parsed);
+  }
+  if (auto value = env(env_key(section, field))) {
+    std::vector<std::string> parsed;
+    const std::string& text = *value;
+    std::size_t begin = 0;
+    while (begin <= text.size()) {
+      const std::size_t comma = text.find(',', begin);
+      const std::size_t end = comma == std::string::npos ? text.size() : comma;
+      std::size_t lo = begin;
+      std::size_t hi = end;
+      while (lo < hi && (text[lo] == ' ' || text[lo] == '\t')) {
+        ++lo;
+      }
+      while (hi > lo && (text[hi - 1] == ' ' || text[hi - 1] == '\t')) {
+        --hi;
+      }
+      // A single empty/blank variable declares an EMPTY list; an empty entry
+      // BETWEEN commas is a typo and is kept so validation names it.
+      if (!(comma == std::string::npos && parsed.empty() && lo == hi)) {
+        parsed.emplace_back(text, lo, hi - lo);
+      }
+      if (comma == std::string::npos) {
+        break;
+      }
+      begin = comma + 1;
+    }
+    out = std::move(parsed);
+  }
+  return std::nullopt;
+}
+
 [[nodiscard]] std::optional<Error> apply_run_profile(const toml::table& table, const EnvLookup& env,
                                                      std::string_view section,
                                                      std::string_view field, RunProfile& out) {
@@ -305,6 +363,19 @@ std::optional<Error> scan_secrets(const toml::table& table, const std::string& p
   }
   if (cfg.paths.data_dir.empty()) {
     return field_error("paths", "data_dir", "is required");
+  }
+  // IMP-19: a strategy name is the FIRST SEGMENT of every client_ref it mints, so
+  // an invalid one makes every alert and ledger entry about that strategy's orders
+  // read `client_ref=***REDACTED***`. Rejecting it here means the operator fixes a
+  // name before the process ever holds a session — the rule and the diagnostic both
+  // come from domain, so config cannot drift from the redaction contract.
+  for (std::size_t i = 0; i < cfg.strategies.names.size(); ++i) {
+    const std::string& name = cfg.strategies.names[i];
+    const std::string reason = domain::explain_invalid_strategy_name(name);
+    if (!reason.empty()) {
+      return field_error("strategies", "names",
+                         "entry #" + std::to_string(i + 1) + " is invalid: " + reason);
+    }
   }
   return std::nullopt;
 }
@@ -460,6 +531,9 @@ Result<Config> load(const std::filesystem::path& toml_path, const EnvLookup& env
     return fail(std::move(*e));
   }
   if (auto e = apply_log_level(table, env, "logging", "level", cfg.logging.level)) {
+    return fail(std::move(*e));
+  }
+  if (auto e = apply_string_list(table, env, "strategies", "names", cfg.strategies.names)) {
     return fail(std::move(*e));
   }
 

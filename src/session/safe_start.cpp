@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "broker_exec/domain/enums.hpp"
+#include "broker_exec/domain/redaction.hpp"
 #include "broker_exec/domain/types.hpp"
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/session/kite_session_establisher.hpp"
@@ -64,6 +65,12 @@ Result<ports::Ok> SafeStartGate::verify(const SafeStartContext& ctx) const {
   // Fixed order: foundational/cheap first, reconciliation last. The first
   // failing/empty check short-circuits and returns its named Error.
   if (auto r = run_check("config", ctx.config_check); !r) {
+    return r;
+  }
+  // Immediately after config, and before anything that touches a key, a clock or
+  // the broker: the strategy names ARE configuration, and a name that makes every
+  // client_ref unloggable must be fixed before a session exists to log about.
+  if (auto r = run_check("strategy-names", ctx.strategy_name_check); !r) {
     return r;
   }
   if (auto r = run_check("crypto-keys", ctx.crypto_keys_check); !r) {
@@ -141,6 +148,41 @@ Result<ports::Ok> require_no_legacy_stops(const std::vector<domain::Order>& orde
           "could be placed a SECOND time. Flatten or cancel every outstanding stop "
           "before deploying (see docs/upgrade-imp-11-stops.md). First: " +
           (first_ref.empty() ? std::string("<no client_ref>") : first_ref));
+  // Validation's default action is DoNotRetry; this must HALT the runtime, and the
+  // fix is a human one, so state BlockStrategy explicitly.
+  e.action = SuggestedAction::BlockStrategy;
+  return fail(std::move(e));
+}
+
+Result<ports::Ok> require_valid_strategy_names(const std::vector<std::string>& names) {
+  std::size_t count = 0;
+  std::string first_reason;
+  for (const std::string& name : names) {
+    std::string reason = domain::explain_invalid_strategy_name(name);
+    if (reason.empty()) {
+      continue;
+    }
+    ++count;
+    if (first_reason.empty()) {
+      first_reason = std::move(reason);
+    }
+  }
+  if (count == 0) {
+    return ports::ok();
+  }
+
+  // Redaction-safe by construction: explain_invalid_strategy_name sanitises and
+  // truncates the echoed name, so nothing here can carry an arbitrary byte or an
+  // arbitrary length into an alert body.
+  Error e = make_error(
+      ErrorCategory::Validation,
+      std::to_string(count) + " of " + std::to_string(names.size()) +
+          " configured strategy name(s) would make every client_ref they mint "
+          "unloggable — an alert or ledger entry about such an order reads "
+          "client_ref=***REDACTED*** and cannot be linked to the store or the intent "
+          "log. Fix the name(s) in configuration before trading; renaming changes the "
+          "signal signature, so do it BETWEEN sessions with no working orders. First: " +
+          first_reason);
   // Validation's default action is DoNotRetry; this must HALT the runtime, and the
   // fix is a human one, so state BlockStrategy explicitly.
   e.action = SuggestedAction::BlockStrategy;

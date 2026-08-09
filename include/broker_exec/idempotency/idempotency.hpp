@@ -125,18 +125,20 @@ namespace broker_exec::idempotency {
 // full hex signature (sig8 is taken as its first 8 chars); `uuid` is a canonical
 // 8-4-4-4-12 lowercase-hex UUID (from a UuidGenerator).
 //
-// ── THE STRATEGY CHARSET IS BINDING ON CALLERS, AND CURRENTLY UNENFORCED ──────
+// ── THE STRATEGY CHARSET IS BINDING ON CALLERS, ENFORCED AT COLD BOOT ─────────
 //
-// `strategy` is concatenated in AS-IS. Nothing here (and nothing anywhere else in
-// this library) constrains it, so a caller can put any bytes into every client_ref
-// it mints. That has a REAL and non-obvious cost downstream, because the resulting
-// ref is what an operator alert and the ledger must be able to name:
+// `strategy` is concatenated in AS-IS. NOTHING IN THIS FUNCTION constrains it, so
+// a caller can put any bytes into every client_ref it mints. That has a REAL and
+// non-obvious cost downstream, because the resulting ref is what an operator alert
+// and the ledger must be able to name:
 //
-//   REQUIRED: `strategy` should be drawn from [A-Za-z0-9_-] AND each of its
-//   '-'/'_'-separated segments should be HOMOGENEOUS — all letters, or all
-//   hex/digits. Not "nice to have": domain::is_provenance_id_shape (redaction.hpp)
-//   admits a whole client_ref into an alert or ledger block ONLY if EVERY segment
-//   is homogeneous, and the strategy name is the ref's FIRST segment.
+//   REQUIRED: `strategy` must satisfy domain::is_valid_strategy_name
+//   (redaction.hpp) — drawn from [A-Za-z0-9_-], carrying at least one letter or
+//   digit, at most domain::kMaxStrategyNameChars bytes, valid UTF-8, and with each
+//   of its '-'/'_'-separated segments HOMOGENEOUS: all letters, or all hex. Not
+//   "nice to have": domain::is_provenance_id_shape admits a whole client_ref into
+//   an alert or ledger block ONLY if EVERY segment is homogeneous, and the
+//   strategy name is the ref's FIRST segment.
 //
 //   CONSEQUENCE OF VIOLATING IT — the ref, not just the name, is destroyed:
 //     * "alpha", "ironcondor", "conformance" (all letters)  -> ref survives intact.
@@ -148,12 +150,33 @@ namespace broker_exec::idempotency {
 //     * a SPACE ("iron condor v2") -> additionally rejected wholesale by the block
 //       grammar guard, so `strategy=***REDACTED***` too.
 //
-// NOT ENFORCED HERE, DELIBERATELY. The only boundary that could reject a bad name
-// is reserve()/Dispatcher::place(), where rejecting means REFUSING TO PLACE AN
-// ORDER — a trading-behaviour change that needs its own story and its own operator
-// migration, not a silent side effect of a redaction fix. Until then this contract
-// is documentation plus a pinning test (redaction_test.cpp, "DOCUMENTED, PINNED:
-// an ordinary strategy name is WHOLLY REDACTED in every block").
+// STILL NOT ENFORCED *HERE*, AND THAT IS THE DESIGN (IMP-19). A strategy name is
+// CONFIGURATION, known at startup — not per-order data — so it is validated where
+// it is DECLARED and where a refusal costs a deploy rather than a position:
+//   * config::load() rejects an invalid `strategies.names` entry, and
+//   * session::require_valid_strategy_names(), wired as the REQUIRED safe-start
+//     check `SafeStartContext::strategy_name_check`, refuses to cold-boot,
+// each naming the offending name and the rule it broke (with a suggested
+// spelling). THIS FUNCTION AND reserve() ARE UNCHANGED: rejecting at order time
+// would mean REFUSING TO PLACE AN ORDER mid-session, the trading-behaviour change
+// nobody wanted.
+//
+// DO NOT UPGRADE THAT INTO A CONTAINMENT CLAIM. It would be FALSE to say "an
+// unvalidated name cannot reach a session that was allowed to start". Validation
+// binds the CONFIGURED LIST (`config::StrategiesConfig::names`), which has no
+// other consumer in this tree; the name that reaches THIS function is whatever the
+// caller put in `OrderIntent::strategy`, and nothing between the two compares
+// them. THE LIBRARY ITSELF MINTS A REF FROM A NAME NO CONFIG LIST CONTAINS: the
+// square-off exit path sets `exit.strategy = "square_off"`
+// (src/adapters/kite/kite_broker_adapter.cpp, src/adapters/kotak/
+// kotak_broker_adapter.cpp). That one is a VALID name, so nothing is broken — but
+// it proves the path is real and taken, not hypothetical. Closing the residual
+// needs a check ON THE ORDER PATH, which is exactly what this story declined to
+// add; the cost of NOT having it is what redaction_test.cpp's "DOCUMENTED, PINNED:
+// an ordinary strategy name is WHOLLY REDACTED in every block" keeps pinned.
+// (Secondary, pre-existing and true of all ten checks: nothing in this repo builds
+// a SafeStartContext outside tests, so the cold-boot gate has no production caller
+// yet either.)
 [[nodiscard]] std::string make_client_ref(std::string_view strategy,
                                           std::string_view signature_hex, std::string_view uuid);
 

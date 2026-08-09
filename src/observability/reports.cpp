@@ -255,6 +255,19 @@ std::string DailyReport::to_json() const {
   //
   // std::map iterates sorted by key and nlohmann's default object is itself
   // sorted, so the rendered object stays deterministic under this remapping.
+  //
+  // KNOWN INTERACTION, PRE-EXISTING AND RECORDED SO IT IS NOT REDISCOVERED AS A
+  // MYSTERY (IMP-19 noted it; IMP-19 did not introduce it). `token`, `secret` and
+  // `apikey` are all-letter runs, so they are VALID strategy names by
+  // domain::is_valid_strategy_name and survive scrub_provenance_column verbatim —
+  // and config's kSecretNeedles denylist matches config KEYS, not
+  // `strategies.names` VALUES, so it does not stop one either. Here the strategy
+  // becomes a JSON KEY, so such a name renders as `"token":3`. That JSON is
+  // correct; but running domain::scrub() over the ALREADY-RENDERED report would
+  // match try_key_value on `"token":` and replace the value with the marker
+  // UNQUOTED, producing `"token":***REDACTED***` — invalid JSON. Report text is
+  // therefore rendered scrubbed-by-column (here) and must not be scrubbed AGAIN as
+  // free-form text downstream.
   json per_strategy = json::object();
   for (const auto& [strategy, count] : orders_per_strategy) {
     const std::string safe = domain::scrub_provenance_column(strategy);

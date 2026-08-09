@@ -33,6 +33,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "broker_exec/result.hpp"
 
@@ -91,6 +92,40 @@ struct LoggingConfig {
   LogLevel level = LogLevel::Info;  // env: BROKER_EXEC_LOGGING_LEVEL
 };
 
+// The strategies this deployment runs, by name (IMP-19). THE ONE PLACE A STRATEGY
+// NAME IS DECLARED IN CONFIGURATION — which is what makes it checkable before
+// trading rather than per order.
+//
+// READ THAT SCOPE LITERALLY: this list is a DECLARATION, NOT A WHITELIST THE ORDER
+// PATH ENFORCES. Nothing else in this library reads `names` (only the validation
+// below does); the name that actually mints a client_ref is
+// `domain::OrderIntent::strategy`, filled in by the host and never cross-checked
+// against this list by Dispatcher::place(). The library itself takes that route —
+// the square-off exit path sets `exit.strategy = "square_off"`, a name no config
+// list contains (it is a valid name, so nothing breaks; it is here to show the
+// bypass is real). A host that fills OrderIntent::strategy directly is therefore
+// NOT covered by this check.
+//
+// TOML:  [strategies]  names = ["alpha", "S-1", "atm-straddle-9-20"]
+// env :  BROKER_EXEC_STRATEGIES_NAMES="alpha,S-1,atm-straddle-9-20"  (env WINS,
+//        replacing the whole list; surrounding ASCII spaces around each entry are
+//        trimmed, and an empty variable means "no strategies").
+//
+// EVERY ENTRY IS VALIDATED against domain::is_valid_strategy_name and a bad one
+// FAILS THE LOAD, naming the entry and the rule it broke. This is not cosmetic: a
+// strategy name is the FIRST SEGMENT of every client_ref it mints, so a name like
+// "S1" or "iron condor v2" makes every alert and every ledger entry about that
+// strategy's orders read `client_ref=***REDACTED***`. See the derivation on
+// domain::is_valid_strategy_name (domain/redaction.hpp) and the cold-boot twin,
+// session::require_valid_strategy_names — config catches it at load, safe-start
+// catches it again for a world assembled by any other route.
+//
+// EMPTY IS LEGAL (a host that registers strategies programmatically declares
+// none here); the list is validated, not required.
+struct StrategiesConfig {
+  std::vector<std::string> names;  // env: BROKER_EXEC_STRATEGIES_NAMES (comma-separated)
+};
+
 // The immutable, validated top-level configuration. Composed of nested sections
 // so the surface stays organized and extensible.
 struct Config {
@@ -99,6 +134,7 @@ struct Config {
   RiskConfig risk;
   PathsConfig paths;
   LoggingConfig logging;
+  StrategiesConfig strategies;
 };
 
 // The environment seam: maps an env key to its value, or nullopt if unset. The

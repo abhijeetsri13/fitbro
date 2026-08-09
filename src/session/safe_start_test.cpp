@@ -4,6 +4,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <random>
@@ -15,6 +16,7 @@
 #include "broker_exec/clock/test_clock.hpp"
 #include "broker_exec/domain/enums.hpp"
 #include "broker_exec/domain/money.hpp"
+#include "broker_exec/domain/redaction.hpp"
 #include "broker_exec/domain/types.hpp"
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/ports/ports_common.hpp"
@@ -24,6 +26,7 @@
 
 using broker_exec::Result;
 using broker_exec::clock::TestClock;
+using broker_exec::domain::kMaxStrategyNameChars;
 using broker_exec::errors::ErrorCategory;
 using broker_exec::errors::make_error;
 using broker_exec::errors::SuggestedAction;
@@ -31,6 +34,7 @@ using broker_exec::refdata::InstrumentMaster;
 using broker_exec::session::SafeCheck;
 using broker_exec::session::SafeStartContext;
 using broker_exec::session::SafeStartGate;
+using broker_exec::session::require_valid_strategy_names;
 using broker_exec::session::session_state_to_result;
 using broker_exec::session::SessionState;
 
@@ -46,10 +50,11 @@ const SafeCheck ok_check = [] { return broker_exec::ports::ok(); };
   };
 }
 
-// A context with all nine checks wired to a passing check.
+// A context with all ten checks wired to a passing check.
 [[nodiscard]] SafeStartContext make_all_passing() {
   SafeStartContext ctx;
   ctx.config_check = ok_check;
+  ctx.strategy_name_check = ok_check;
   ctx.crypto_keys_check = ok_check;
   ctx.clock_check = ok_check;
   ctx.session_check = ok_check;
@@ -61,15 +66,19 @@ const SafeCheck ok_check = [] { return broker_exec::ports::ok(); };
   return ctx;
 }
 
-// The nine checks, in verify()'s fixed order, with the name that appears in the
+// The ten checks, in verify()'s fixed order, with the name that appears in the
 // Error message and a pointer-to-member to address the field generically.
 struct CheckEntry {
   const char* name;
   SafeCheck SafeStartContext::*field;
 };
 
-const std::array<CheckEntry, 9> kChecks = {{
+// The number of checks in SafeStartContext, and in verify()'s fixed order.
+constexpr std::size_t kCheckCount = 10;
+
+const std::array<CheckEntry, kCheckCount> kChecks = {{
     {"config", &SafeStartContext::config_check},
+    {"strategy-names", &SafeStartContext::strategy_name_check},
     {"crypto-keys", &SafeStartContext::crypto_keys_check},
     {"clock", &SafeStartContext::clock_check},
     {"session", &SafeStartContext::session_check},
@@ -79,6 +88,16 @@ const std::array<CheckEntry, 9> kChecks = {{
     {"legacy-stops", &SafeStartContext::legacy_stop_check},
     {"reconciliation", &SafeStartContext::reconciliation_check},
 }};
+
+// AN 11th CHECK MUST NOT SILENTLY ESCAPE THE GENERIC LOOPS BELOW. kChecks is what
+// "every check" means in this file (each-fails-in-isolation, each-unset-blocks);
+// a field added to SafeStartContext without a row here would simply never be
+// tested, and nothing would say so. SafeStartContext is a struct of nothing but
+// SafeCheck members, so its size is exactly that many of them — adding or removing
+// one without updating kChecks breaks the build here, on the line that says why.
+static_assert(sizeof(SafeStartContext) == kCheckCount * sizeof(SafeCheck),
+              "SafeStartContext gained or lost a check: add/remove its row in kChecks (and its "
+              "position in SafeStartGate::verify's fixed order) so the generic tests cover it");
 
 // A projection row: an order of `type` in `state`, optionally armed.
 [[nodiscard]] broker_exec::domain::Order order_row(std::string client_ref,
@@ -127,7 +146,7 @@ constexpr const char* kCsv =
 
 }  // namespace
 
-TEST_CASE("all nine checks pass -> verify() allows trading", "[session][safe-start][AC1]") {
+TEST_CASE("all ten checks pass -> verify() allows trading", "[session][safe-start][AC1]") {
   const SafeStartGate gate;
   CHECK(gate.verify(make_all_passing()).has_value());
 }
@@ -341,6 +360,104 @@ TEST_CASE("legacy-stop guard: the count is reported and the FIRST offender named
   REQUIRE_FALSE(r.has_value());
   CHECK(r.error().message.find("2 working stop order(s)") != std::string::npos);
   CHECK(r.error().message.find("FIRST") != std::string::npos);
+}
+
+// ── IMP-19: the strategy-name cold-boot guard ────────────────────────────────
+//
+// A strategy name is the FIRST SEGMENT of every client_ref it mints, and
+// domain::is_provenance_id_shape admits a ref into an alert or ledger entry only
+// if EVERY segment is homogeneous. A strategy called "S1" therefore makes every
+// alert about its orders read `client_ref=***REDACTED***`. The name is
+// CONFIGURATION, known at startup, so it is caught HERE — where a refusal costs a
+// deploy — rather than at reserve()/place(), where refusing means refusing to
+// place an order mid-session.
+
+TEST_CASE("strategy-name guard: valid names start", "[session][safe-start][IMP-19]") {
+  // An empty list passes vacuously: this check is about the names that exist. The
+  // "you forgot to wire it" case is caught by the UNSET-check rule, not here.
+  CHECK(require_valid_strategy_names({}).has_value());
+
+  const std::vector<std::string> good = {
+      "alpha",
+      "S-1",
+      "momentum-v-2",
+      "atm-straddle-9-20",
+      "IRON_CONDOR",
+      "12345",
+  };
+  CHECK(require_valid_strategy_names(good).has_value());
+}
+
+TEST_CASE("strategy-name guard: each invalid name refuses the start, naming the offender",
+          "[session][safe-start][IMP-19]") {
+  struct Case {
+    std::string name;
+    const char* expect_in_message;
+  };
+  const std::vector<Case> cases = {
+      // The subtlest and the whole reason this story exists: one letter, one digit.
+      {"S1", "segment 'S1'"},
+      // An ordinary options strategy name with spaces.
+      {"iron condor v2", "iron?condor?v2"},
+      // Empty.
+      {"", "EMPTY"},
+      // Separators only — legal by every other rule, and exactly as unattributable
+      // as the empty name above.
+      {"---", "no letter or digit"},
+      // Over the bound (so a minted ref would exceed kMaxProvenanceIdChars).
+      {std::string(kMaxStrategyNameChars + 1, 'a'), "maximum is"},
+      // Ill-formed UTF-8: raw through the store/index, normalised only at the log
+      // writer, where preimage and stored bytes then disagree.
+      {std::string("alpha\x80"), "not valid UTF-8"},
+  };
+
+  for (const Case& c : cases) {
+    INFO("name = " << c.name);
+    const std::vector<std::string> names = {"alpha", c.name, "S-1"};
+    const Result<broker_exec::ports::Ok> r = require_valid_strategy_names(names);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error().category == ErrorCategory::Validation);
+    // It must HALT, not merely alert: the operator has to fix a name before trading.
+    CHECK(r.error().action == SuggestedAction::BlockStrategy);
+    CHECK(r.error().message.find(c.expect_in_message) != std::string::npos);
+    // The count is reported so the operator knows whether one name or all of them
+    // need fixing, and the VALID names are never blamed.
+    CHECK(r.error().message.find("1 of 3") != std::string::npos);
+  }
+}
+
+TEST_CASE("strategy-name guard: the message teaches the fix", "[session][safe-start][IMP-19]") {
+  const Result<broker_exec::ports::Ok> r = require_valid_strategy_names({"S1"});
+  REQUIRE_FALSE(r.has_value());
+  // The suggested spelling, and the warning that a rename moves the signal
+  // signature (so it must happen between sessions, flat) — the operator gets both.
+  CHECK(r.error().message.find("use 'S-1'") != std::string::npos);
+  CHECK(r.error().message.find("BETWEEN sessions") != std::string::npos);
+  // ...and the suggested spelling really is accepted.
+  CHECK(require_valid_strategy_names({"S-1"}).has_value());
+}
+
+TEST_CASE("strategy-name guard: wired into the gate, it blocks naming strategy-names",
+          "[session][safe-start][IMP-19]") {
+  const std::vector<std::string> names = {"alpha", "S1"};
+
+  const SafeStartGate gate;
+  SafeStartContext ctx = make_all_passing();
+  ctx.strategy_name_check = [&names] { return require_valid_strategy_names(names); };
+
+  const Result<broker_exec::ports::Ok> r = gate.verify(ctx);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error().message.find("safe-start: strategy-names") != std::string::npos);
+  CHECK(r.error().category == ErrorCategory::Validation);  // inner category preserved
+  CHECK(r.error().action == SuggestedAction::BlockStrategy);
+
+  // It runs EARLY — before crypto keys, the clock or the broker session — because
+  // the names are configuration and nothing later can be logged about safely.
+  ctx.crypto_keys_check = fail_check(ErrorCategory::Internal, "no keys");
+  const Result<broker_exec::ports::Ok> ordered = gate.verify(ctx);
+  REQUIRE_FALSE(ordered.has_value());
+  CHECK(ordered.error().message.find("strategy-names") != std::string::npos);
+  CHECK(ordered.error().message.find("crypto-keys") == std::string::npos);
 }
 
 TEST_CASE("legacy-stop guard: wired into the gate, it blocks naming legacy-stops",

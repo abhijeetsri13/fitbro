@@ -26,6 +26,7 @@
 // Cross-platform: C++20 standard library only. No OS APIs, no `#ifdef`.
 
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "broker_exec/domain/types.hpp"
@@ -40,10 +41,11 @@ namespace broker_exec::session {
 // binds each to a real module; tests bind simple lambdas.
 using SafeCheck = std::function<Result<ports::Ok>()>;
 
-// The nine cold-boot checks, all REQUIRED. An empty std::function is treated as
+// The ten cold-boot checks, all REQUIRED. An empty std::function is treated as
 // an unconfigured (hence unverifiable) world and BLOCKS the start.
 struct SafeStartContext {
   SafeCheck config_check;             // config integrity / parse
+  SafeCheck strategy_name_check;      // configured strategy names are id-safe (see below)
   SafeCheck crypto_keys_check;        // crypto-key presence (SE-5)
   SafeCheck clock_check;              // clock sanity (skew / stall)
   SafeCheck session_check;            // broker session establishment / liveness
@@ -58,14 +60,63 @@ struct SafeStartContext {
 // flips "may trade" true only when the entire world passes.
 class SafeStartGate {
  public:
-  // Run all nine checks in the FIXED order: config -> crypto-keys -> clock ->
-  // session -> egress-IP -> instrument-master -> calendar -> legacy-stops ->
-  // reconciliation. An empty check -> a fail-closed Internal/BlockStrategy "not
-  // configured" Error naming it. A check that returns an Error -> that Error
-  // WRAPPED (category/action/broker_code preserved, name prepended). The first
-  // failing/empty check returns; all pass -> ok() (trading allowed).
+  // Run all ten checks in the FIXED order: config -> strategy-names ->
+  // crypto-keys -> clock -> session -> egress-IP -> instrument-master ->
+  // calendar -> legacy-stops -> reconciliation. An empty check -> a fail-closed
+  // Internal/BlockStrategy "not configured" Error naming it. A check that returns
+  // an Error -> that Error WRAPPED (category/action/broker_code preserved, name
+  // prepended). The first failing/empty check returns; all pass -> ok() (trading
+  // allowed).
   [[nodiscard]] Result<ports::Ok> verify(const SafeStartContext& ctx) const;
 };
+
+// ── The IMP-19 strategy-name guard ──────────────────────────────────────────
+//
+// THE HAZARD, IN ONE SENTENCE: a strategy name is the FIRST SEGMENT of every
+// client_ref idempotency::make_client_ref mints (`<strategy>-<sig8>-<uuid>`), and
+// domain::is_provenance_id_shape admits a ref into an alert or a ledger entry only
+// if EVERY segment is homogeneous — so a strategy called `S1` (one letter plus one
+// digit in a single run) makes the ~48-char ref fall back to domain::scrub, which
+// destroys it. EVERY alert and EVERY ledger entry about that strategy's orders
+// then reads `client_ref=***REDACTED***`, and the order is unlinkable to the
+// store, the intent log and the ledger. A name with a space ("iron condor v2") is
+// wholly redacted in the `strategy=` column too. Spelling it `S-1` fixes it
+// entirely — which is exactly why this is worth catching before trading rather
+// than discovering it in the middle of an incident, when the alert you cannot read
+// is the one you needed.
+//
+// WHY IT IS A COLD-BOOT GATE AND NOT AN ORDER-PATH REJECTION. A strategy name is
+// CONFIGURATION, known at startup. The only order-path boundary is
+// reserve()/Dispatcher::place(), where refusing a name means REFUSING TO PLACE AN
+// ORDER — a trading-behaviour change mid-session. A deployment therefore fails
+// visibly BEFORE it trades. Nothing in idempotency or the dispatcher changed.
+//
+// WHAT IT DOES NOT DO: this gate checks the names it is HANDED — in practice
+// `config.strategies.names`, a DECLARED list. It is not containment. A host that
+// fills `OrderIntent::strategy` directly still mints refs from a name this check
+// never saw, and the library itself does exactly that for the square-off exit
+// (`exit.strategy = "square_off"`). See the residual note on
+// domain::is_valid_strategy_name (domain/redaction.hpp) for why closing that would
+// mean an order-path rejection, which is the thing this design declined to add.
+//
+// Returns ok() when every name in `names` satisfies domain::is_valid_strategy_name
+// (an EMPTY list passes vacuously — this check is about the names that exist, and
+// the unset-std::function rule above is what catches a forgotten wiring). Otherwise
+// a fail-closed Validation/BlockStrategy Error naming the offending name and the
+// rule it broke, with a suggested spelling where one exists. The echoed name is
+// sanitised and truncated by domain::explain_invalid_strategy_name, so an
+// ill-formed or hostile name cannot forge a provenance block or overrun an alert.
+//
+// RENAMING IS NOT FREE: `strategy` is hashed into idempotency::signal_signature,
+// so `S1` -> `S-1` changes the signature of every signal that strategy emits and
+// the restart dedupe will not recognise its own in-flight orders — the same hazard
+// class as the IMP-11 stop upgrade. Rename BETWEEN sessions, FLAT.
+//
+// Wire it as: strategy_name_check = [&] {
+//   return session::require_valid_strategy_names(config.strategies.names);
+// };
+[[nodiscard]] Result<ports::Ok> require_valid_strategy_names(
+    const std::vector<std::string>& names);
 
 // ── The IMP-11 legacy-stop guard ────────────────────────────────────────────
 //

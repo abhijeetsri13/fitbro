@@ -2,10 +2,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -16,6 +18,7 @@
 #include "broker_exec/clock/test_clock.hpp"
 #include "broker_exec/domain/enums.hpp"
 #include "broker_exec/domain/money.hpp"
+#include "broker_exec/domain/redaction.hpp"
 #include "broker_exec/domain/types.hpp"
 #include "broker_exec/idempotency/uuid.hpp"
 #include "broker_exec/intentlog/intent_log.hpp"
@@ -104,6 +107,176 @@ TEST_CASE("make_client_ref has the form strategy-<8hex>-<uuid>", "[idempotency][
     REQUIRE(((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')));
   }
   REQUIRE(uuid_part == uuid);
+}
+
+// ── IMP-19: the strategy-name rule, proven against the REAL minter ────────────
+//
+// domain::is_valid_strategy_name is DERIVED from domain::is_provenance_id_shape:
+// a strategy name is the first segment (or first few segments) of every
+// client_ref, and the shape rule demands every segment be homogeneous. The
+// derivation is only worth anything if the ACTUAL ref this module mints comes out
+// id-shaped, so that is what is asserted here — the predicate is never checked
+// against itself. If make_client_ref's format ever changes, THIS is the test that
+// fails, and the rule in domain must move with it.
+
+TEST_CASE("IMP-19: every accepted strategy name mints an id-shaped client_ref",
+          "[idempotency][format][redaction][IMP-19]") {
+  using broker_exec::domain::is_provenance_id_shape;
+  using broker_exec::domain::is_valid_strategy_name;
+  using broker_exec::domain::kMaxStrategyNameChars;
+  using broker_exec::domain::render_provenance_block;
+  using broker_exec::domain::scrub_provenance_column;
+
+  idem::SeededUuidGenerator uuids(0x0FED'CBA9'8765'4321ULL);
+  OrderIntent intent = sample_intent();
+
+  const std::vector<std::string> accepted = {
+      "alpha",
+      "S-1",
+      "momentum-v-2",
+      "atm-straddle-9-20",
+      "IRON_CONDOR",
+      "deadbeef",
+      "12345",
+      "x",
+      std::string(kMaxStrategyNameChars, 'a'),  // the longest accepted name
+  };
+
+  for (const std::string& name : accepted) {
+    INFO("strategy = " << name);
+    REQUIRE(is_valid_strategy_name(name));
+
+    intent.strategy = name;
+    const std::string sig = idem::signal_signature(intent);
+    const std::string ref = idem::make_client_ref(name, sig, uuids.next());
+
+    // THE CONTRACT: the minted ref is admissible into an alert / ledger block as a
+    // whole typed column, verbatim — not redacted.
+    CHECK(is_provenance_id_shape(ref));
+    CHECK(scrub_provenance_column(ref) == ref);
+
+    // And so are the refs DERIVED from it: the freeze-slicer's `#<k>` children and
+    // IMP-13's `#X` square-off exit are the client_ref an alert about a slice
+    // carries, so the length bound has to leave room for them too.
+    CHECK(is_provenance_id_shape(idem::child_ref(ref, 1)));
+    CHECK(is_provenance_id_shape(idem::child_ref(ref, 999)));
+    CHECK(is_provenance_id_shape(ref + "#X"));
+
+    // The `strategy=` column itself survives alongside the ref (V6).
+    CHECK(scrub_provenance_column(name) == name);
+    const std::string expected = " [client_ref=" + ref + " strategy=" + name + "]";
+    CHECK(render_provenance_block({{"client_ref", ref}, {"strategy", name}}) == expected);
+  }
+}
+
+TEST_CASE("IMP-19: a REJECTED strategy name is rejected for a reason that is real",
+          "[idempotency][format][redaction][IMP-19]") {
+  using broker_exec::domain::is_provenance_id_shape;
+  using broker_exec::domain::is_valid_strategy_name;
+
+  idem::SeededUuidGenerator uuids(0x1234'5678'9ABC'DEF0ULL);
+  OrderIntent intent = sample_intent();
+
+  // The homogeneity rejections are not pedantry: the ref they mint really is
+  // destroyed. ("iron condor v2" additionally fails the block grammar guard.)
+  for (const std::string_view name : {"S1", "momentum-v2", "iron condor v2", "v2beta"}) {
+    INFO("strategy = " << name);
+    CHECK_FALSE(is_valid_strategy_name(name));
+    intent.strategy = std::string(name);
+    const std::string ref =
+        idem::make_client_ref(name, idem::signal_signature(intent), uuids.next());
+    CHECK_FALSE(is_provenance_id_shape(ref));
+  }
+
+  // '#' is excluded from the strategy charset even though the provenance-id
+  // charset admits it, and THIS is why: '#' is the child-ref separator, so a
+  // PARENT ref minted from a name containing one parses as a CHILD of a truncated
+  // parent — the FSM would then recover the wrong owner for the slice.
+  const std::string forged =
+      idem::make_client_ref("a#b", idem::signal_signature(intent), uuids.next());
+  // A PARENT ref that parses as a child, whose recovered "parent" is a fragment of
+  // the strategy name rather than an order that exists.
+  CHECK_FALSE(is_valid_strategy_name("a#b"));
+  CHECK(idem::is_child_ref(forged));
+  CHECK(idem::parent_of(forged) == "a");
+}
+
+// The SELF-PROVING version of the two tests above — a fixed list only ever proves
+// the list. This sweeps EVERY string of length 1..5 over an alphabet chosen to hit
+// each class the rules distinguish: 'a' (a letter that IS a hex digit), 'g' (a
+// letter that is not), 'F' (uppercase, and hex), '0' and '9' (digits), and the two
+// separators '-' and '_'. For every name the rule ACCEPTS it asserts the whole
+// round trip against the REAL minter: the client_ref, and its `#1` / `#999` /
+// `#X` children, are id-shaped AND come back verbatim from a typed column, and so
+// does the name in its own `strategy=` column.
+//
+// WHY EXHAUSTIVELY: this is what makes an arbitrary future loosening of
+// is_valid_strategy_name FAIL — admit a name whose ref is not loggable and the
+// counterexample is found here, without anyone having to think of it first.
+TEST_CASE("IMP-19: EXHAUSTIVE — every accepted name over a small alphabet round-trips",
+          "[idempotency][format][redaction][IMP-19]") {
+  using broker_exec::domain::is_provenance_id_shape;
+  using broker_exec::domain::is_valid_strategy_name;
+  using broker_exec::domain::scrub_provenance_column;
+
+  static constexpr std::string_view kAlphabet = "agF09-_";
+  static constexpr std::size_t kMaxLen = 5;
+
+  idem::SeededUuidGenerator uuids(0x0BAD'C0DE'CAFE'F00DULL);
+  OrderIntent intent = sample_intent();
+
+  // Report the FIRST counterexample only: ~19'600 names times several checks would
+  // drown the output, and one counterexample is all a reader needs.
+  std::string failure;
+  std::size_t accepted = 0;
+  std::string name;
+
+  const auto require_loggable = [&](const std::string& ref, const char* what) {
+    if (!failure.empty()) {
+      return;
+    }
+    if (!is_provenance_id_shape(ref) || scrub_provenance_column(ref) != ref) {
+      failure = std::string(what) + " is not loggable: '" + ref + "' (strategy '" + name + "')";
+    }
+  };
+
+  for (std::size_t len = 1; len <= kMaxLen; ++len) {
+    std::vector<std::size_t> odometer(len, 0);
+    for (;;) {
+      name.clear();
+      for (const std::size_t d : odometer) {
+        name.push_back(kAlphabet[d]);
+      }
+
+      if (is_valid_strategy_name(name)) {
+        ++accepted;
+        intent.strategy = name;
+        const std::string ref =
+            idem::make_client_ref(name, idem::signal_signature(intent), uuids.next());
+        require_loggable(ref, "the minted client_ref");
+        require_loggable(idem::child_ref(ref, 1), "the #1 slice child");
+        require_loggable(idem::child_ref(ref, 999), "the #999 slice child");
+        require_loggable(ref + "#X", "the #X square-off exit ref");
+        if (failure.empty() && scrub_provenance_column(name) != name) {
+          failure = "the strategy column itself is redacted: '" + name + "'";
+        }
+      }
+
+      std::size_t digit = len;
+      while (digit > 0 && ++odometer[digit - 1] == kAlphabet.size()) {
+        odometer[digit - 1] = 0;
+        --digit;
+      }
+      if (digit == 0) {
+        break;  // the odometer wrapped: every string of this length is done
+      }
+    }
+  }
+
+  INFO("first counterexample: " << failure);
+  CHECK(failure.empty());
+  // Guard the guard: a rule that accepted NOTHING would satisfy the loop vacuously.
+  CHECK(accepted > std::size_t{1000});  // it is 13'457 today
 }
 
 TEST_CASE("UUID generator yields canonical 8-4-4-4-12 v4", "[idempotency][uuid]") {

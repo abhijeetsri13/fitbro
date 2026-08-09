@@ -16,12 +16,15 @@ target_compile_features(broker_exec_config PUBLIC cxx_std_20)
 
 # Error/Result appear in the public API (load() returns Result<Config>), so
 # broker_exec_errors is PUBLIC. toml++ is an implementation detail of the loader
-# and the warnings/sanitizers policy stays PRIVATE per convention. (No domain
-# dependency: the run-profile/log-level enums are local to this module.)
+# and the warnings/sanitizers policy stays PRIVATE per convention. domain is
+# PRIVATE: the run-profile/log-level enums are local to this module, and the only
+# domain symbol used is domain::explain_invalid_strategy_name (IMP-19), called
+# inside validate() — no domain type appears in config's public header.
 target_link_libraries(broker_exec_config
   PUBLIC
     broker_exec_errors
   PRIVATE
+    broker_exec_domain
     tomlplusplus::tomlplusplus
     broker_exec_warnings
     broker_exec_sanitizers)
