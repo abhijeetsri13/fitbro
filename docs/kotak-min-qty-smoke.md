@@ -56,7 +56,9 @@ capability below is real.
   to treat a failed resolve as a legitimate fail-closed outcome — a change to the
   kit, out of scope for Story 6.2.)
 - **Restart recovery** — see "Recovery after a restart" in step 9.
-- **`square_off()` is a typed refusal**, not a flatten — see step 6.
+- **`square_off()` is now a real flatten** (IMP-13) and is certified at tier-1
+  only. Its duplicate guard is materially weaker than Kite's — no tag echo, so it
+  rests on attribute corroboration — and that gap is what step 6 exists to probe.
 
 ### The correlation caveat you are about to test live
 
@@ -198,21 +200,54 @@ book reflects the change. Then cancel it and confirm terminal state.
 
 ### Step 6 — Square off
 
-Take the position live (a fill), then flatten it — **by hand, for now.**
+**The flatten now EXISTS** (IMP-13). `KotakBrokerAdapter::square_off()` is a real
+position flatten, protocol-identical to the Kite adapter's:
 
-`KotakBrokerAdapter::square_off()` does **not** flatten: it returns a typed
-`NotSupported` / `DoNotRetry` error and makes no broker call. That is deliberate.
-It previously issued a cancel and returned `ok`, which is **fail-open** in exactly
-the case the call exists for — against a *filled* position a cancel is a no-op, so
-the engine was told "flat" while the position was still on, and stopped managing
-it. An explicit refusal sends the operator to the position instead of to a lie.
+1. re-read **broker truth** (the order book — never a cache, never a push) and
+   normalize the parent's fill through `fillnorm` (quantity-first);
+2. **cancel** the working remainder unless the order is already terminal (an
+   `OrderNotFound`-class refusal is *tolerated* — it is the state the cancel was
+   reaching for);
+3. place **ONE** opposite-side order for **exactly** the canonical filled
+   quantity, echoing the parent's `prod` and `exSeg` from broker truth;
+4. zero filled ⇒ the cancel alone flattened it: `ok`, nothing placed;
+5. any **UNKNOWN** leg ⇒ a typed `ReconcileFirst` error and **no** exit order.
 
-A real flatten is a MARKET exit, side-flipped and sized off the live net position
-(`fetch_positions()` + instrument ref-data). Until that is implemented **and**
-exercised here, `SquareOff` stays `Unknown`. A successful live run is *not*
-sufficient evidence for this entry — the feature has to exist first.
+So the old blocker — "a live run cannot promote a call that is a typed refusal" —
+is gone. **This entry is no longer waiting on code.** It stays `Unknown` for the
+ordinary reason every other entry does: no request has ever reached Kotak, and
+this runbook is the gate. Promoting it is now a one-line decision backed by the
+live evidence below, not a code change.
 
-**Resolves:** `SquareOff` — *only after* the flatten exists.
+> **The gate still refuses it in the meantime.** On an assembly built through
+> `composition::make_broker`, the per-call capability gate (Story 6.3) calls
+> `require(Capability::SquareOff)` *before* the adapter is touched, and `Unknown`
+> reads as unsupported. The typed `NotSupported`/`DoNotRetry` a caller sees today
+> is unchanged — it now comes from the **gate** rather than from the adapter.
+> Reaching the flatten before promotion requires calling the adapter directly, as
+> the conformance suite deliberately does.
+
+**What to run, and what to watch:**
+
+- Take a position live (a fill), then call `square_off(broker_order_id)` through
+  the adapter. Confirm the exit is **opposite side**, sized off the **fill** and
+  not the order total, and carries the parent's `prod` / `exSeg` verbatim.
+- **Force a PARTIAL fill first.** The exit must be sized off what executed; an
+  exit sized off the order total leaves a naked leg the moment the remainder is
+  cancelled.
+- **Invoke it TWICE** (and once more from a freshly restarted process). There must
+  be exactly **one** exit on the book afterwards.
+- **Probe the weak rung deliberately.** Kotak has no verified tag echo, so the
+  duplicate guard falls back to attribute corroboration against the live book. Seed
+  an unrelated opposite-side order of a plausible size *by hand* and confirm the
+  flatten does **not** silently adopt it and report `ok` — this is the residual
+  risk the tier-1 fixtures can only simulate. If step 3a resolves `TagCarry`
+  positively, this rung should be replaced by a real token and re-tested.
+- **Record any `...-SQUAREOFF-EXITSHORT` or `...-SQUAREOFF-AMBIGUOUS` result.**
+  Both are deliberate refusals that need an operator; neither may be "fixed" by
+  making the adapter place another order.
+
+**Resolves:** `SquareOff` — on live evidence from the run above.
 
 ### Step 7 — Order-update websocket
 
@@ -282,7 +317,7 @@ before go-live, the IntentLog rehydration follow-up is the blocker to raise.
 | `PlaceOrder` | Step 3 | `Supported` |
 | `ModifyOrder` | Step 5 | `Supported` |
 | `CancelOrder` | Step 5 | `Supported` |
-| `SquareOff` | Step 6 — **blocked**: the flatten is not implemented and the call is a typed refusal | `Supported` |
+| `SquareOff` | Step 6 — the flatten **is implemented** (IMP-13) and tier-1 certified; the live run is the only remaining gate | `Supported` |
 | `HeadlessSessionRefresh` | Step 2 | `Supported` **or** `Unsupported` |
 | `TagCarry` | Step 3a | `Supported` **or** `Unsupported` |
 | `OrderUpdateWebsocket` | Step 7 | `Supported` |
@@ -299,9 +334,12 @@ before go-live, the IntentLog rehydration follow-up is the blocker to raise.
    tier-1 thereafter covers the real payload shapes.
 4. Until an entry is promoted, `CapabilitySet::require()` rejects it **early**
    (at load / safe-start), never mid-trade. That rejection is a feature.
-5. A live run promotes a capability only when the underlying feature EXISTS.
-   `SquareOff` is the standing example: no amount of live evidence promotes a call
-   that is currently a typed refusal.
+5. A live run promotes a capability only when the underlying feature EXISTS. No
+   amount of live evidence promotes a call that is a typed refusal. `SquareOff`
+   used to be the standing example of that rule and **no longer is**: as of IMP-13
+   the flatten exists and is tier-1 certified, so the rule is satisfied for it and
+   step 6 is a genuine promotion gate rather than a placeholder. Keep the rule —
+   it will bind the next unimplemented capability.
 
 `tests/conformance/kotak_conformance_test.cpp` contains a guard test asserting
 every capability is still `Unknown`. Promoting an entry will fail that test —

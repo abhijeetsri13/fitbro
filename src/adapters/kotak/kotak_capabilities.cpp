@@ -41,15 +41,24 @@ CapabilitySet kotak_capabilities() {
   //
   //   PlaceOrder / ModifyOrder / CancelOrder
   //                            -> smoke steps 3-5 (a real order on a real path)
-  //   SquareOff                -> smoke step 6, AND NOT BEFORE THE FEATURE EXISTS.
-  //                               `KotakBrokerAdapter::square_off()` is currently a
-  //                               typed NotSupported refusal: it used to issue a
-  //                               cancel and return ok, which is FAIL-OPEN against
-  //                               a filled position (a cancel flattens nothing, yet
-  //                               the caller was told it was flat). Promoting this
-  //                               entry requires a real position-flattening market
-  //                               exit to be implemented AND smoke-tested — a live
-  //                               run alone is not sufficient evidence here.
+  //   SquareOff                -> smoke step 6. THE FEATURE NOW EXISTS: as of
+  //                               IMP-13 `KotakBrokerAdapter::square_off()` is a
+  //                               REAL FLATTEN (broker-truth read -> cancel the
+  //                               working remainder -> ONE opposite-side order for
+  //                               exactly the canonical filled quantity, duplicate-
+  //                               guarded), certified at tier-1 by the conformance
+  //                               suite. So the OLD blocker is gone: this entry is
+  //                               no longer waiting on code, and promoting it is a
+  //                               runbook decision rather than a code change.
+  //                               It stays Unknown for the ordinary reason every
+  //                               other entry does — no request has ever reached
+  //                               Kotak — and the runbook (step 6) is the gate.
+  //                               History, so nobody restores it: before IMP-13
+  //                               this was a typed NotSupported refusal, and before
+  //                               THAT it issued a cancel and returned ok, which is
+  //                               FAIL-OPEN against a filled position (a cancel
+  //                               flattens nothing, yet the caller was told it was
+  //                               flat).
   //   HeadlessSessionRefresh   -> step 2 (does the Neo session renew
   //                               server-to-server, or must the operator re-MPIN?)
   //   OrderUpdateWebsocket     -> step 7 (a real socket carrying a real order

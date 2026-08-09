@@ -26,6 +26,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -155,6 +156,18 @@ class FakeSecretProvider final : public SecretProvider {
 // In every recorded case the order carries the request's `tag`, so the adapter
 // recovers the client_ref. Deterministic: injected ClockPort + internal counters,
 // no real time / rand / #ifdef.
+//
+// IMP-13 EXTENSIONS (additive — every default reproduces the pre-IMP-13 behavior
+// exactly, so no suite that predates them changes):
+//   * order rows now carry `quantity`, `transaction_type`, `product` and
+//     `exchange`, which a real Kite row has always carried and a FLATTEN needs;
+//   * a cancel now actually cancels a still-working order (under the default
+//     fill-everything model every order is already COMPLETE, so it is a no-op
+//     there), optionally refusing an already-terminal one;
+//   * `set_fill_model` / `set_status_override` inject a partial fill or an
+//     unreadable status — the two conditions the flatten must fail closed on;
+//   * `placed_orders()` exposes broker truth so a test can assert what the adapter
+//     SENT (the exit's side/size/product/exchange), not just what it read back.
 class RecordedKiteServer final : public HttpClient {
  public:
   RecordedKiteServer(broker_exec::ports::ClockPort& clock, FaultConfig fault)
@@ -169,7 +182,7 @@ class RecordedKiteServer final : public HttpClient {
       return modify_or_cancel(request.path);
     }
     if (request.method == M::Delete && starts_with(request.path, "/orders/regular/")) {
-      return modify_or_cancel(request.path);
+      return cancel_order(request.path);
     }
     if (request.method == M::Get && request.path == "/orders") {
       return orderbook();
@@ -205,18 +218,124 @@ class RecordedKiteServer final : public HttpClient {
   // produces a shape the validation gate refuses outright.
   void set_order_type_override(std::string type) { order_type_override_ = std::move(type); }
 
+  // ── IMP-13 knobs (all default to the pre-IMP-13 behavior) ────────────────
+
+  // Report every order row under a DIFFERENT `status` than the one recorded. Kite's
+  // status vocabulary is not frozen either, and a status the adapter cannot read is
+  // the trigger for the flatten's fail-closed branch: an UNKNOWN leg must produce a
+  // ReconcileFirst error and NO exit order.
+  void set_status_override(std::string status) { status_override_ = std::move(status); }
+
+  // Override the immediate-fill model a placed order is recorded with (the twin of
+  // RecordedKotakServer::set_fill_model). `filled` < 0 means "fill the whole
+  // order"; `status` is the Kite `status` string the order book reports. Deliberately
+  // NOT clamped to the order quantity — a fault injector must be able to emit the
+  // impossible `filled_quantity > quantity` a real broker can, so the ADAPTER's
+  // clamp is what gets tested.
+  void set_fill_model(std::int64_t filled, std::string status) {
+    fill_qty_ = filled;
+    fill_status_ = std::move(status);
+  }
+
+  // Answer a cancel of an ALREADY-TERMINAL order with a refusal instead of a
+  // cheerful echo. The flatten must TOLERATE this outcome — it means the remainder
+  // reached the state we were cancelling it into — rather than aborting the
+  // square-off on it (AC-1b).
+  //
+  // REACHING THIS KNOB NEEDS A PARTIAL FILL. Under the default fill model every
+  // order is recorded COMPLETE for its full quantity, so the adapter sees a
+  // terminal parent, SKIPS the cancel, and the refusal never happens. That is how
+  // this stayed a dead knob (and AC-1b's tolerance stayed uncovered) through a
+  // test that looked like it exercised it. Drive it from `set_fill_model(30,
+  // "COMPLETE")`: the adapter's quantity-first reading makes that a PARTIAL, so it
+  // issues the cancel, while broker truth here still holds a terminal row.
+  void set_cancel_rejects_terminal(bool on) noexcept { cancel_rejects_terminal_ = on; }
+
+  // Grow (or set) the executed quantity of ONE recorded order WITHOUT touching its
+  // status — the fixture-only way to model the race the flatten's size guard
+  // exists for: the working remainder fills in the window between the square-off
+  // that measured it and the replay that re-measures it. Deliberately un-clamped
+  // and deliberately targeted by id, so a test can move the PARENT without moving
+  // the exit. No adapter code can see this; a real broker does it by itself.
+  void grow_fill(const std::string& order_id, std::int64_t filled) {
+    for (Record& rec : book_) {
+      if (rec.order_id == order_id) {
+        rec.filled = std::to_string(filled);
+        return;
+      }
+    }
+  }
+
+  // How many cancels this server REFUSED as already-terminal. The non-vacuity
+  // probe for the knob above: a test asserting only "the square-off still
+  // succeeded" passes just as well when no cancel was ever issued.
+  [[nodiscard]] std::size_t cancel_refusals() const noexcept { return cancel_refusals_; }
+
+  // Set the reported status of ONE recorded order. `set_status_override` rewrites
+  // EVERY row, which cannot express the case the flatten's exit guard turns on:
+  // a healthy PARENT next to an exit that was rejected, cancelled, or is reporting
+  // a status from a vocabulary we do not know. Fixture-only, targeted by id.
+  void set_order_status(const std::string& order_id, std::string status) {
+    for (Record& rec : book_) {
+      if (rec.order_id == order_id) {
+        rec.status = std::move(status);
+        return;
+      }
+    }
+  }
+
+  // ── Observation hooks ──
+
+  // One recorded order, as BROKER TRUTH holds it. Lets a test assert what an
+  // adapter actually SENT (side, quantity, order type, exchange, product, tag)
+  // rather than inferring it from a round-tripped read.
+  struct PlacedOrder {
+    std::string order_id;
+    std::string tag;
+    std::string symbol;
+    std::string side;
+    std::string qty;
+    std::string filled;  // executed quantity, as broker truth holds it
+    std::string price;
+    std::string order_type;
+    std::string product;
+    std::string exchange;
+    std::string status;
+  };
+
+  [[nodiscard]] std::vector<PlacedOrder> placed_orders() const {
+    std::vector<PlacedOrder> out;
+    out.reserve(book_.size());
+    for (const Record& rec : book_) {
+      out.push_back(PlacedOrder{rec.order_id, rec.tag, rec.symbol, rec.side, rec.qty, rec.filled,
+                                rec.price, rec.order_type, rec.product, rec.exchange, rec.status});
+    }
+    return out;
+  }
+
  private:
   struct Record {
     std::string order_id;
     std::string tag;
     std::string status;
     std::string qty;
+    std::string filled;      // executed quantity (see set_fill_model); TEXT, as Kite sends it
     std::string price;
     std::string symbol;
     std::string side;        // Kite `transaction_type`: "BUY" / "SELL"
     std::string trigger;     // Kite `trigger_price`; EMPTY when the form omitted it
     std::string order_type;  // Kite `order_type`: MARKET / LIMIT / SL / SL-M
+    std::string product;     // Kite `product`: MIS / CNC / NRML
+    std::string exchange;    // Kite `exchange`: NSE / NFO / BSE / ...
   };
+
+  // The terminal Kite statuses, for the cancel model below. A cancel only acts on
+  // a still-working order; against a terminal one it is a no-op (or, with
+  // set_cancel_rejects_terminal, a refusal).
+  [[nodiscard]] static bool is_terminal_status(const std::string& status) noexcept {
+    return status == "COMPLETE" || status == "REJECTED" || status == "CANCELLED" ||
+           status == "CANCELLED AMO";
+  }
 
   // Quantities arrive as TEXT on this wire. Digits-only, stops at the first
   // non-digit — enough for a fixture, and never a float.
@@ -303,7 +422,16 @@ class RecordedKiteServer final : public HttpClient {
     // the round-trip assertion a real test of the field name.
     rec.trigger = field(form, "trigger_price");
     rec.order_type = field(form, "order_type");
-    rec.status = "COMPLETE";  // the fake's deterministic immediate-fill model
+    // Recorded under their EXACT wire names so a test can assert WHERE an order was
+    // routed (the exchange resolver vs the symbol-shape heuristic) and under which
+    // product a square-off exit went out — exiting an NRML position with an MIS
+    // order opens a second position instead of closing the first.
+    rec.product = field(form, "product");
+    rec.exchange = field(form, "exchange");
+    // The deterministic immediate-fill model: COMPLETE for the whole quantity
+    // unless a test injected another (see set_fill_model).
+    rec.status = fill_status_;
+    rec.filled = fill_qty_ < 0 ? rec.qty : std::to_string(fill_qty_);
     book_.push_back(rec);
 
     // The order is recorded above REGARDLESS; only whether the CALLER observes the
@@ -320,12 +448,53 @@ class RecordedKiteServer final : public HttpClient {
     return success_response(data);
   }
 
+  [[nodiscard]] static std::string id_from_path(const std::string& path) {
+    const std::size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? std::string{} : path.substr(slash + 1);
+  }
+
   [[nodiscard]] HttpResponse modify_or_cancel(const std::string& path) const {
     if (rate_limited()) {
       return error_response(429, "TooManyRequests", "Too many requests");
     }
-    const std::size_t slash = path.find_last_of('/');
-    const std::string id = slash == std::string::npos ? std::string{} : path.substr(slash + 1);
+    nlohmann::json data = nlohmann::json::object();
+    data["order_id"] = id_from_path(path);
+    return success_response(data);
+  }
+
+  // A CANCEL THAT ACTUALLY CANCELS (IMP-13). It used to be an echo, which made the
+  // square-off's "cancel the working remainder, then place the exit" sequence
+  // untestable: the book never moved, so a test could not tell a flatten that
+  // cancelled from one that did not.
+  //
+  // Under the DEFAULT fill model every order is recorded COMPLETE, i.e. already
+  // terminal, so this is a no-op there and no pre-IMP-13 behavior changes.
+  [[nodiscard]] HttpResponse cancel_order(const std::string& path) const {
+    if (rate_limited()) {
+      return error_response(429, "TooManyRequests", "Too many requests");
+    }
+    const std::string id = id_from_path(path);
+    for (Record& rec : book_) {
+      if (rec.order_id != id) {
+        continue;
+      }
+      if (is_terminal_status(rec.status)) {
+        if (cancel_rejects_terminal_) {
+          // "There is no OPEN order with that id." Emitted as a 404 because that
+          // is the status whose typed category (OrderNotFound) actually says so —
+          // the flatten's AC-1b tolerance keys on the CATEGORY, and a refusal the
+          // mapper reads as a plain input rejection would abort the square-off
+          // instead of being shrugged off.
+          ++cancel_refusals_;
+          return error_response(404, "InputException", "order not found or already terminal");
+        }
+        break;  // already terminal: nothing to cancel, and no complaint either
+      }
+      // A cancel keeps whatever was already filled — that partial fill is exactly
+      // what the exit must then be sized off.
+      rec.status = "CANCELLED";
+      break;
+    }
     nlohmann::json data = nlohmann::json::object();
     data["order_id"] = id;
     return success_response(data);
@@ -340,10 +509,19 @@ class RecordedKiteServer final : public HttpClient {
       nlohmann::json o = nlohmann::json::object();
       o["order_id"] = rec.order_id;
       o["tag"] = rec.tag;
-      o["status"] = rec.status;
+      o["status"] = status_override_.empty() ? rec.status : status_override_;
       o["tradingsymbol"] = rec.symbol;
-      o["filled_quantity"] = rec.qty;  // string form; the adapter parses either
-      o["average_price"] = rec.price;  // rupee-decimal string; no float in fixture
+      o["filled_quantity"] = rec.filled;  // string form; the adapter parses either
+      o["average_price"] = rec.price;     // rupee-decimal string; no float in fixture
+      // THE ORDER TOTAL, THE SIDE, THE PRODUCT AND THE EXCHANGE — all four are on a
+      // real Kite order row, and a FLATTEN needs every one of them: the total to
+      // normalize the fill (absent is not zero), the side to flip it, the product
+      // and exchange to land the exit on the same position. Omitting them here
+      // would let an adapter that guessed them pass a fixture that never asked.
+      o["quantity"] = rec.qty;
+      o["transaction_type"] = rec.side;
+      o["product"] = rec.product;
+      o["exchange"] = rec.exchange;
       // Kite reports `trigger_price` on EVERY order row, sending "0.00" for a
       // non-stop order rather than omitting the key — so the fixture does the
       // same. That "0 means no trigger" case is exactly what the adapter's
@@ -370,15 +548,15 @@ class RecordedKiteServer final : public HttpClient {
     }
     nlohmann::json arr = nlohmann::json::array();
     for (const Record& rec : book_) {
-      if (rec.status != "COMPLETE") {
-        continue;
+      if (to_int(rec.filled) <= 0) {
+        continue;  // a trade row exists only where something actually executed
       }
       nlohmann::json t = nlohmann::json::object();
       t["trade_id"] = "T" + rec.order_id;
       t["order_id"] = rec.order_id;
       t["tag"] = rec.tag;
       t["tradingsymbol"] = rec.symbol;
-      t["quantity"] = rec.qty;
+      t["quantity"] = rec.filled;
       t["average_price"] = rec.price;
       arr.push_back(t);
       if (fault_.duplicate_fill) {
@@ -405,7 +583,13 @@ class RecordedKiteServer final : public HttpClient {
     }
     nlohmann::json net = nlohmann::json::array();
     for (const Record& rec : book_) {
-      const std::int64_t qty = to_int(rec.qty);
+      // A POSITION IS WHAT EXECUTED, not what was ordered. Under the default
+      // fill-everything model these are the same number, so nothing changes for the
+      // suites that predate IMP-13 — but a flatten test needs the distinction: a
+      // square-off that placed a correctly-sized exit must net this book to ZERO,
+      // and an exit sized off the ORDERED quantity of a partially-filled parent
+      // must not be able to hide behind a fixture that reports the ordered size.
+      const std::int64_t qty = to_int(rec.filled);
       nlohmann::json p = nlohmann::json::object();
       p["tradingsymbol"] = rec.symbol;
       p["quantity"] = rec.side == "SELL" ? -qty : qty;  // signed net, integer only
@@ -439,12 +623,20 @@ class RecordedKiteServer final : public HttpClient {
 
   // Empty => report each row's own placed type (see set_order_type_override).
   std::string order_type_override_;
+  // Empty => report each row's own status (see set_status_override).
+  std::string status_override_;
+  // The immediate-fill model (see set_fill_model): < 0 means "fill the whole order".
+  std::int64_t fill_qty_ = -1;
+  std::string fill_status_ = "COMPLETE";
+  // Whether cancelling an already-terminal order is a refusal (see the setter).
+  bool cancel_rejects_terminal_ = false;
 
   // Stateful broker truth; mutable because HttpClient::send() is const.
   mutable std::vector<Record> book_;
   mutable std::int64_t next_id_ = 1;
   mutable std::size_t request_count_ = 0;
   mutable std::size_t place_count_ = 0;  // POST /orders/regular attempts (see place_count())
+  mutable std::size_t cancel_refusals_ = 0;  // terminal-cancel refusals (see cancel_refusals())
 };
 
 // Owns the whole Kite stack behind a single BrokerPort so the kit can hold one

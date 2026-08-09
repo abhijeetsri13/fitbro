@@ -147,6 +147,26 @@ errors::Error map_http_error(const HttpResponse& resp) {
     return build(errors::ErrorCategory::RateLimited, errors::SuggestedAction::RetrySafe,
                  "kite: rate limited by broker");
   }
+  // A 404 IS "THERE IS NO SUCH (OPEN) ORDER", AND IT NEEDS ITS OWN CATEGORY.
+  //
+  // Without this arm the category was unreachable on the Kite path entirely — a
+  // 404 fell through to BrokerRejected/Unknown — which quietly broke a caller that
+  // legitimately keys on it: `square_off` TOLERATES an `OrderNotFound` cancel
+  // outcome, because "the remainder went terminal underneath us" is the state the
+  // cancel was trying to reach (AC-1b). A tolerance written against a category the
+  // mapper could never mint is a tolerance that never fires, so the flatten
+  // aborted on precisely the outcome it was built to shrug off, leaving a filled
+  // position open under a "square_off failed" error.
+  //
+  // The ACTION stays ReconcileFirst, not DoNotRetry: our own path constants are a
+  // tier-2 assumption, so a 404 may equally mean "we asked the wrong URL", and
+  // abandoning a possibly-live order on that evidence is not a risk worth taking.
+  // This mirrors `errors::classify_http` and `map_kotak_error`, both of which have
+  // always classified 404 exactly this way — Kite's omission was the outlier.
+  if (status == 404) {
+    return build(errors::ErrorCategory::OrderNotFound, errors::SuggestedAction::ReconcileFirst,
+                 "kite: order or endpoint not found; reconcile required");
+  }
   if (error_type == "MarginException") {
     return build(errors::ErrorCategory::InsufficientFunds, errors::SuggestedAction::DoNotRetry,
                  "kite: insufficient margin for the order");

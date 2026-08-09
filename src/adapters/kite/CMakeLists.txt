@@ -21,8 +21,10 @@ target_compile_features(broker_exec_kite PUBLIC cxx_std_20)
 # (KiteRestClient's ctor/returns), so ports/errors are PUBLIC. nlohmann_json is
 # also PUBLIC: KiteRestClient's methods return Result<nlohmann::json>, so any
 # in-tree consumer needs the type on its include path. cpr (only
-# cpr_http_client.cpp), domain (scrub), and warnings/sanitizers are
-# implementation details -> PRIVATE.
+# cpr_http_client.cpp), domain (scrub), fillnorm (the canonical quantity-first fill
+# normalizer that sizes the square-off exit — used only inside
+# kite_broker_adapter.cpp) and warnings/sanitizers are implementation details ->
+# PRIVATE.
 target_link_libraries(broker_exec_kite
   PUBLIC
     broker_exec_ports
@@ -31,6 +33,7 @@ target_link_libraries(broker_exec_kite
   PRIVATE
     cpr::cpr
     broker_exec_domain
+    broker_exec_fillnorm
     broker_exec_warnings
     broker_exec_sanitizers)
 

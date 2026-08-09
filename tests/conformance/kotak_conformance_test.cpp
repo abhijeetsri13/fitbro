@@ -113,6 +113,18 @@ constexpr const char* kClientRef = "alpha-1a2b3c4d-deadbeefcafebabe0123456789abc
   return intent;
 }
 
+// A LEGITIMATE opposite-side order of the same shape, belonging to a DIFFERENT
+// signal: the second leg of a hedge pair, a reversal, or another strategy's
+// position under 6-4 isolation. Nothing about it is anomalous, and that is the
+// point — it must never be mistaken for a square-off exit.
+[[nodiscard]] broker_exec::domain::OrderIntent hedge_buy() {
+  broker_exec::domain::OrderIntent intent = make_intent();
+  intent.client_ref = "hedge-9f8e7d6c-00112233445566778899aabbccddeeff";
+  intent.side = broker_exec::domain::Side::Buy;
+  intent.strategy = "hedge";
+  return intent;
+}
+
 }  // namespace
 
 // ── AC-1: the kit, verbatim, across the whole fault matrix ───────────────────
@@ -647,24 +659,329 @@ TEST_CASE("[conformance][kotak][money] the decimal->paise parser is fail-closed 
   CHECK_FALSE(paise_to_decimal(std::numeric_limits<std::int64_t>::min()).empty());
 }
 
-TEST_CASE("[conformance][kotak][squareoff] square_off REFUSES rather than fail open",
-          "[conformance][kotak][squareoff]") {
-  // It used to issue a cancel and return ok. Against a FILLED position a cancel is
-  // a no-op, so the caller was told "you are flat" while the position was still
-  // on — and would stop managing it. A typed refusal is the only honest answer
-  // until a real position-flattening exit exists.
+TEST_CASE("[conformance][kotak][IMP-13] square_off FLATTENS, at parity with Kite",
+          "[conformance][kotak][IMP-13][squareoff]") {
+  // HISTORY, because the contract changed twice: this first issued a cancel and
+  // returned ok (against a FILLED position a cancel is a no-op, so the caller was
+  // told "you are flat" while the position was still on), then a typed
+  // NotSupported refusal, and now — IMP-13 — a real flatten. AC-3 is parity: the
+  // same protocol as Kite, over the Kotak wire.
+  //
+  // NOTE the composition that still guards this: `SquareOff` remains `Unknown` in
+  // kotak_capabilities() until the tier-2 live runbook, and the per-call
+  // capability gate (Story 6.3) refuses an uncertified mutation. The adapter
+  // having an implementation does NOT by itself let a live square-off through.
+  SECTION("a partially filled parent is cancelled AND exited for exactly the fill") {
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+    owner.server->set_fill_model(30, "open");  // 30 of 50 done, 20 still working
+
+    auto placed = owner.adapter.place(make_intent());
+    REQUIRE(placed.has_value());
+
+    REQUIRE(owner.adapter.square_off(placed.value().broker_order_id).has_value());
+
+    const auto book = owner.server->placed_orders();
+    REQUIRE(book.size() == 2);
+    // Opposite side, sized off the CANONICAL fill — not the order total, which
+    // would leave a naked remainder once the working part is cancelled.
+    CHECK(book.back().side == "B");
+    CHECK(book.back().symbol == "NIFTY24JUN24000CE");
+    // THE SIZE, ASSERTED. Without this the section passes for an exit sized off
+    // the ORDER TOTAL (50) — the exact bug the section's own comment describes —
+    // because side and symbol are identical either way. 30 is what executed.
+    CHECK(book.back().qty == 30);
+    CHECK(book.back().price_type == "MKT");
+  }
+
+  SECTION("a cancel the broker REFUSES as already-terminal is tolerated (AC-1b)") {
+    // The Kite twin, over the Kotak wire — and it had no Kotak counterpart at all.
+    // A PARTIAL fill is what makes the cancel real: the broker says `complete`
+    // while reporting 30 of 50, the adapter's quantity-first reading calls that
+    // PartiallyFilled (a live remainder), so it issues the cancel — and broker
+    // truth, which still holds a terminal row, refuses it. That refusal IS the
+    // state we were cancelling into, so the flatten must shrug it off.
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+    owner.server->set_fill_model(30, "complete");
+    owner.server->set_cancel_rejects_terminal(true);
+
+    auto placed = owner.adapter.place(make_intent());
+    REQUIRE(placed.has_value());
+
+    REQUIRE(owner.adapter.square_off(placed.value().broker_order_id).has_value());
+
+    // NON-VACUITY: a cancel really was issued and really was refused.
+    CHECK(owner.server->cancel_refusals() == 1);
+
+    const auto book = owner.server->placed_orders();
+    REQUIRE(book.size() == 2);
+    CHECK(book.back().side == "B");
+    CHECK(book.back().qty == 30);
+  }
+
+  SECTION("the exit echoes the parent's PRODUCT and SEGMENT from broker truth") {
+    // Exiting an NRML position with an MIS order opens a SECOND position in a
+    // different margin bucket and leaves the overnight carry leg untouched; a
+    // re-inferred segment would additionally re-run the very symbol heuristic this
+    // story is retiring. Both are echoed verbatim from the parent row instead.
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+
+    broker_exec::domain::OrderIntent carry = make_intent();
+    carry.product = broker_exec::domain::Product::Normal;  // NRML, not the MIS default
+    auto placed = owner.adapter.place(carry);
+    REQUIRE(placed.has_value());
+    REQUIRE(owner.adapter.square_off(placed.value().broker_order_id).has_value());
+
+    const auto book = owner.server->placed_orders();
+    REQUIRE(book.size() == 2);
+    REQUIRE(book.front().product == "NRML");
+    CHECK(book.back().product == "NRML");
+    CHECK(book.back().segment == book.front().segment);
+    CHECK(book.back().side == "B");
+    CHECK(book.back().qty == 50);
+  }
+
+  SECTION("a post-restart replay finds the exit by ATTRIBUTE corroboration (rung 2)") {
+    // The rung that actually carries the restart case, and it had no test. A fresh
+    // adapter over the SAME server has an EMPTY id map, so rung 1 cannot fire and
+    // only broker truth remains — this is the crash-replay shape, and on Kotak
+    // (no verified tag echo) rung 2 is the only thing standing between a panic
+    // restart and a second, opposite naked leg.
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+    owner.server->set_fill_model(50, "complete");
+
+    auto placed = owner.adapter.place(make_intent());
+    REQUIRE(placed.has_value());
+    REQUIRE(owner.adapter.square_off(placed.value().broker_order_id).has_value());
+    REQUIRE(owner.server->placed_orders().size() == 2);
+
+    broker_exec::adapters::kotak::KotakBrokerAdapter restarted(owner.rest);
+    REQUIRE(restarted.square_off(placed.value().broker_order_id).has_value());
+    CHECK(owner.server->placed_orders().size() == 2);
+  }
+
+  SECTION("more than one candidate exit is INDETERMINATE, never a third order") {
+    // Rung 2's bound: two plausible exits is not a coin flip. Both seeded rows are
+    // FOREIGN (nothing this adapter placed, so bound to no client_ref), which is
+    // exactly the population rung 2 is allowed to consider — and it must refuse
+    // rather than pick one and report the position flat.
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+    owner.server->set_fill_model(50, "complete");
+
+    auto placed = owner.adapter.place(make_intent());
+    REQUIRE(placed.has_value());
+    owner.server->seed_manual_order("NIFTY24JUN24000CE", "B", 50, "123.50");
+    owner.server->seed_manual_order("NIFTY24JUN24000CE", "B", 20, "123.50");
+
+    auto squared = owner.adapter.square_off(placed.value().broker_order_id);
+    REQUIRE_FALSE(squared.has_value());
+    CHECK(squared.error().broker_code == "KOTAK-SQUAREOFF-AMBIGUOUS");
+    CHECK(squared.error().action == broker_exec::errors::SuggestedAction::ReconcileFirst);
+    CHECK(owner.server->placed_orders().size() == 3);  // the parent + the two seeds
+  }
+
+  SECTION("a parent with NO fill is cancel-only, and that is a COMPLETE square-off") {
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+    owner.server->set_fill_model(0, "open");
+
+    auto placed = owner.adapter.place(make_intent());
+    REQUIRE(placed.has_value());
+
+    REQUIRE(owner.adapter.square_off(placed.value().broker_order_id).has_value());
+    CHECK(owner.server->placed_orders().size() == 1);
+  }
+
+  SECTION("an unknown parent order id refuses rather than guessing") {
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+
+    auto squared = owner.adapter.square_off("NOT-A-REAL-ORDER");
+    REQUIRE_FALSE(squared.has_value());
+    CHECK(squared.error().action == broker_exec::errors::SuggestedAction::ReconcileFirst);
+    CHECK(owner.server->placed_orders().empty());
+  }
+
+  SECTION("a REPLAYED square_off never opens a second leg") {
+    // AC-2 on the Kotak side. A panic path that fires twice, or a crash between
+    // the cancel and the place, must converge on ONE exit — a second one is a
+    // fresh naked position in the opposite direction.
+    broker_exec::clock::TestClock clock;
+    OwningKotakAdapter owner(clock, FaultConfig{});
+    owner.server->set_fill_model(50, "complete");
+
+    auto placed = owner.adapter.place(make_intent());
+    REQUIRE(placed.has_value());
+    const std::string parent_id = placed.value().broker_order_id;
+
+    REQUIRE(owner.adapter.square_off(parent_id).has_value());
+    const std::size_t after_first = owner.server->placed_orders().size();
+    REQUIRE(after_first == 2);
+
+    REQUIRE(owner.adapter.square_off(parent_id).has_value());
+    CHECK(owner.server->placed_orders().size() == after_first);
+  }
+}
+
+TEST_CASE("[conformance][kotak][IMP-13] a legitimate opposite order is NOT adopted as our exit",
+          "[conformance][kotak][IMP-13][squareoff]") {
+  // THE FAIL-OPEN THIS CLOSES, and it needs no exotic broker behaviour at all —
+  // just two ordinary orders. A SELL 50 parent sitting next to a genuine BUY 50
+  // (a hedge leg, a reversal, another strategy under 6-4 isolation) made attribute
+  // corroboration "find" an exit that was never ours: square_off placed NOTHING
+  // and returned ok while the 50-lot short stayed fully on, and the caller — a
+  // panic kill or the protective-stop supervisor — believed it was flat.
+  //
+  // The fix costs nothing: rung 1 already knows that BUY belongs to a DIFFERENT
+  // client_ref, so it was never a corroboration candidate in the first place.
+  broker_exec::clock::TestClock clock;
+  OwningKotakAdapter owner(clock, FaultConfig{});  // default model: fills everything
+
+  auto parent = owner.adapter.place(make_intent());  // SELL 50
+  REQUIRE(parent.has_value());
+  auto hedge = owner.adapter.place(hedge_buy());  // BUY 50 — same symbol, same size
+  REQUIRE(hedge.has_value());
+  REQUIRE(owner.server->book_size() == 2);
+
+  REQUIRE(owner.adapter.square_off(parent.value().broker_order_id).has_value());
+
+  // AN EXIT WAS ACTUALLY PLACED — three orders, not two.
+  const auto book = owner.server->placed_orders();
+  REQUIRE(book.size() == 3);
+  CHECK(book.back().side == "B");
+  CHECK(book.back().qty == 50);
+  // ...and the hedge leg was left strictly alone.
+  CHECK(book[1].order_id == hedge.value().broker_order_id);
+  CHECK(book[1].qty == 50);
+}
+
+TEST_CASE("[conformance][kotak][IMP-13] an EXISTING exit is judged by its STATE, not its existence",
+          "[conformance][kotak][IMP-13][squareoff][duplicate]") {
+  // HIGH-2's twin of the Kite guard. Rung 1 — the STRONG id match — applied no
+  // status filter at all, directly contradicting the comment three lines above it
+  // ("Only WORKING or COMPLETE rows count"). A prior exit the broker had REJECTED
+  // was matched by id and answered with a cheerful `ok`: the position fully on,
+  // the broker having explicitly refused to close it, and the caller told it was
+  // flat. Because a strong-id match PROVES the row is ours (exactly as Kite's tag
+  // does), a dead one is escalated to an operator rather than merely refused.
   broker_exec::clock::TestClock clock;
   OwningKotakAdapter owner(clock, FaultConfig{});
+  owner.server->set_fill_model(50, "complete");
 
   auto placed = owner.adapter.place(make_intent());
   REQUIRE(placed.has_value());
+  const std::string parent_id = placed.value().broker_order_id;
+  REQUIRE(owner.adapter.square_off(parent_id).has_value());
+  REQUIRE(owner.server->placed_orders().size() == 2);
+  const std::string exit_id = owner.server->placed_orders().back().order_id;
 
-  auto squared = owner.adapter.square_off(placed.value().broker_order_id);
+  SECTION("a REJECTED exit is an operator alert, never ok") {
+    owner.server->set_order_status(exit_id, "rejected");
+    auto again = owner.adapter.square_off(parent_id);
+    REQUIRE_FALSE(again.has_value());
+    CHECK(again.error().broker_code == "KOTAK-SQUAREOFF-EXITREJECTED");
+    CHECK(again.error().action == broker_exec::errors::SuggestedAction::RaiseAlert);
+    CHECK(owner.server->placed_orders().size() == 2);  // and no blind re-fire
+  }
+
+  SECTION("a CANCELLED exit is the SAME alert class: the position is still open") {
+    owner.server->set_order_status(exit_id, "cancelled");
+    auto again = owner.adapter.square_off(parent_id);
+    REQUIRE_FALSE(again.has_value());
+    CHECK(again.error().broker_code == "KOTAK-SQUAREOFF-EXITCANCELLED");
+    CHECK(again.error().action == broker_exec::errors::SuggestedAction::RaiseAlert);
+    CHECK(owner.server->placed_orders().size() == 2);
+  }
+
+  SECTION("an UNRECOGNIZED exit status is INDETERMINATE (AC-1e), never ok") {
+    owner.server->set_order_status(exit_id, "SOME_FUTURE_KOTAK_STATE");
+    auto again = owner.adapter.square_off(parent_id);
+    REQUIRE_FALSE(again.has_value());
+    CHECK(again.error().broker_code == "KOTAK-SQUAREOFF-EXITUNKNOWNSTATE");
+    CHECK(again.error().action == broker_exec::errors::SuggestedAction::ReconcileFirst);
+    CHECK(owner.server->placed_orders().size() == 2);
+  }
+
+  SECTION("a still-WORKING exit answers ok, so the guard is not blanket") {
+    owner.server->set_order_status(exit_id, "open");
+    REQUIRE(owner.adapter.square_off(parent_id).has_value());
+    CHECK(owner.server->placed_orders().size() == 2);
+  }
+}
+
+TEST_CASE("[conformance][kotak][IMP-13] an exit SMALLER than the position never reports ok",
+          "[conformance][kotak][IMP-13][squareoff][duplicate]") {
+  // The Kotak half of the same race — and it failed WORSE than Kite's. Rung 2
+  // demanded an EXACT quantity match, so a legitimately-short prior exit (30) was
+  // invisible once the parent had filled to 50: the flatten concluded "no exit
+  // exists" and placed a SECOND, FULL-SIZE one. 30 + 50 against a 50-lot long is a
+  // 30-lot NAKED REVERSAL — the single worst outcome this call can produce, from a
+  // function whose entire purpose is to close a position.
+  broker_exec::clock::TestClock clock;
+  OwningKotakAdapter owner(clock, FaultConfig{});
+  owner.server->set_fill_model(30, "open");  // 30 of 50 done, 20 still working
+
+  auto placed = owner.adapter.place(make_intent());
+  REQUIRE(placed.has_value());
+  const std::string parent_id = placed.value().broker_order_id;
+
+  REQUIRE(owner.adapter.square_off(parent_id).has_value());
+  REQUIRE(owner.server->placed_orders().size() == 2);
+  REQUIRE(owner.server->placed_orders().back().qty == 30);
+
+  owner.server->grow_fill(parent_id, 50);  // the remainder filled underneath us
+
+  auto again = owner.adapter.square_off(parent_id);
+  REQUIRE_FALSE(again.has_value());
+  CHECK(again.error().broker_code == "KOTAK-SQUAREOFF-EXITSHORT");
+  CHECK(again.error().action == broker_exec::errors::SuggestedAction::RaiseAlert);
+  CHECK(owner.server->placed_orders().size() == 2);  // no second order, and no lie
+}
+
+TEST_CASE("[conformance][kotak][IMP-13] square_off REFUSES to flatten its own exit",
+          "[conformance][kotak][IMP-13][squareoff]") {
+  // A panic walker iterates the book and squares off every row; on its second pass
+  // it reaches the exit the first pass placed. Flattening an exit re-opens the
+  // position in the ORIGINAL direction with nothing left to close it, so every
+  // extra pass reverses the account again.
+  broker_exec::clock::TestClock clock;
+  OwningKotakAdapter owner(clock, FaultConfig{});
+  owner.server->set_fill_model(50, "complete");
+
+  auto placed = owner.adapter.place(make_intent());
+  REQUIRE(placed.has_value());
+  REQUIRE(owner.adapter.square_off(placed.value().broker_order_id).has_value());
+  REQUIRE(owner.server->placed_orders().size() == 2);
+  const std::string exit_id = owner.server->placed_orders().back().order_id;
+
+  auto squared = owner.adapter.square_off(exit_id);
   REQUIRE_FALSE(squared.has_value());
-  CHECK(squared.error().category == broker_exec::errors::ErrorCategory::NotSupported);
+  CHECK(squared.error().broker_code == "KOTAK-SQUAREOFF-SELFEXIT");
   CHECK(squared.error().action == broker_exec::errors::SuggestedAction::DoNotRetry);
-  // And it reached no endpoint: refusing is a local decision, not a broker call.
-  CHECK(owner.server->book_size() == 1);
+  CHECK(owner.server->placed_orders().size() == 2);
+
+  // THE HONEST LIMIT, pinned so nobody reads the guard as stronger than it is:
+  // it rests on the IN-MEMORY id map, so a RESTARTED process cannot recognize its
+  // own exit and the named refusal does NOT fire. (Kite's twin keys on the tag the
+  // broker echoes back and does survive a restart — see its suite.) What still
+  // holds here is weaker and accidental: attribute corroboration finds the original
+  // parent as a plausible opposite order, so nothing is placed. Good enough to
+  // avoid a reversal in this shape, but it is corroboration luck rather than a
+  // guarantee — the real fix is a verified Kotak tag echo (TagCarry, smoke step 3a)
+  // or IntentLog rehydration of the correlation maps.
+  broker_exec::adapters::kotak::KotakBrokerAdapter restarted(owner.rest);
+  const std::size_t before_replay = owner.server->placed_orders().size();
+  auto after_restart = restarted.square_off(exit_id);
+  // Whatever it answers, it must not have opened anything.
+  CHECK(owner.server->placed_orders().size() == before_replay);
+  if (!after_restart.has_value()) {
+    // ...and if it refused, it was for some other reason: this guard is blind here.
+    CHECK(after_restart.error().broker_code != "KOTAK-SQUAREOFF-SELFEXIT");
+  }
 }
 
 // ── AC-2: tier-1 green must NOT promote a single capability ──────────────────

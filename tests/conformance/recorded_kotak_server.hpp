@@ -199,8 +199,17 @@ class RecordedKotakServer final : public HttpClient {
     std::string price;       // rupee-decimal TEXT, exactly as Kotak sends it
     std::string trigger;     // jData `tp`, echoed on a read as `trgPrc` (see below)
     std::string price_type;  // jData `pt`, echoed on a read as `prcTp` (ditto)
+    std::string product;     // jData `pc`, echoed on a read as `prod` (ditto again)
+    std::string segment;     // jData `es`, echoed on a read as `exSeg` (ditto again)
     std::string status;
   };
+
+  // The terminal `ordSt` values, for the cancel model. A cancel only acts on a
+  // still-working order; against a terminal one it is a no-op (or a refusal).
+  // Compared case-insensitively on the exact spellings this fixture emits.
+  [[nodiscard]] static bool is_terminal_status(const std::string& status) noexcept {
+    return status == "complete" || status == "rejected" || status == "cancelled";
+  }
 
  public:
   RecordedKotakServer(broker_exec::ports::ClockPort& clock, FaultConfig fault)
@@ -268,6 +277,78 @@ class RecordedKotakServer final : public HttpClient {
   // between "absent" and "zero", and getting it wrong turns a live working order
   // into a terminal Filled.
   void set_total_field(std::string key) { total_field_ = std::move(key); }
+
+  // Answer a cancel of an ALREADY-TERMINAL order with a Kotak Not_Ok refusal
+  // instead of a cheerful echo. The flatten must TOLERATE that outcome — it means
+  // the remainder reached the state we were cancelling it into — rather than
+  // abandoning the square-off on it. (IMP-13; default off, so nothing that
+  // predates it changes.)
+  //
+  // REACHING THIS KNOB NEEDS A PARTIAL FILL, exactly as on the Kite twin: under
+  // the default fill model every order is recorded `complete` for its full
+  // quantity, so the adapter reads a terminal parent, SKIPS the cancel, and this
+  // never fires. Drive it from `set_fill_model(30, "complete")` — the adapter's
+  // quantity-first reading makes that a PARTIAL, so the cancel is issued, while
+  // broker truth here still holds a terminal row.
+  void set_cancel_rejects_terminal(bool on) noexcept { cancel_rejects_terminal_ = on; }
+
+  // Grow (or set) the executed quantity of ONE recorded order WITHOUT touching its
+  // status — the fixture-only way to model the race the flatten's size guard
+  // exists for: the working remainder fills in the window between the square-off
+  // that measured it and the replay that re-measures it. Targeted by id so a test
+  // can move the PARENT without moving the exit. No adapter code can see this.
+  void grow_fill(const std::string& order_id, std::int64_t filled) {
+    for (Record& rec : book_) {
+      if (rec.order_id == order_id) {
+        rec.filled = filled;
+        return;
+      }
+    }
+  }
+
+  // How many cancels this server REFUSED as already-terminal — the non-vacuity
+  // probe for the knob above (a test asserting only "the square-off succeeded"
+  // passes just as well when no cancel was ever issued).
+  [[nodiscard]] std::size_t cancel_refusals() const noexcept { return cancel_refusals_; }
+
+  // Set the reported `ordSt` of ONE recorded order. The fill-model status applies
+  // to every row, which cannot express the case the flatten's exit guard turns on:
+  // a healthy PARENT next to an exit the broker rejected or cancelled.
+  // Fixture-only, targeted by id.
+  void set_order_status(const std::string& order_id, std::string status) {
+    for (Record& rec : book_) {
+      if (rec.order_id == order_id) {
+        rec.status = std::move(status);
+        return;
+      }
+    }
+  }
+
+  // One recorded order as BROKER TRUTH holds it, so a test can assert what the
+  // adapter actually SENT (the exit's side, size, product and segment) rather than
+  // inferring it from a round-tripped read. (IMP-13.)
+  struct PlacedOrder {
+    std::string order_id;
+    std::string symbol;
+    std::string side;
+    std::int64_t qty = 0;
+    std::int64_t filled = 0;
+    std::string price;
+    std::string price_type;
+    std::string product;
+    std::string segment;
+    std::string status;
+  };
+
+  [[nodiscard]] std::vector<PlacedOrder> placed_orders() const {
+    std::vector<PlacedOrder> out;
+    out.reserve(book_.size());
+    for (const Record& rec : book_) {
+      out.push_back(PlacedOrder{rec.order_id, rec.symbol, rec.side, rec.qty, rec.filled, rec.price,
+                                rec.price_type, rec.product, rec.segment, rec.status});
+    }
+    return out;
+  }
 
   // Seed a pre-existing order the ADAPTER never placed — an operator's manual
   // order, or another process's — with an attribute shape that collides with our
@@ -398,6 +479,12 @@ class RecordedKotakServer final : public HttpClient {
     rec.price = jstr(params, "pr");
     rec.trigger = jstr(params, "tp");     // the REQUEST spelling; the read echoes trgPrc
     rec.price_type = jstr(params, "pt");  // ditto: `pt` on the way in, `prcTp` on the way out
+    // Recorded under their EXACT request names so a test can assert under which
+    // PRODUCT and on which SEGMENT a square-off exit went out — exiting an NRML
+    // position with an MIS order opens a second position instead of closing the
+    // first, and the read echoes both under Kotak's report-side spellings.
+    rec.product = jstr(params, "pc");
+    rec.segment = jstr(params, "es");
     rec.filled = fill_qty_ < 0 ? rec.qty : fill_qty_;  // deliberately un-clamped
     rec.status = fill_status_;
     book_.push_back(rec);
@@ -426,13 +513,43 @@ class RecordedKotakServer final : public HttpClient {
     return ok_response(std::move(fields));
   }
 
+  // A CANCEL THAT ACTUALLY CANCELS (IMP-13). It used to be an echo, which made the
+  // square-off's "cancel the working remainder, then place the exit" sequence
+  // untestable: the book never moved, so a test could not tell a flatten that
+  // cancelled from one that did not. Under the DEFAULT fill model every order is
+  // recorded `complete` — already terminal — so this is a no-op there and nothing
+  // that predates IMP-13 changes.
   [[nodiscard]] HttpResponse cancel(const HttpRequest& request) const {
     if (mutation_throttled()) {
       return fault_response(429, "900802", "Message throttled out");
     }
     const json params = parse_jdata(request.body);
+    const std::string id = jstr(params, "on");
+    for (Record& rec : book_) {
+      if (rec.order_id != id) {
+        continue;
+      }
+      if (is_terminal_status(rec.status)) {
+        if (cancel_rejects_terminal_) {
+          // The phrasing matters, not just the envelope: `map_kotak_error` routes
+          // an HTTP-200 Not_Ok through the canonical rejection classifier, and only
+          // an "order not found"-shaped message resolves to the OrderNotFound
+          // category the flatten's AC-1b tolerance keys on. "Order is not open"
+          // classified as an unrecognized reject (BrokerRejected/ReconcileFirst),
+          // which would ABORT the square-off — the fixture would have been testing
+          // the opposite of what it claimed.
+          ++cancel_refusals_;
+          return not_ok_response(200, "Order not found: no open order for that id", "5204");
+        }
+        break;  // already terminal: nothing to cancel, and no complaint either
+      }
+      // A cancel keeps whatever was already filled — that partial fill is exactly
+      // what the exit must then be sized off.
+      rec.status = "cancelled";
+      break;
+    }
     json fields = json::object();
-    fields["result"] = jstr(params, "on");  // Kotak echoes the cancelled id here
+    fields["result"] = id;  // Kotak echoes the cancelled id here
     return ok_response(std::move(fields));
   }
 
@@ -459,6 +576,14 @@ class RecordedKotakServer final : public HttpClient {
       o["prcTp"] = price_type_override_.empty()
                        ? (rec.price_type.empty() ? std::string("MKT") : rec.price_type)
                        : price_type_override_;
+      // Same asymmetry once more: the request spells them `pc` / `es`, the report
+      // spells them `prod` / `exSeg`. A FLATTEN needs both — the product to land the
+      // exit on the same position rather than opening a second one, the segment to
+      // route it where the position actually is instead of re-guessing from the
+      // symbol shape. An adapter that only knew the request spellings would fail
+      // here rather than pass on a fixture that flattered it.
+      o["prod"] = rec.product;
+      o["exSeg"] = rec.segment;
       if (!report_tp_.empty()) {
         o["tp"] = report_tp_;  // the request-side spelling, on a REPORT (see set_report_tp)
       }
@@ -510,10 +635,15 @@ class RecordedKotakServer final : public HttpClient {
     json arr = json::array();
     for (const Record& rec : book_) {
       const bool is_sell = rec.side == "S";
+      // A POSITION IS WHAT EXECUTED, not what was ordered — and the Kotak field
+      // names say so themselves (`fl` = filled). Under the default fill-everything
+      // model these are the same number, so nothing that predates IMP-13 changes;
+      // for a flatten test the distinction is the whole point, since a correctly
+      // sized exit must net this book to ZERO.
       json p = json::object();
       p["trdSym"] = rec.symbol;
-      p["flBuyQty"] = std::to_string(is_sell ? 0 : rec.qty);  // TEXT, as Kotak sends it
-      p["flSellQty"] = std::to_string(is_sell ? rec.qty : 0);
+      p["flBuyQty"] = std::to_string(is_sell ? 0 : rec.filled);  // TEXT, as Kotak sends it
+      p["flSellQty"] = std::to_string(is_sell ? rec.filled : 0);
       p["avgPrc"] = rec.price;  // rupee-decimal TEXT; no float in the fixture
       arr.push_back(p);
     }
@@ -545,6 +675,7 @@ class RecordedKotakServer final : public HttpClient {
 
   // Kotak-specific knobs.
   bool hard_reject_ = false;
+  bool cancel_rejects_terminal_ = false;   // see set_cancel_rejects_terminal (IMP-13)
   std::int64_t fill_qty_ = -1;             // < 0 -> fill the whole order
   std::string fill_status_ = "complete";   // the `ordSt` a recorded order reports
   std::string total_field_ = "qty";        // which key carries the order total
@@ -557,6 +688,7 @@ class RecordedKotakServer final : public HttpClient {
   mutable std::int64_t next_id_ = 1;
   mutable std::size_t mutation_count_ = 0;
   mutable std::size_t place_count_ = 0;
+  mutable std::size_t cancel_refusals_ = 0;  // terminal-cancel refusals (see cancel_refusals())
 };
 
 // BROKER-TRUTH TELEMETRY, COLLECTED AT SCENARIO TEARDOWN.

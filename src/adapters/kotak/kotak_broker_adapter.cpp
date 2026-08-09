@@ -14,6 +14,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "broker_exec/adapters/square_off_exit.hpp"
 #include "broker_exec/domain/decimal_paise.hpp"
 #include "broker_exec/domain/enums.hpp"
 #include "broker_exec/domain/money.hpp"
@@ -370,6 +371,15 @@ enum class StatusClass { Unrecognized, Working, Complete, Rejected, Cancelled };
          error.category == errors::ErrorCategory::Unknown;
 }
 
+// The typed indeterminate answer a flatten gives when it cannot READ what it would
+// have to act on (IMP-13, AC-1e). Never a second exit order, never a cheerful ok.
+[[nodiscard]] errors::Error reconcile_first_error(std::string message, std::string code) {
+  errors::Error error =
+      errors::make_error(errors::ErrorCategory::Unknown, std::move(message), std::move(code));
+  error.action = errors::SuggestedAction::ReconcileFirst;
+  return error;
+}
+
 // The Kotak quick-place `jData` object. EVERY value is a string — that is the
 // wire contract, and it also keeps the money path textual (paise -> decimal text)
 // with no float anywhere.
@@ -464,6 +474,13 @@ struct RawOrder {
   // trigger for the row (a Market carrying a trigger is a refused shape).
   domain::OrderType order_type = domain::OrderType::Market;
   std::string status;
+  // Echoed VERBATIM onto a square-off exit (IMP-13). Neither is parsed into a
+  // domain enum: exiting an NRML position with an MIS order does not close it, it
+  // opens a second one, and a segment we round-trip through our own inference is a
+  // segment we may have guessed. Empty means "the report did not say"; the exit
+  // then falls back to the same mapping a normal place uses.
+  std::string product;  // `prod` / `pc` / `pCode` — the product the position is in
+  std::string segment;  // `exSeg` / `es` — the exchange segment it actually sits on
   bool malformed = false;  // a field was PRESENT but unparseable -> fail this row closed
 };
 
@@ -498,6 +515,12 @@ struct RawOrder {
   }
   raw.order_type = parse_price_type(first_str(row, {"prcTp", "prcType", "pt"}));
   raw.status = first_str(row, {"ordSt", "status", "ordStatus"});
+  // Read as OPAQUE TEXT and never validated against a vocabulary: an unrecognized
+  // product/segment string is still the broker's own answer about where this
+  // position lives, and echoing it back is strictly safer than substituting a
+  // value we derived. (They are also not money, so they cannot set `malformed`.)
+  raw.product = first_str(row, {"prod", "pc", "pCode", "prcCode"});
+  raw.segment = first_str(row, {"exSeg", "es", "exchSeg", "exch"});
 
   // A negative order quantity is nonsense, and treating it as real would let it
   // build a correlation key. Demote it to "unknown" and flag the row.
@@ -634,23 +657,358 @@ Result<ports::Ok> KotakBrokerAdapter::cancel(const std::string& broker_order_id)
   return ports::ok();
 }
 
-Result<ports::Ok> KotakBrokerAdapter::square_off(const std::string& /*broker_order_id*/) {
-  // REFUSE, LOUDLY. This used to issue a cancel and return ok, which is fail-OPEN
-  // in precisely the situation square_off exists for: against a FILLED position a
-  // cancel is a no-op, so the caller was told "flat" while the position was still
-  // on — and would then stop managing it. A real flatten is a MARKET exit sized
-  // and side-flipped off the live net position, which needs positions + ref-data
-  // this adapter does not yet resolve.
+Result<ports::Ok> KotakBrokerAdapter::square_off(const std::string& broker_order_id) {
+  return square_off_banded(broker_order_id, std::nullopt, std::nullopt);
+}
+
+Result<ports::Ok> KotakBrokerAdapter::square_off_banded(const std::string& broker_order_id,
+                                                        std::optional<domain::Price> band_lower,
+                                                        std::optional<domain::Price> band_upper) {
+  // WHAT THIS REPLACED, so nobody restores it by accident: before IMP-13 this was
+  // a typed NotSupported refusal, and before THAT it issued a cancel and returned
+  // ok — fail-OPEN in precisely the situation square_off exists for (against a
+  // FILLED position a cancel is a no-op, so the caller was told "flat" while the
+  // position was still on). It is now a real flatten, protocol-identical to the
+  // Kite adapter's; see that header for the step-by-step contract, and the KNOWN
+  // LIMITATIONS in this one for where Kotak's evidence is weaker.
+  if (broker_order_id.empty()) {
+    return broker_exec::fail(errors::make_error(errors::ErrorCategory::Validation,
+                                                "kotak: square_off requires a broker order id",
+                                                "KOTAK-SQUAREOFF-NOID"));
+  }
+
+  // ── (a) BROKER TRUTH FIRST ────────────────────────────────────────────────
+  // One read, two jobs: the parent's canonical fill, and the fetch-first check for
+  // an exit that already exists (AC-2).
+  auto payload = rest_.orders();
+  if (!payload) {
+    return broker_exec::fail(payload.error());  // an unread book cannot size an exit
+  }
+  if (!payload.value().is_array()) {
+    return broker_exec::fail(reconcile_first_error(
+        "kotak: the order book payload was not an array", "KOTAK-SQUAREOFF-BOOKSHAPE"));
+  }
+
+  std::vector<RawOrder> rows;
+  rows.reserve(payload.value().size());
+  for (const json& row : payload.value()) {
+    if (!row.is_object()) {
+      continue;
+    }
+    rows.push_back(read_order_row(row));
+  }
+
+  const RawOrder* parent = nullptr;
+  for (const RawOrder& raw : rows) {
+    if (!raw.order_id.empty() && raw.order_id == broker_order_id) {
+      parent = &raw;
+      break;
+    }
+  }
+
+  // ── (e) NOTHING WE UNDERSTAND -> INDETERMINATE, never an exit ─────────────
+  if (parent == nullptr) {
+    return broker_exec::fail(reconcile_first_error(
+        "kotak: square_off could not find the order in broker truth; reconcile before flattening",
+        "KOTAK-SQUAREOFF-NOPARENT"));
+  }
+  if (parent->malformed) {
+    return broker_exec::fail(reconcile_first_error(
+        "kotak: square_off read an unparseable field on the order; reconcile before flattening",
+        "KOTAK-SQUAREOFF-MALFORMED"));
+  }
+
+  // ── NEVER FLATTEN A FLATTEN ───────────────────────────────────────────────
+  // The row we were pointed at is itself a square-off exit. Flattening it places
+  // an order in the ORIGINAL direction — re-opening the position that exit was
+  // sent to close, with nothing left to close it again. A panic walker that
+  // squares off every row in the book hits this on its second pass and would
+  // otherwise reverse every flatten it just made.
   //
-  // Until that exists the only honest answer is a typed refusal, so the caller
-  // escalates to the operator instead of believing a lie. `SquareOff` stays
-  // Unknown in kotak_capabilities() and cannot be promoted before the real
-  // flatten lands (docs/kotak-min-qty-smoke.md step 6).
-  return broker_exec::fail(errors::make_error(
-      errors::ErrorCategory::NotSupported,
-      "kotak: square_off is not implemented (a cancel does not flatten a filled position); "
-      "flatten manually and see docs/kotak-min-qty-smoke.md",
-      "KOTAK-SQUAREOFF-UNIMPLEMENTED"));
+  // THE HONEST LIMIT, because it differs from Kite's: this can only be decided
+  // from `id_to_ref_`, which is IN-MEMORY. Kite recognizes its own exit from the
+  // TAG the broker echoes back, so its guard survives a restart; ours cannot, and
+  // after a crash a walker could still flatten an exit this process no longer
+  // knows it placed. Closing that needs either a verified Kotak tag echo (tier-2,
+  // TagCarry — smoke step 3a) or IntentLog rehydration of the correlation maps.
+  // Until then this covers the common case (same process, repeated panic) and the
+  // gap is stated rather than papered over.
+  if (adapters::is_exit_ref(ref_for_id(broker_order_id))) {
+    errors::Error error = errors::make_error(
+        errors::ErrorCategory::Validation,
+        "kotak: square_off was asked to flatten a square-off EXIT order; flattening an exit "
+        "re-opens the position it closed, so nothing was sent",
+        "KOTAK-SQUAREOFF-SELFEXIT");
+    error.action = errors::SuggestedAction::DoNotRetry;
+    return broker_exec::fail(error);
+  }
+
+  const domain::OrderState reported =
+      map_order_state(parent->status, parent->filled, parent->quantity);
+  if (reported == domain::OrderState::Unknown) {
+    return broker_exec::fail(reconcile_first_error(
+        "kotak: square_off read an unrecognized order status; reconcile before flattening",
+        "KOTAK-SQUAREOFF-UNKNOWNSTATE"));
+  }
+  if (!parent->quantity.has_value()) {
+    // ABSENT IS NOT ZERO. fillnorm derives pending as max(0, total - filled), so a
+    // missing total makes every fill look complete — and here that would size an
+    // exit off a number nobody reported.
+    return broker_exec::fail(reconcile_first_error(
+        "kotak: square_off could not read the order quantity; reconcile before flattening",
+        "KOTAK-SQUAREOFF-NOQTY"));
+  }
+
+  // ── (a cont.) THE CANONICAL FILLED QUANTITY ───────────────────────────────
+  // The Kotak vocabulary is classified EXPLICITLY first (never handed raw to
+  // fillnorm — "not cancelled" and "cancel pending" are WORKING states that its
+  // substring matcher would read as terminal), then fillnorm applies its
+  // quantity-first rule to a neutral token. `from_reconcile` is true: this is an
+  // authoritative read, which is the only basis on which an exit may be sized.
+  const char* neutral_status = reported == domain::OrderState::Filled ? "complete" : "open";
+  const fillnorm::FillSnapshot snap = fillnorm::normalize_fill(
+      neutral_status, parent->filled, *parent->quantity, /*from_reconcile=*/true);
+  const std::int64_t exit_qty = fillnorm::exit_qty_for(snap);
+
+  // ── (b) CANCEL THE WORKING REMAINDER ──────────────────────────────────────
+  const bool terminal = reported == domain::OrderState::Cancelled ||
+                        reported == domain::OrderState::Rejected ||
+                        snap.canonical_state == domain::OrderState::Filled;
+  if (!terminal) {
+    auto cancelled = rest_.cancel_order(build_cancel_params(broker_order_id));
+    if (!cancelled && cancelled.error().category != errors::ErrorCategory::OrderNotFound) {
+      // TOLERATED above: an already-terminal remainder is the state we wanted.
+      // Anything else aborts BEFORE the exit — a live remainder that can still fill
+      // turns an exit into a reversal, and an ambiguous cancel means the filled
+      // quantity just measured may already be stale.
+      return broker_exec::fail(cancelled.error());
+    }
+  }
+
+  // ── (d) ZERO FILLED -> CANCEL-ONLY IS A COMPLETE SQUARE-OFF ───────────────
+  if (exit_qty <= 0) {
+    return ports::ok();
+  }
+
+  if (parent->side != "S" && parent->side != "B") {
+    // fold_side_code() lower-cases anything it does not recognize, so this is a
+    // side we could not read. A flatten whose DIRECTION is a guess is not a
+    // flatten — it is a doubling-down.
+    return broker_exec::fail(reconcile_first_error(
+        "kotak: square_off could not read the order's transaction type; reconcile before "
+        "flattening",
+        "KOTAK-SQUAREOFF-NOSIDE"));
+  }
+  const domain::Side exit_side = parent->side == "S" ? domain::Side::Buy : domain::Side::Sell;
+  const std::string parent_ref = ref_for_id(broker_order_id);
+  const std::string exit_ref =
+      adapters::exit_client_ref(parent_ref.empty() ? broker_order_id : parent_ref);
+
+  // ── (c/AC-2) IS THE EXIT ALREADY AT THE BROKER? ───────────────────────────
+  //
+  // KOTAK'S EVIDENCE IS WEAKER THAN KITE'S AND THE DIFFERENCE IS STRUCTURAL, not
+  // an oversight: Kite tags the exit with a value derived from the parent's broker
+  // order id and echoes it back, so a replay IDENTIFIES its own exit exactly. Kotak
+  // has no verified tag echo (see the header), so the same question is answered by
+  // the adapter's existing two-rung ladder:
+  //
+  //   RUNG 1 — the strong id map: a row already bound to this exit's ref. Exact,
+  //            but in-memory, so it answers only within the same process.
+  //   RUNG 2 — attribute corroboration against the live book on (symbol, opposite
+  //            side, a quantity no larger than the exit we would send), over rows
+  //            NOT already bound to some other client_ref. This is what survives a
+  //            restart, and it is the rung that carries the residual risk: a
+  //            STRANGER'S order (one we never placed, so bound to nothing) of a
+  //            plausible shape would be read as our exit and we would report ok
+  //            without flattening. It is bounded three ways — bound-elsewhere rows
+  //            are excluded outright, an over-large opposite order is somebody
+  //            else's business, and the match must be UNAMBIGUOUS: two or more
+  //            candidates is an indeterminate answer, not a coin flip.
+  //
+  // Only WORKING or COMPLETE rows count, ON BOTH RUNGS. A Rejected/Cancelled exit
+  // is NOT an exit in force, and treating one as though it were would leave the
+  // position open while reporting success — the exact fail-open this whole story
+  // removed. Rung 1 used to apply NO status filter at all, contradicting this
+  // paragraph two lines above it: a prior exit the broker had REJECTED was matched
+  // by id and answered with a cheerful `ok`. It now classifies the row it found,
+  // and — because a strong-id match PROVES the row is ours, exactly as Kite's tag
+  // does — a dead one is escalated to an operator rather than merely refused.
+  // (Rung 2 cannot make that claim: there a dead look-alike proves only that
+  // somebody's order was rejected, so it is simply not a candidate.)
+  //
+  // AND FINDING AN EXIT IS NOT ENOUGH — IT MUST ALSO BE BIG ENOUGH. Both rungs
+  // therefore carry the matched exit's QUANTITY back out; the size comparison
+  // below is what stops a 30-lot exit from being reported as covering a position
+  // that has since filled to 50. `-1` means "no exit found".
+  std::int64_t existing_exit_qty = -1;
+
+  bool exit_found_by_id = false;
+  for (const RawOrder& raw : rows) {  // RUNG 1 — the strong id map
+    // `exit_ref` cannot be empty here: `broker_order_id` was rejected empty at the
+    // top of this function, so the anchor handed to exit_client_ref is non-empty
+    // whichever branch supplied it. The old `|| exit_ref.empty()` guard was dead.
+    if (raw.order_id.empty() || raw.order_id == broker_order_id) {
+      continue;
+    }
+    if (ref_for_id(raw.order_id) != exit_ref) {
+      continue;
+    }
+    const StatusClass cls = classify_kotak_status(raw.status);
+    if (cls == StatusClass::Rejected || cls == StatusClass::Cancelled) {
+      // THE TWIN OF KITE-SQUAREOFF-EXITREJECTED. This row is ours by broker id,
+      // and the broker either refused it or it was cancelled afterwards — so the
+      // position is fully on and nothing is going to close it. Never `ok`, and
+      // never a silent re-fire.
+      errors::Error error = errors::make_error(
+          errors::ErrorCategory::BrokerRejected,
+          cls == StatusClass::Rejected
+              ? "kotak: a prior square-off exit for this order was REJECTED by the broker; the "
+                "position is still open and needs an operator"
+              : "kotak: a prior square-off exit for this order was CANCELLED; the position is "
+                "still open and needs an operator",
+          cls == StatusClass::Rejected ? "KOTAK-SQUAREOFF-EXITREJECTED"
+                                       : "KOTAK-SQUAREOFF-EXITCANCELLED");
+      error.action = errors::SuggestedAction::RaiseAlert;
+      return broker_exec::fail(error);
+    }
+    if (cls == StatusClass::Unrecognized || raw.malformed) {
+      return broker_exec::fail(reconcile_first_error(
+          "kotak: square_off could not read the state of the exit already at the broker; "
+          "reconcile before flattening",
+          "KOTAK-SQUAREOFF-EXITUNKNOWNSTATE"));
+    }
+    if (!raw.quantity.has_value()) {
+      return broker_exec::fail(reconcile_first_error(
+          "kotak: square_off could not read the quantity of the exit already at the broker; "
+          "reconcile before flattening",
+          "KOTAK-SQUAREOFF-EXITNOQTY"));
+    }
+    exit_found_by_id = true;
+    existing_exit_qty = *raw.quantity;
+    break;
+  }
+
+  std::size_t exit_candidates = 0;
+  if (!exit_found_by_id) {  // RUNG 2 — attribute corroboration
+    for (const RawOrder& raw : rows) {
+      if (raw.order_id.empty() || raw.order_id == broker_order_id || raw.malformed) {
+        continue;
+      }
+      // A ROW WE HAVE ALREADY BOUND TO A DIFFERENT SIGNAL IS NOT A CANDIDATE, and
+      // this is the difference between a flatten and a no-op. Attribute
+      // corroboration alone cannot tell our exit from a LEGITIMATE opposite-side
+      // order of the same shape — the second leg of a hedge pair, a reversal, or
+      // another strategy's position under 6-4 isolation. A SELL 50 parent sitting
+      // next to a genuine BUY 50 therefore used to make square_off adopt the BUY
+      // as "our exit", place NOTHING, and return ok while the short stayed fully
+      // on. But rung 1 already KNOWS that BUY belongs to someone else: it is bound
+      // to a different client_ref. Skipping bound-elsewhere rows costs nothing
+      // (they were never corroboration candidates in the first place) and removes
+      // the entire class.
+      const std::string bound = ref_for_id(raw.order_id);
+      if (!bound.empty() && bound != exit_ref) {
+        continue;
+      }
+      if (raw.symbol != parent->symbol || raw.side != side_code(exit_side)) {
+        continue;
+      }
+      // SIZE IS A FILTER, NOT AN EQUALITY TEST ANYMORE. It used to demand
+      // `*raw.quantity == exit_qty`, which made a legitimately-SHORT prior exit
+      // (the parent kept filling after that exit was sized) invisible to this
+      // rung — so the flatten saw "no exit" and placed a SECOND, FULL-SIZE one.
+      // 30 + 50 against a 50-lot position is a 30-lot naked reversal: the single
+      // worst outcome this call can produce. Any working opposite-side order up to
+      // the size we would send is now a candidate, and the size comparison below
+      // decides what to do about it.
+      //
+      // The upper bound is kept because a fill can only GROW: an exit larger than
+      // the position could never have been sized off this parent, so a bigger
+      // opposite order is somebody else's business and must not suppress our exit.
+      if (!raw.quantity.has_value() || *raw.quantity <= 0 || *raw.quantity > exit_qty) {
+        continue;
+      }
+      const StatusClass cls = classify_kotak_status(raw.status);
+      if (cls == StatusClass::Working || cls == StatusClass::Complete) {
+        ++exit_candidates;
+        existing_exit_qty = *raw.quantity;
+      }
+    }
+  }
+
+  if (exit_candidates > 1) {
+    return broker_exec::fail(reconcile_first_error(
+        "kotak: square_off found more than one order matching this exit's shape; reconcile before "
+        "flattening",
+        "KOTAK-SQUAREOFF-AMBIGUOUS"));
+  }
+  if (exit_found_by_id || exit_candidates == 1) {
+    // ── DOES THE EXIT ACTUALLY COVER THE POSITION? ──────────────────────────
+    // See the Kite twin for the full argument; the decision is identical and
+    // deliberately so (AC-3 parity): an exit SMALLER than the position now
+    // reported filled is an operator condition, never a top-up order and never a
+    // cheerful ok. A top-up would be sized off an exit whose own fill state we
+    // have not established, acting on evidence that just proved itself stale —
+    // and here it would additionally create a SECOND look-alike, which makes rung
+    // 2 ambiguous and turns every later replay into a refusal anyway.
+    if (existing_exit_qty < exit_qty) {
+      errors::Error error = errors::make_error(
+          errors::ErrorCategory::DataStale,
+          "kotak: the square-off exit already at the broker is SMALLER than the position now "
+          "reported filled; the remainder is still open and needs an operator",
+          "KOTAK-SQUAREOFF-EXITSHORT");
+      error.action = errors::SuggestedAction::RaiseAlert;
+      return broker_exec::fail(error);
+    }
+    return ports::ok();  // covered — never a second exit
+  }
+
+  // ── (c) THE EXIT ORDER ────────────────────────────────────────────────────
+  domain::OrderIntent exit;
+  exit.client_ref = exit_ref;
+  exit.symbol = parent->symbol;
+  exit.side = exit_side;
+  exit.quantity = domain::Quantity::of(exit_qty);  // EXACTLY what filled
+  exit.order_type = domain::OrderType::Market;
+  exit.product = domain::Product::Intraday;  // overridden from broker truth below
+  exit.strategy = "square_off";
+
+  // A band-clamped LIMIT when a WELL-FORMED band was supplied; MARKET otherwise.
+  // The clamp is to the edge the exit must cross, so the order stays marketable
+  // while remaining inside the range the exchange accepts. A half-supplied or
+  // inverted band is treated as no band at all.
+  if (band_lower.has_value() && band_upper.has_value() &&
+      band_lower->paise() <= band_upper->paise()) {
+    exit.order_type = domain::OrderType::Limit;
+    exit.price = exit_side == domain::Side::Buy ? *band_upper : *band_lower;
+  }
+
+  json params = build_place_params(exit);
+  // Product and segment are ECHOED from broker truth, not re-derived: exiting an
+  // NRML position with an MIS order opens a second position instead of closing the
+  // first, and the segment inference is the very heuristic this story is retiring.
+  if (!parent->product.empty()) {
+    params["pc"] = parent->product;
+  }
+  if (!parent->segment.empty()) {
+    params["es"] = parent->segment;
+  }
+
+  // Registered BEFORE the wire call, exactly as place() does: if the ack is lost
+  // the exit may still be live, and this registration is the only thing that lets
+  // rung 2 recognize it on the next read.
+  register_intent(exit);
+
+  auto placed = rest_.place_order(params);
+  if (!placed) {
+    if (!is_ambiguous_outcome(placed.error())) {
+      drop_pending(exit.client_ref);  // definitive refusal; nothing is live (see place())
+    }
+    return broker_exec::fail(placed.error());
+  }
+  if (const std::string exit_id = extract_order_id(placed.value()); !exit_id.empty()) {
+    anchor(exit_id, exit.client_ref);
+  }
+  return ports::ok();
 }
 
 Result<std::vector<domain::Order>> KotakBrokerAdapter::fetch_orders() {

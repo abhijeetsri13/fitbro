@@ -147,6 +147,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -154,6 +155,7 @@
 
 #include "broker_exec/adapters/kotak/kotak_rest_client.hpp"
 #include "broker_exec/domain/enums.hpp"
+#include "broker_exec/domain/money.hpp"
 #include "broker_exec/domain/types.hpp"
 #include "broker_exec/ports/broker_port.hpp"
 #include "broker_exec/ports/ports_common.hpp"
@@ -174,14 +176,29 @@ namespace broker_exec::adapters::kotak {
 //     them live; until then a 404 is deliberately mapped ReconcileFirst, not
 //     "no such order".
 //
-//   * square_off(broker_order_id) is NOT IMPLEMENTED and returns a typed
-//     `NotSupported` / `DoNotRetry` error. It previously issued a cancel and
-//     returned ok, which is FAIL-OPEN in the one situation the call exists for:
-//     against a FILLED position a cancel is a no-op, so the caller was told "you
-//     are flat" while the position was still on. A real flatten is a market exit
-//     sized and side-flipped off the live net position; until that exists, an
-//     explicit refusal is the only safe answer. `SquareOff` therefore cannot be
-//     promoted past `Unknown` (docs/kotak-min-qty-smoke.md step 6).
+//   * square_off(broker_order_id) IS NOW A REAL FLATTEN (IMP-13) — see the method
+//     contract below — but `SquareOff` STAYS `Unknown` in `kotak_capabilities()`.
+//     Those two facts are not in tension, and the composition is worth stating in
+//     full because it is what keeps this feature from going live by accident:
+//
+//       1. The flatten EXISTS and is certified at tier-1 (recorded conformance).
+//          The old blocker — "the feature is not implemented, so the capability
+//          cannot be promoted even by a live run" — is gone.
+//       2. `kotak_capabilities()` still reports `SquareOff = Unknown`, because a
+//          fixture we authored cannot certify an endpoint we have never contacted.
+//          Only the operator-run live min-qty smoke may promote it
+//          (docs/kotak-min-qty-smoke.md step 6, architecture TO-6).
+//       3. The per-call capability gate from Story 6.3 therefore still REFUSES
+//          every square_off placed through the composition root: `OwnedKotakBroker`
+//          calls `admitted_.require(Capability::SquareOff)` BEFORE the adapter is
+//          touched, and Unknown is read as unsupported. So on a Kotak assembly the
+//          typed `NotSupported`/`DoNotRetry` refusal a caller sees today is
+//          UNCHANGED — it now comes from the GATE rather than from the adapter.
+//
+//     The practical consequence: promoting the capability is now a one-line
+//     runbook decision backed by a live run, not a code change. Reaching the
+//     flatten before that promotion requires calling this adapter directly (the
+//     conformance suite does exactly that, deliberately).
 //
 //   * CORRELATION STATE IS IN-MEMORY ONLY. `id_to_ref_` / the pending set do not
 //     survive a process restart, so after a crash NEITHER rung can name a
@@ -248,7 +265,75 @@ class KotakBrokerAdapter final : public ports::BrokerPort {
   [[nodiscard]] Result<ports::BrokerAck> modify(const std::string& broker_order_id,
                                                 const domain::OrderIntent& intent) override;
   [[nodiscard]] Result<ports::Ok> cancel(const std::string& broker_order_id) override;
+
+  // FLATTEN the position opened by `broker_order_id` (IMP-13, AC-1/AC-2/AC-3).
+  //
+  // PROTOCOL-IDENTICAL TO THE KITE ADAPTER, and that parity is the point — a
+  // portable strategy must get the same semantics from `BrokerPort::square_off`
+  // whichever broker is underneath:
+  //   (a) re-read BROKER TRUTH (the order book, never a cache or a push) and
+  //       normalize the parent's fill through `fillnorm` (quantity-first, and only
+  //       an authoritative read may size an exit);
+  //   (b) CANCEL the working remainder unless the order is already terminal — an
+  //       `OrderNotFound` outcome is TOLERATED (it went terminal underneath us),
+  //       any other cancel failure aborts before the exit;
+  //   (c) place ONE opposite-side order for EXACTLY the canonical filled quantity,
+  //       named `<parent>#X` (adapters/square_off_exit.hpp), echoing the parent's
+  //       PRODUCT and SEGMENT from broker truth;
+  //   (d) ZERO filled -> the cancel alone flattened it: ok, and nothing is placed;
+  //   (e) any UNKNOWN leg (unreadable status, missing total, unreadable side, the
+  //       order absent from broker truth) -> a typed `ReconcileFirst` error and NO
+  //       exit order.
+  //
+  // WHERE KOTAK DIFFERS FROM KITE, SAID PLAINLY: the duplicate guard. Kite tags the
+  // exit with a value derived from the parent's BROKER ORDER ID and the broker
+  // echoes it, so a replay identifies its own exit exactly. Kotak has no verified
+  // tag echo, so the same question is answered by this adapter's two-rung ladder —
+  // the strong id map (exact, but in-memory, so same-process only) and attribute
+  // corroboration on (symbol, opposite side, a quantity no larger than the exit we
+  // would send) against the live book (weaker, but it survives a restart). Rung 2
+  // SKIPS any row already bound to a different client_ref: a legitimate opposite
+  // order — the second leg of a hedge, a reversal, another strategy's position
+  // under 6-4 isolation — is not a candidate to be mistaken for our exit. The
+  // residual risk is stated in the implementation: a STRANGER'S order (one we
+  // never placed, so bound to nothing) of a plausible shape would be read as our
+  // exit and we would report ok without flattening. An AMBIGUOUS match (two or
+  // more candidates) is answered with `ReconcileFirst`, never a third order.
+  //
+  // FINDING AN EXIT IS NOT ENOUGH, ON EITHER RUNG:
+  //   * ITS STATE. A REJECTED or CANCELLED row matched by BROKER ID is ours by
+  //     proof, and means the position is fully on with nothing left to close it —
+  //     a `RaiseAlert` error, never ok. (A dead row matched only by ATTRIBUTES
+  //     proves nothing about ownership, so it is simply not a candidate.) A status
+  //     from a vocabulary we do not know is `ReconcileFirst`.
+  //   * ITS SIZE. A parent that kept filling after its exit was sized leaves an
+  //     exit that is TOO SMALL. That is a `RaiseAlert` error
+  //     (`KOTAK-SQUAREOFF-EXITSHORT`) and NOT a top-up order — same decision as
+  //     the Kite twin, for the reasons recorded in square_off_exit.hpp.
+  //
+  // NEVER FLATTEN A FLATTEN: if `broker_order_id` is bound to a ref in the exit
+  // namespace this refuses (`DoNotRetry`), so a panic loop that walks the book
+  // cannot re-open the position its own exit just closed. Unlike Kite's tag-based
+  // twin this rests on the in-memory id map and therefore does NOT survive a
+  // restart — a gap that closes with TagCarry (smoke step 3a) or IntentLog
+  // rehydration.
+  //
+  // GATE POSTURE: on an assembly built through `composition::make_broker` this call
+  // is still refused by the per-call capability gate until the live smoke promotes
+  // `SquareOff` — see the composition note in KNOWN LIMITATIONS above.
   [[nodiscard]] Result<ports::Ok> square_off(const std::string& broker_order_id) override;
+
+  // square_off with an optional CIRCUIT/LPP PRICE BAND. No band -> a MARKET exit.
+  // BOTH bounds supplied -> a LIMIT clamped to the edge the exit must cross (BUY at
+  // the upper bound, SELL at the lower), so a protective exit is priced where the
+  // exchange will accept it instead of being rejected "out of LPP range" on exactly
+  // the move that made the flatten necessary. A HALF-supplied or INVERTED band is
+  // treated as NO band: a malformed band cannot price anything, and MARKET is the
+  // safe reading of "I do not know". (A pair of Prices rather than
+  // `priceband::PriceBand` — the smaller API; see the Kite twin for the rationale.)
+  [[nodiscard]] Result<ports::Ok> square_off_banded(const std::string& broker_order_id,
+                                                    std::optional<domain::Price> band_lower,
+                                                    std::optional<domain::Price> band_upper);
 
   // ── Reads (idempotent) ──
   [[nodiscard]] Result<std::vector<domain::Order>> fetch_orders() override;

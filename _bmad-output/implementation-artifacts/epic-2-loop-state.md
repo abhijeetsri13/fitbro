@@ -432,3 +432,12 @@ loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier
   longer mints duplicate stop) + golden-hex pins + safe-start require_no_legacy_stops (pre-upgrade working
   stop = refuse boot, docs/upgrade-imp-11-stops.md). Review FIX-REQUIRED: H1 SL-M price in dedupe key,
   H2 upgrade overclaim, M1-M6. 50/50 green.
+- ITER 6 / IMP-12 DONE (aff586c): composition::EngineAssembly — make_engine fail-closed builder (entry-
+  capable refuses missing funds/calendar/risk/kill/posture/session/margin/probe/hedge; ExitOnly default),
+  preflight_entry posture->session->risk-limits->gate(REAL predicates, closes 2-8 hole)->band->buffered
+  margin; preflight_exit structural (clamp not block, apply_clamp, is_reducing, Panic closes);
+  preflight_modify->modifyguard taxonomy; kill scope honored. Review FIX-REQUIRED (probed): H1 dead margin
+  API = both funds guards open (Result-typed source + zero-quote refusal), H2 all-off RiskLimits = risk
+  check enforcing nothing (unarmed refused unless declared), M3-M5, LOWs. 50/50 green.
+  REMAINING UNWIRED: dispatcher/mainloop layer (fillnorm/feedsub/protection/brokerreason/endpoint_limiter
+  wire there — documented boundary in engine_assembly.hpp).
