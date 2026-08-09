@@ -441,3 +441,18 @@ loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier
   check enforcing nothing (unarmed refused unless declared), M3-M5, LOWs. 50/50 green.
   REMAINING UNWIRED: dispatcher/mainloop layer (fillnorm/feedsub/protection/brokerreason/endpoint_limiter
   wire there — documented boundary in engine_assembly.hpp).
+- ITER 7 / IMP-13 DONE (f0b9a60): REAL square_off flatten both adapters (was: Kite cancel+ok = filled
+  position survived a "successful" square-off; Kotak refused). Protocol: broker-truth read -> cancel
+  remainder (tolerate already-terminal) -> ONE opposite exit sized off CANONICAL fill; zero-fill =
+  cancel-only ok; indeterminate = ReconcileFirst, nothing placed. Deterministic exit ref (#X, non-numeric
+  so no slicer collision) + fetch-first guard (Kite 18-char hashed wire tag survives restart; Kotak two
+  rungs). Exchange resolver authoritative + fail-closed + refuses to route away from broker truth.
+  PROCESS NOTE: dev agent died mid-restructure (session limit) leaving dead code + ZERO tests; orchestrator
+  deleted the orphan, wrote all tests, mutation-tested the duplicate guard (disabled -> book 2->4).
+  Review FIX-REQUIRED, 3/4 HIGH probe-confirmed, all "ok while position still open": H1 Kotak rung-2
+  adopting a hedge/reversal leg as our exit, H2 Kotak rung-1 no status filter (rejected exit = ok),
+  H3 Kite Cancelled/unknown prior exit = ok, H4 guard checked existence not SIZE (growing fill ->
+  under-exit on Kite, double-exit on Kotak; policy = refuse+alert, never top up); M1 resolver error left
+  remainder cancelled + fill naked, M2 square_off flattened its OWN exit (re-opening the position),
+  M3-M5 vacuous coverage (cancel-tolerance test never issued a cancel -> exposed that Kite could never
+  mint OrderNotFound, so AC-1b was unimplementable there), M6 stale docs. 50/50 green.

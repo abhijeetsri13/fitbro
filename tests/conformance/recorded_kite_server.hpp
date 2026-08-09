@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -271,6 +272,72 @@ class RecordedKiteServer final : public HttpClient {
   // succeeded" passes just as well when no cancel was ever issued.
   [[nodiscard]] std::size_t cancel_refusals() const noexcept { return cancel_refusals_; }
 
+  // ── IMP-14 knobs: inject a MONEY / COUNT field the adapter cannot read ────
+  //
+  // A recorded server that only ever emits well-formed numbers cannot tell a
+  // fail-CLOSED money parser from a fail-OPEN one — both look identical on clean
+  // input, and the fail-open one only reveals itself on the garbage a real broker
+  // occasionally sends (a localized thousands separator, a "N/A" placeholder, a
+  // float rendered in scientific notation, an oversized identifier landing in a
+  // price column). These two knobs put that garbage on the wire.
+
+  // Rewrite the `average_price` EVERY row reports. `std::nullopt` OMITS the key
+  // entirely — the ABSENT case, which must keep reading as zero so the fail-closed
+  // change does not over-reach onto orders that simply have not traded. Leaving
+  // the knob untouched reports each row's own recorded price (the default).
+  void set_average_price_override(std::optional<std::string> text) {
+    avg_price_override_ = std::move(text);
+    avg_price_overridden_ = true;
+  }
+
+  // Rewrite the `quantity` EVERY row reports — the ORDER TOTAL on the orderbook,
+  // the executed size on a trade row, and the signed net on a position. This is
+  // the number a square-off sizes its exit against, so a fail-open read of it is
+  // the most expensive one on the adapter: "1,450" truncated to 1 turns the
+  // flatten of a 30-lot position into a 1-lot order that reports success.
+  //
+  // IT REACHES ALL THREE READERS DELIBERATELY. It used to rewrite the ORDERBOOK
+  // only, so `fetch_trades` and `fetch_positions` — which parse a quantity with
+  // exactly the same reader — were never once handed a garbled one. The knob
+  // looked like it covered the count path and covered a third of it.
+  void set_quantity_override(std::string qty) { quantity_override_ = std::move(qty); }
+
+  // Rewrite the AVAILABLE MARGIN the margins endpoint reports, in BOTH spellings
+  // the adapter reads. Funds are the number the margin gate sizes real risk
+  // against: a garbled balance read as zero blocks every entry, and a garbled
+  // UTILISED figure read as zero frees headroom that does not exist. Empty => the
+  // default well-formed payload for that spelling.
+  void set_margin_override(std::string balance) {
+    margin_override_ = balance;
+    margin_net_override_ = std::move(balance);
+  }
+
+  // THE TWO SPELLINGS, INDEPENDENTLY. `available.live_balance` is the adapter's
+  // first choice and `net` is its fallback, and the ONE-ARGUMENT form above writes
+  // the same text into both — which cannot express the case the fallback exists
+  // for: a live_balance the adapter cannot read next to a `net` that is perfectly
+  // fine. A fixture that can only garble them together makes "the fallback is
+  // poisoned by the garbage it routes around" an untestable bug.
+  void set_margin_override(std::string live_balance, std::string net) {
+    margin_override_ = std::move(live_balance);
+    margin_net_override_ = std::move(net);
+  }
+
+  // ── M3: EMIT GENUINE JSON NUMBERS, NOT STRINGS ────────────────────────────
+  //
+  // This server has always spelled every number as a JSON STRING. Real Kite
+  // Connect v3 does not: `average_price`, `quantity`, `filled_quantity`,
+  // `trigger_price` and the margin figures come back as JSON NUMBERS. The adapter
+  // has a whole branch for that — `numeric_text` takes `is_number()` to
+  // `json::dump()` (the shortest round-trip TEXT) and hands THAT to the exact
+  // decimal parser — and it is the branch that runs on EVERY live read, while a
+  // string-only fixture gave it zero coverage.
+  //
+  // Turning this on re-renders every numeric field as a real JSON number. Text
+  // that is not a number at all (an injected garbage override) stays a string, so
+  // the fail-closed cases above keep working in either mode.
+  void set_numeric_payload_mode(bool on) noexcept { numeric_payload_ = on; }
+
   // Set the reported status of ONE recorded order. `set_status_override` rewrites
   // EVERY row, which cannot express the case the flatten's exit guard turns on:
   // a healthy PARENT next to an exit that was rejected, cancelled, or is reporting
@@ -279,6 +346,21 @@ class RecordedKiteServer final : public HttpClient {
     for (Record& rec : book_) {
       if (rec.order_id == order_id) {
         rec.status = std::move(status);
+        return;
+      }
+    }
+  }
+
+  // Set the reported `quantity` of ONE recorded order. The same argument as
+  // set_order_status, for the same guard's other half: `set_quantity_override`
+  // garbles EVERY row, which cannot express a READABLE parent standing next to an
+  // exit whose size we cannot read — and that is the only shape in which the
+  // flatten's exit-malformed branch is reachable at all (a garbled parent is
+  // refused one guard earlier). Fixture-only, targeted by id, un-clamped.
+  void set_order_quantity(const std::string& order_id, std::string qty) {
+    for (Record& rec : book_) {
+      if (rec.order_id == order_id) {
+        rec.qty = std::move(qty);
         return;
       }
     }
@@ -352,6 +434,44 @@ class RecordedKiteServer final : public HttpClient {
 
   [[nodiscard]] static bool starts_with(const std::string& s, std::string_view prefix) {
     return s.size() >= prefix.size() && std::string_view(s).substr(0, prefix.size()) == prefix;
+  }
+
+  // Render ONE numeric field the way the selected payload mode spells it.
+  //
+  // Default (recorded) mode: a JSON STRING, which is how this fixture has always
+  // written numbers and how several Kite endpoints really do.
+  //
+  // NUMERIC mode (set_numeric_payload_mode): the SAME text, re-emitted as a
+  // genuine JSON number — which is what Kite Connect v3 actually sends for
+  // average_price / quantity / filled_quantity / trigger_price and the margins.
+  // The text is round-tripped through the JSON parser rather than through any
+  // arithmetic of ours, so no float literal is written here and the emitted value
+  // is exactly the number the wire would carry.
+  //
+  // Text that does not parse as a number (every garbage override in the suite)
+  // stays a STRING: a broker sending "N/A" sends it as a string too, and the
+  // fail-closed assertions must hold in both modes.
+  [[nodiscard]] nlohmann::json number_field(const std::string& text) const {
+    if (!numeric_payload_) {
+      return text;
+    }
+    nlohmann::json parsed = nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
+    return parsed.is_number() ? parsed : nlohmann::json(text);
+  }
+
+  // Write `average_price` onto one emitted row, honouring the IMP-14 knob. ONE
+  // helper for all three readers that carry the field (orders, trades, positions)
+  // so a single test knob exercises every money path the adapter has.
+  void put_average_price(nlohmann::json& row, const std::string& recorded) const {
+    if (!avg_price_overridden_) {
+      row["average_price"] = number_field(recorded);
+      return;
+    }
+    if (avg_price_override_.has_value()) {
+      row["average_price"] = number_field(*avg_price_override_);
+    }
+    // Overridden with nullopt: the key is OMITTED ENTIRELY. That is the ABSENT
+    // case — distinct from an empty string, and it must still read as zero.
   }
 
   // Ticks elapsed on the injected steady clock since construction (mirrors the
@@ -511,14 +631,16 @@ class RecordedKiteServer final : public HttpClient {
       o["tag"] = rec.tag;
       o["status"] = status_override_.empty() ? rec.status : status_override_;
       o["tradingsymbol"] = rec.symbol;
-      o["filled_quantity"] = rec.filled;  // string form; the adapter parses either
-      o["average_price"] = rec.price;     // rupee-decimal string; no float in fixture
+      // String by default, a genuine JSON number in numeric mode; the adapter
+      // parses either, and both spellings are things Kite really sends.
+      o["filled_quantity"] = number_field(rec.filled);
+      put_average_price(o, rec.price);  // rupee-decimal TEXT; no float in fixture
       // THE ORDER TOTAL, THE SIDE, THE PRODUCT AND THE EXCHANGE — all four are on a
       // real Kite order row, and a FLATTEN needs every one of them: the total to
       // normalize the fill (absent is not zero), the side to flip it, the product
       // and exchange to land the exit on the same position. Omitting them here
       // would let an adapter that guessed them pass a fixture that never asked.
-      o["quantity"] = rec.qty;
+      o["quantity"] = number_field(quantity_override_.empty() ? rec.qty : quantity_override_);
       o["transaction_type"] = rec.side;
       o["product"] = rec.product;
       o["exchange"] = rec.exchange;
@@ -526,7 +648,7 @@ class RecordedKiteServer final : public HttpClient {
       // non-stop order rather than omitting the key — so the fixture does the
       // same. That "0 means no trigger" case is exactly what the adapter's
       // optional parse has to collapse to nullopt.
-      o["trigger_price"] = rec.trigger.empty() ? std::string("0.00") : rec.trigger;
+      o["trigger_price"] = number_field(rec.trigger.empty() ? std::string("0.00") : rec.trigger);
       // Kite reports the order type on every row. It is what tells a reconciler
       // that a row IS a stop — without it a recovered stop would come back looking
       // like a Market order that happens to carry a trigger, which the validation
@@ -556,8 +678,10 @@ class RecordedKiteServer final : public HttpClient {
       t["order_id"] = rec.order_id;
       t["tag"] = rec.tag;
       t["tradingsymbol"] = rec.symbol;
-      t["quantity"] = rec.filled;
-      t["average_price"] = rec.price;
+      // The trade quantity honours the SAME override as the orderbook total: a
+      // trade quantity is read by the same reader and clamped by the same guard.
+      t["quantity"] = number_field(quantity_override_.empty() ? rec.filled : quantity_override_);
+      put_average_price(t, rec.price);
       arr.push_back(t);
       if (fault_.duplicate_fill) {
         arr.push_back(t);  // the broker double-reported the SAME fill (byte-identical)
@@ -590,10 +714,16 @@ class RecordedKiteServer final : public HttpClient {
       // and an exit sized off the ORDERED quantity of a partially-filled parent
       // must not be able to hide behind a fixture that reports the ordered size.
       const std::int64_t qty = to_int(rec.filled);
+      const std::int64_t signed_qty = rec.side == "SELL" ? -qty : qty;
       nlohmann::json p = nlohmann::json::object();
       p["tradingsymbol"] = rec.symbol;
-      p["quantity"] = rec.side == "SELL" ? -qty : qty;  // signed net, integer only
-      p["average_price"] = rec.price;                   // rupee-decimal TEXT; no float
+      // DEFAULT: a genuine signed JSON INTEGER, which is what Kite sends here and
+      // what this fixture has always emitted — keep it, it is real coverage of the
+      // adapter's is_number path. The override substitutes the injected text (see
+      // set_quantity_override, which now reaches this reader too).
+      p["quantity"] = quantity_override_.empty() ? nlohmann::json(signed_qty)
+                                                 : number_field(quantity_override_);
+      put_average_price(p, rec.price);  // rupee-decimal TEXT; no float
       net.push_back(p);
     }
     nlohmann::json data = nlohmann::json::object();
@@ -606,14 +736,22 @@ class RecordedKiteServer final : public HttpClient {
     if (rate_limited()) {
       return error_response(429, "TooManyRequests", "Too many requests");
     }
+    // The two spellings are written INDEPENDENTLY (see set_margin_override): the
+    // adapter reads `available.live_balance` first and falls back to `net`, and a
+    // fixture that could only ever write the same text into both could not
+    // exercise the fallback at all.
+    const std::string balance =
+        margin_override_.empty() ? std::string("100000.00") : margin_override_;
+    const std::string net =
+        margin_net_override_.empty() ? std::string("100000.00") : margin_net_override_;
     nlohmann::json available = nlohmann::json::object();
-    available["live_balance"] = "100000.00";
+    available["live_balance"] = number_field(balance);
     nlohmann::json utilised = nlohmann::json::object();
-    utilised["debits"] = "0.00";
+    utilised["debits"] = number_field("0.00");
     nlohmann::json data = nlohmann::json::object();
     data["available"] = available;
     data["utilised"] = utilised;
-    data["net"] = "100000.00";
+    data["net"] = number_field(net);
     return success_response(data);
   }
 
@@ -625,6 +763,20 @@ class RecordedKiteServer final : public HttpClient {
   std::string order_type_override_;
   // Empty => report each row's own status (see set_status_override).
   std::string status_override_;
+  // false => report each row's own price; true + nullopt => OMIT the key entirely;
+  // true + a string => report that exact text (see set_average_price_override).
+  bool avg_price_overridden_ = false;
+  std::optional<std::string> avg_price_override_;
+  // Empty => report each row's own order total (see set_quantity_override).
+  std::string quantity_override_;
+  // Empty => the default well-formed figure for that spelling. `margin_override_`
+  // is `available.live_balance`; `margin_net_override_` is the `net` fallback.
+  // They are separate so a test can garble one and leave the other readable.
+  std::string margin_override_;
+  std::string margin_net_override_;
+  // false => every number goes out as a JSON string (the recorded default);
+  // true => as a genuine JSON number, as Kite Connect v3 sends them.
+  bool numeric_payload_ = false;
   // The immediate-fill model (see set_fill_model): < 0 means "fill the whole order".
   std::int64_t fill_qty_ = -1;
   std::string fill_status_ = "COMPLETE";

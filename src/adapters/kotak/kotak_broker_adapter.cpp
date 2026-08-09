@@ -380,6 +380,29 @@ enum class StatusClass { Unrecognized, Working, Complete, Rejected, Cancelled };
   return error;
 }
 
+// "THE BROKER ANSWERED, AND WE COULD NOT READ ITS ANSWER" — the whole-read refusal
+// on positions/funds, where there is no per-row escape hatch. THE TWIN OF THE KITE
+// ADAPTER'S HELPER OF THE SAME NAME, and it must stay one: the error taxonomy is a
+// cross-broker contract (CAP-13), so the same condition on both brokers has to
+// resolve to the same category.
+//
+// NOT `Unknown`, deliberately. `reconcile::RecoveryCoordinator` reads any failed
+// broker fetch as "the broker is UNREACHABLE" and, next to a local UNKNOWN order,
+// escalates a DOUBLE FAULT — ManualInterventionRequired, Critical alert, terminal,
+// no auto-square-off. Here the broker is reachable and answering; we refused one
+// number inside a payload that arrived. `DataStale` is the honest existing
+// data-quality enumerator (and what this adapter already returns for untrustworthy
+// broker data); `Validation` would claim our REQUEST was bad, which it was not. The
+// ACTION stays ReconcileFirst — what these reads already returned, and right for an
+// idempotent read whose remedy is to go re-read broker truth. See
+// `broker_answered()` in src/reconcile/recovery.cpp.
+[[nodiscard]] errors::Error unreadable_payload_error(std::string message, std::string code) {
+  errors::Error error =
+      errors::make_error(errors::ErrorCategory::DataStale, std::move(message), std::move(code));
+  error.action = errors::SuggestedAction::ReconcileFirst;
+  return error;
+}
+
 // The Kotak quick-place `jData` object. EVERY value is a string — that is the
 // wire contract, and it also keeps the money path textual (paise -> decimal text)
 // with no float anywhere.
@@ -1211,10 +1234,9 @@ Result<std::vector<domain::Position>> KotakBrokerAdapter::fetch_positions() {
     out.push_back(std::move(pos));
   }
   if (malformed) {
-    return broker_exec::fail(
-        errors::make_error(errors::ErrorCategory::Unknown,
-                           "kotak: positions payload carried an unparseable quantity or amount",
-                           "KOTAK-POSITIONS-MALFORMED"));
+    return broker_exec::fail(unreadable_payload_error(
+        "kotak: positions payload carried an unparseable quantity or amount",
+        "KOTAK-POSITIONS-MALFORMED"));
   }
   return out;
 }
@@ -1247,9 +1269,8 @@ Result<ports::FundsSnapshot> KotakBrokerAdapter::fetch_funds() {
   if (malformed) {
     // A funds figure we cannot parse EXACTLY must not be reported as a number —
     // the freshness/margin gates would size real risk off it. Fail the read.
-    return broker_exec::fail(errors::make_error(errors::ErrorCategory::Unknown,
-                                                "kotak: funds payload carried an unparseable amount",
-                                                "KOTAK-FUNDS-MALFORMED"));
+    return broker_exec::fail(unreadable_payload_error(
+        "kotak: funds payload carried an unparseable amount", "KOTAK-FUNDS-MALFORMED"));
   }
   funds.available_margin = domain::Money::from_paise(available.value_or(0));
   funds.used_margin = domain::Money::from_paise(used.value_or(0));

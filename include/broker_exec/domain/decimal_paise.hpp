@@ -26,12 +26,25 @@
 //     be represented in int64 paise yields nullopt rather than undefined
 //     behaviour (a 20-digit field is a real thing a broker can send).
 //
-// FOLLOW-UP (tracked, deliberately NOT done in Story 6.2 to keep the blast
-// radius small): `src/refdata/instrument_master.cpp` and
-// `src/adapters/kite/kite_broker_adapter.cpp` still carry their own private
-// copies. They should be migrated onto this header, which mirrors refdata's
-// semantics exactly except that refdata already returned an optional and the
-// Kite copy did not.
+// THE FOLLOW-UP IS DONE (IMP-14). `src/refdata/instrument_master.cpp` and
+// `src/adapters/kite/kite_broker_adapter.cpp` carried private copies until
+// Story 6.2 shipped this header for Kotak only; both are now migrated and THIS
+// IS THE ONLY DECIMAL->PAISE PARSE IN THE TREE. What the migration changed:
+//
+//   * refdata was already fail-closed, so it is a pure de-duplication with one
+//     safety gain — its copy computed `rupees * 10 + digit` UNCHECKED, so a
+//     20-digit `tick_size` was signed-integer overflow (UB). That row is now
+//     rejected as unparseable.
+//   * the KITE copy was fail-OPEN and wrong on the primary live broker: it
+//     `break`ed on the first non-digit and returned the partial value, so
+//     "1,450.25" read as Rs 1.00, "N/A" as 0, "1.45e3" as Rs 1.45, and a 20-digit
+//     field overflowed. Every money read in that adapter now goes through this
+//     parser, and a field that is PRESENT BUT UNREADABLE fails its row (or its
+//     whole read) closed — the same contract Kotak has used since Story 6.2.
+//     ABSENT is unchanged and still means zero: absent is not an error.
+//
+// A fourth copy must not appear. If a new adapter needs decimal money, it
+// includes this header.
 //
 // Header-only and dependency-free so any layer may use it without a link edge.
 // Cross-platform: C++20 standard library only. No OS APIs, no `#ifdef`, NO FLOAT.

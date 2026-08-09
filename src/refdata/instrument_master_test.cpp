@@ -249,6 +249,84 @@ TEST_CASE("a fetch failure leaves refresh failing and safe-start blocked", "[ref
   CHECK(gate.error().action == SuggestedAction::BlockStrategy);
 }
 
+// ── IMP-14: tick_size now goes through the SHARED decimal->paise parser ──────
+//
+// This file used to carry its own copy of that parse. The copy was already
+// fail-closed, so the migration onto domain::parse_decimal_paise is a pure
+// de-duplication — with ONE difference, and it is in the safe direction: the
+// shared parser is OVERFLOW-GUARDED where the copy computed `rupees * 10 + digit`
+// unchecked. A 20-digit tick_size was therefore signed-integer overflow —
+// undefined behaviour, which the CI sanitizer job traps, and a wrapped
+// (possibly negative) tick otherwise. The rule for the consolidation was that the
+// stricter behaviour wins, so such a row is now REJECTED.
+//
+// The rest of this case is the pin that keeps the de-duplication honest: every
+// shape the private copy accepted must still be accepted, with the same value.
+TEST_CASE("tick_size is parsed by the shared fail-closed decimal parser", "[refdata][IMP-14]") {
+  const auto csv_with_tick = [](const char* tick) {
+    return std::string("instrument_token,tradingsymbol,expiry,tick_size,lot_size,exchange\n"
+                       "256265,NIFTY26JUL24000CE,2026-07-30,") +
+           tick + ",75,NFO\n";
+  };
+  const auto tick_paise_of = [&csv_with_tick](const char* tick) {
+    const Result<std::vector<Instrument>> parsed =
+        broker_exec::refdata::parse_instruments_csv(csv_with_tick(tick));
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed.value().size() == 1);
+    return parsed.value().front().tick_size.paise();
+  };
+  const auto refuses = [&csv_with_tick](const char* tick) {
+    const Result<std::vector<Instrument>> parsed =
+        broker_exec::refdata::parse_instruments_csv(csv_with_tick(tick));
+    return !parsed.has_value();
+  };
+
+  SECTION("THE ONE CHANGE: a tick_size that overflows int64 paise is refused, not wrapped") {
+    const Result<std::vector<Instrument>> parsed =
+        broker_exec::refdata::parse_instruments_csv(csv_with_tick("99999999999999999999"));
+    REQUIRE_FALSE(parsed.has_value());
+    CHECK(parsed.error().category == ErrorCategory::Validation);
+    CHECK(parsed.error().message.find("unparseable tick_size") != std::string::npos);
+
+    // And the subtler overflow: a value that fits in int64 RUPEES but not once it
+    // is scaled to paise. The private copy multiplied by 100 unchecked.
+    CHECK(refuses("92233720368547758.08"));
+  }
+
+  SECTION("every shape the private copy accepted is still accepted, with the same value") {
+    CHECK(tick_paise_of("0.05") == 5);
+    CHECK(tick_paise_of("+0.05") == 5);   // a leading '+' is accepted by both
+    CHECK(tick_paise_of("1") == 100);     // no fractional part at all
+    CHECK(tick_paise_of("0.5") == 50);    // one fractional digit is ZERO-PADDED, not 5
+    CHECK(tick_paise_of("0.059") == 5);   // sub-paise digits truncated, not refused
+    CHECK(tick_paise_of(" 0.05 ") == 5);  // surrounding whitespace trimmed by both
+  }
+
+  SECTION("every shape it refused is still refused") {
+    CHECK(refuses(""));       // an empty tick column
+    CHECK(refuses("abc"));    // not a number at all
+    CHECK(refuses("0.0x5"));  // a non-digit among the fractional digits
+    CHECK(refuses("1.2.3"));  // a second decimal point
+    CHECK(refuses("."));      // no digits either side
+    CHECK(refuses("-"));      // a sign and nothing else
+    // A well-formed NEGATIVE parses fine and is then rejected one line later by
+    // the non-positive guard — a different error, and deliberately so.
+    //
+    // THE MESSAGE IS ASSERTED, NOT JUST THE REFUSAL. `refuses()` is satisfied by
+    // EITHER error, so on its own it says nothing about WHICH guard fired: it
+    // would keep passing if the shared parser started rejecting a leading '-'
+    // outright, and the case would silently stop testing the thing it names. The
+    // distinction also matters to whoever reads the row error — "the master states
+    // a tick of -0.05" is a corrupt feed, "we could not read this tick" is a
+    // format problem, and they have different fixes.
+    const Result<std::vector<Instrument>> negative =
+        broker_exec::refdata::parse_instruments_csv(csv_with_tick("-0.05"));
+    REQUIRE_FALSE(negative.has_value());
+    CHECK(negative.error().message.find("non-positive tick_size") != std::string::npos);
+    CHECK(negative.error().message.find("unparseable") == std::string::npos);
+  }
+}
+
 TEST_CASE("a malformed row yields a typed Error naming the row", "[refdata]") {
   // lot_size "abc" on the second data row (physical line 3) is unparseable.
   const std::string bad =

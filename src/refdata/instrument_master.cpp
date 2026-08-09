@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "broker_exec/domain/decimal_paise.hpp"
 #include "broker_exec/domain/money.hpp"
 #include "broker_exec/domain/types.hpp"
 #include "broker_exec/errors/error.hpp"
@@ -44,6 +45,15 @@ using errors::make_error;
 
 // Parse a non-empty all-digits (optionally signed) integer. Returns nullopt on
 // any non-digit or overflow. No float.
+//
+// DELIBERATELY NOT REPLACED BY domain::parse_int64 (IMP-14). The two agree on
+// everything a Kite instrument master actually contains, but they disagree on a
+// leading '+': std::from_chars refuses "+256265" while domain::parse_int64
+// accepts it. This is the STRICTER of the two, and the rule for this
+// consolidation is that stricter wins — an instrument token is a fixed-format
+// identifier, not a signed quantity, so there is no reason to widen what a
+// master row may say. Money DID move onto the shared parser below, because there
+// the shared one is the stricter of the pair (it is overflow-guarded).
 [[nodiscard]] std::optional<std::int64_t> parse_int64(std::string_view in) noexcept {
   const std::string_view s = trim(in);
   if (s.empty()) {
@@ -59,60 +69,19 @@ using errors::make_error;
   return value;
 }
 
-// Parse a decimal string (e.g. "0.05", "24000", "1.5") into integer paise with
-// NO floating point. Up to two fractional digits are significant (paise
-// precision); any further digits must still be digits but are truncated (tick
-// sizes never carry sub-paise precision). Returns nullopt on malformed input.
-[[nodiscard]] std::optional<std::int64_t> parse_decimal_paise(std::string_view in) noexcept {
-  const std::string_view s = trim(in);
-  if (s.empty()) {
-    return std::nullopt;
-  }
-
-  std::size_t i = 0;
-  bool negative = false;
-  if (s[i] == '+' || s[i] == '-') {
-    negative = (s[i] == '-');
-    ++i;
-  }
-
-  std::int64_t rupees = 0;
-  bool any_digit = false;
-  for (; i < s.size() && s[i] != '.'; ++i) {
-    if (s[i] < '0' || s[i] > '9') {
-      return std::nullopt;
-    }
-    rupees = rupees * 10 + (s[i] - '0');
-    any_digit = true;
-  }
-
-  std::int64_t frac = 0;
-  int frac_digits = 0;
-  if (i < s.size() && s[i] == '.') {
-    ++i;
-    for (; i < s.size(); ++i) {
-      if (s[i] < '0' || s[i] > '9') {
-        return std::nullopt;
-      }
-      if (frac_digits < 2) {
-        frac = frac * 10 + (s[i] - '0');
-        ++frac_digits;
-      }
-      any_digit = true;
-    }
-  }
-
-  if (!any_digit) {
-    return std::nullopt;
-  }
-  while (frac_digits < 2) {
-    frac *= 10;
-    ++frac_digits;
-  }
-
-  const std::int64_t paise = rupees * 100 + frac;
-  return negative ? -paise : paise;
-}
+// THE DECIMAL -> PAISE PARSE LIVES IN domain/decimal_paise.hpp (IMP-14).
+//
+// This file used to carry a private copy. It was already fail-closed — which is
+// why the migration is a pure de-duplication and no CSV that parsed before parses
+// differently now — but it was one of THREE implementations of the same contract,
+// and the three did not agree with each other. The shared one is identical on
+// every input this copy handled (leading '+'/'-', no fractional part, more than
+// two fractional digits, trailing garbage, ""/"."/"-") with ONE difference, in
+// the safe direction: it is OVERFLOW-GUARDED. The copy computed
+// `rupees * 10 + digit` unchecked, so a 20-digit `tick_size` was signed-integer
+// overflow — undefined behaviour, and something the CI sanitizer job traps. The
+// shared parser calls that a parse failure, so such a row is now REJECTED with
+// the ordinary "unparseable tick_size" row error. Stricter wins.
 
 // Split a single CSV line into fields. Minimal quoting tolerance: a field may be
 // wrapped in double-quotes and contain commas; a doubled "" inside quotes is an
@@ -256,7 +225,8 @@ Result<std::vector<domain::Instrument>> parse_instruments_csv(std::string_view c
     if (!lot.has_value()) {
       return fail(row_error(line_no, "unparseable lot_size"));
     }
-    const std::optional<std::int64_t> tick_paise = parse_decimal_paise(fields[*col_tick]);
+    const std::optional<std::int64_t> tick_paise =
+        domain::parse_decimal_paise(fields[*col_tick]);
     if (!tick_paise.has_value()) {
       return fail(row_error(line_no, "unparseable tick_size"));
     }

@@ -14,6 +14,7 @@
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/lifecycle/lifecycle.hpp"
 #include "broker_exec/ports/alert_sink.hpp"
+#include "broker_exec/ports/broker_port.hpp"
 #include "broker_exec/ports/ports_common.hpp"
 #include "broker_exec/result.hpp"
 
@@ -57,6 +58,75 @@ class CountingAlertSink final : public ports::AlertSink {
   std::size_t critical_count_ = 0;
   AlertLevel last_level_ = AlertLevel::Info;
   std::string last_message_;
+};
+
+// A broker that is UP, REACHABLE and ANSWERING, whose reply we could not read.
+//
+// This is exactly what both live adapters return when a positions/funds payload
+// carries a number they cannot parse EXACTLY (KITE-/KOTAK-POSITIONS-MALFORMED,
+// KITE-/KOTAK-FUNDS-MALFORMED via `unreadable_payload_error`): the typed
+// ErrorCategory::DataStale. The FakeBroker cannot produce that shape — its fault
+// model only mints unreachability — so the condition gets its own stub here.
+//
+// Every MUTATION is a hard failure: recovery must issue none on this path, and a
+// stub that silently accepted one would hide the regression that matters most.
+class UnreadablePayloadBroker final : public ports::BrokerPort {
+ public:
+  [[nodiscard]] broker_exec::Result<ports::BrokerAck> place(
+      const broker_exec::domain::OrderIntent&) override {
+    ++mutations_;
+    return broker_exec::fail(broker_exec::errors::make_error(
+        broker_exec::errors::ErrorCategory::Internal, "recovery must not place"));
+  }
+  [[nodiscard]] broker_exec::Result<ports::BrokerAck> modify(
+      const std::string&, const broker_exec::domain::OrderIntent&) override {
+    ++mutations_;
+    return broker_exec::fail(broker_exec::errors::make_error(
+        broker_exec::errors::ErrorCategory::Internal, "recovery must not modify"));
+  }
+  [[nodiscard]] broker_exec::Result<ports::Ok> cancel(const std::string&) override {
+    ++mutations_;
+    return broker_exec::fail(broker_exec::errors::make_error(
+        broker_exec::errors::ErrorCategory::Internal, "recovery must not cancel"));
+  }
+  [[nodiscard]] broker_exec::Result<ports::Ok> square_off(const std::string&) override {
+    ++mutations_;
+    return broker_exec::fail(broker_exec::errors::make_error(
+        broker_exec::errors::ErrorCategory::Internal, "recovery must not square off"));
+  }
+
+  // The orders read SUCCEEDS — the broker is answering perfectly well — and the
+  // POSITIONS read is the one that fails on an unreadable figure. That ordering
+  // is the point: an outage would have failed the very first read.
+  [[nodiscard]] broker_exec::Result<std::vector<Order>> fetch_orders() override {
+    ++reads_;
+    return std::vector<Order>{};
+  }
+  [[nodiscard]] broker_exec::Result<std::vector<broker_exec::domain::Trade>> fetch_trades()
+      override {
+    ++reads_;
+    return std::vector<broker_exec::domain::Trade>{};
+  }
+  [[nodiscard]] broker_exec::Result<std::vector<broker_exec::domain::Position>> fetch_positions()
+      override {
+    ++reads_;
+    broker_exec::errors::Error error = broker_exec::errors::make_error(
+        broker_exec::errors::ErrorCategory::DataStale,
+        "positions payload carried an unparseable quantity or amount", "KITE-POSITIONS-MALFORMED");
+    error.action = broker_exec::errors::SuggestedAction::ReconcileFirst;
+    return broker_exec::fail(error);
+  }
+  [[nodiscard]] broker_exec::Result<ports::FundsSnapshot> fetch_funds() override {
+    ++reads_;
+    return ports::FundsSnapshot{};
+  }
+
+  [[nodiscard]] std::size_t mutations() const noexcept { return mutations_; }
+  [[nodiscard]] std::size_t reads() const noexcept { return reads_; }
+
+ private:
+  std::size_t mutations_ = 0;
+  std::size_t reads_ = 0;
 };
 
 // A hand-built loaded (replayed) order in a given state. `acked` controls whether
@@ -221,6 +291,81 @@ TEST_CASE("recover: Unknown order + unreachable broker escalates to manual inter
   CHECK(broker.book().empty());
   CHECK(broker.request_count() == 0);
   CHECK(cancelled_count(broker) == 0);
+}
+
+// ── AN UNREADABLE REPLY IS NOT AN OUTAGE (IMP-14 review, M2) ────────────────
+//
+// The double fault is defined as "an UNKNOWN order AND an unreachable broker",
+// and what it buys is deliberately severe: every UNKNOWN order forced to
+// ManualInterventionRequired, a Critical alert, and a TERMINAL stop with no
+// auto-square-off. Recovery used to reach that verdict off ANY fetch failure —
+// so when the live adapter refused a payload whose numbers it could not parse
+// EXACTLY (ErrorCategory::DataStale), a single garbled `live_balance` on the
+// primary broker's funds read halted the system under a stated cause ("broker
+// unreachable") that was FALSE. The broker was up and answering the whole time.
+//
+// The same Unknown order, the same failed fetch, and the ONLY difference is the
+// error's category — which is precisely the discrimination that was missing.
+
+TEST_CASE("recover: an UNREADABLE broker reply is not a double fault", "[recovery][IMP-14]") {
+  broker_exec::clock::TestClock clock;
+  UnreadablePayloadBroker broker;  // answering; one read refused as DataStale
+  CountingAlertSink alerts;
+  life::LifecycleEngine engine;
+
+  // The SAME loaded state as the double-fault case above: one ambiguous UNKNOWN
+  // order. Under the old "any fetch failure == unreachable" rule this was a
+  // guaranteed ManualInterventionRequired.
+  auto load_state = []() -> broker_exec::Result<std::vector<Order>> {
+    return std::vector<Order>{loaded_order("alpha-1", OrderState::Unknown)};
+  };
+  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session,
+                                 ok_session);
+
+  const rec::RecoveryOutcome out = coord.recover();
+
+  // BLOCKED, not terminal: this is retryable — a re-read may well parse.
+  CHECK(out.status == rec::RecoveryStatus::Blocked);
+  CHECK(out.status != rec::RecoveryStatus::ManualInterventionRequired);
+  CHECK_FALSE(out.escalated);
+  // No Critical escalation, and the ambiguous order is NOT rewritten to
+  // ManualInterventionRequired — a state that needs a human to leave.
+  CHECK(alerts.critical_count() == 0);
+  CHECK(out.orders.front().state == OrderState::Unknown);
+  // And the reported cause is the TRUE one, not "broker unreachable".
+  CHECK(out.detail.find("unreachable") == std::string::npos);
+  CHECK(out.detail.find("unreadable") != std::string::npos);
+  // Still no mutation of any kind, and the broker really was reached.
+  CHECK(broker.mutations() == 0);
+  CHECK(broker.reads() > 0);
+}
+
+TEST_CASE("recover: a genuinely unreachable broker STILL double-faults", "[recovery][IMP-14]") {
+  // THE NON-VACUITY HALF of the case above. The whitelist in recovery.cpp names
+  // only categories that PROVE a reply was received; everything else — including
+  // RateLimited, which is what the FakeBroker mints, and every unclassified
+  // Unknown — keeps the conservative escalation. Weakening that guard while
+  // fixing the false positive would be the far worse regression, so it is pinned
+  // right next to it.
+  broker_exec::clock::TestClock clock;
+  fake::FaultConfig cfg;
+  cfg.rate_limit_after = 0;  // every read fails: the broker is genuinely blind to us
+  fake::FakeBroker broker(clock, cfg);
+  CountingAlertSink alerts;
+  life::LifecycleEngine engine;
+
+  auto load_state = []() -> broker_exec::Result<std::vector<Order>> {
+    return std::vector<Order>{loaded_order("alpha-1", OrderState::Unknown)};
+  };
+  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session,
+                                 ok_session);
+
+  const rec::RecoveryOutcome out = coord.recover();
+  CHECK(out.status == rec::RecoveryStatus::ManualInterventionRequired);
+  CHECK(out.escalated);
+  CHECK(alerts.critical_count() == 1);
+  CHECK(out.orders.front().state == OrderState::ManualInterventionRequired);
+  CHECK(cancelled_count(broker) == 0);  // and never an auto-square-off
 }
 
 // ── SESSION BAD (AC-1): dead session -> Blocked, never resume ──

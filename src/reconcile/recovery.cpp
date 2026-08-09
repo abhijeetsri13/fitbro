@@ -3,12 +3,43 @@
 #include <utility>
 
 #include "broker_exec/domain/enums.hpp"
+#include "broker_exec/errors/error.hpp"
 #include "broker_exec/lifecycle/lifecycle.hpp"
 #include "broker_exec/reconcile/reconciler.hpp"
 
 namespace broker_exec::reconcile {
 
 namespace {
+
+// Did the broker ANSWER this fetch, or was it unreachable?
+//
+// WHY THE DISTINCTION EXISTS. The double fault below is defined as "an UNKNOWN
+// order AND an unreachable broker", and what it buys is severe and terminal:
+// every UNKNOWN order is forced to ManualInterventionRequired, a Critical alert
+// fires, and recovery stops without auto-square-off. That is the right answer
+// when we cannot see broker truth at all — a phantom position may be live and
+// guessing is worse than halting. It is the WRONG answer when the broker is up,
+// reachable and answering and the read failed for some other reason: the adapters
+// refuse a positions/funds payload whose numbers they cannot parse EXACTLY
+// (KITE-/KOTAK-POSITIONS-MALFORMED, KITE-/KOTAK-FUNDS-MALFORMED — see
+// `unreadable_payload_error` in both adapters). One garbled field in an otherwise
+// intact reply used to buy a manual-intervention halt under a cause that was
+// simply not true, on the primary live broker's read path. Re-reading may well
+// succeed, so the honest outcome there is Blocked-and-retryable.
+//
+// THE TEST IS A WHITELIST, ON PURPOSE. It names only the categories that POSITIVELY
+// prove a broker response was received and inspected; everything else — Network,
+// Timeout, Transient, RateLimited, and every unclassified error, which arrives as
+// Unknown — keeps the conservative escalation. Fail-closed: a category we did not
+// think about counts as unreachable.
+//
+// RateLimited is deliberately NOT here even though a 429 is technically a reply:
+// throttled means we did not GET broker truth, which is the same blindness as an
+// outage, and that is the condition the double fault is about.
+[[nodiscard]] bool broker_answered(const errors::Error& error) noexcept {
+  return error.category == errors::ErrorCategory::DataStale ||
+         error.category == errors::ErrorCategory::Validation;
+}
 
 // Count how many orders are in the ambiguous UNKNOWN state (send result never
 // confirmed). Captured BEFORE apply so unknowns_resolved is the delta.
@@ -60,10 +91,22 @@ RecoveryOutcome RecoveryCoordinator::recover() {
 
   // ── 3. FetchBroker ────────────────────────────────────────────────────────
   // Read broker truth off-loop. The Reconciler holds NO Store/engine, so this
-  // step structurally cannot mutate. A failed fetch == the broker is UNREACHABLE.
+  // step structurally cannot mutate. A failed fetch is USUALLY the broker being
+  // UNREACHABLE — but not always, and the difference is decided below rather than
+  // assumed (see broker_answered).
   Reconciler rec(clock_);
   auto fetched = rec.fetch(broker_, /*snapshot_seq=*/1);
   if (!fetched) {
+    // ── IS THE BROKER ACTUALLY UNREACHABLE? ─────────────────────────────────
+    // The double fault below hinges on that word, so it is established before it
+    // is claimed. A read the broker ANSWERED and we could not parse is not an
+    // outage (see broker_answered above): nothing is mutated, nothing is
+    // escalated, and the reported cause names what really happened. This is
+    // Blocked — retryable — exactly like the no-UNKNOWN outage case.
+    if (broker_answered(fetched.error())) {
+      outcome.detail = "broker reachable but its reply was unreadable; cannot reconcile yet";
+      return outcome;  // Blocked
+    }
     // Broker unreachable. If ANY loaded order is UNKNOWN, this is a DOUBLE FAULT
     // (UNKNOWN order + broker unreachable): we cannot tell whether a phantom
     // position is live, so we refuse to guess. Mark each UNKNOWN order
