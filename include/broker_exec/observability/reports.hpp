@@ -21,9 +21,17 @@
 // in-memory event. So any report that renders free-form `fields`-derived text
 // (only the ErrorReport detail does) must scrub that text itself before it
 // reaches an observable/persisted sink; ErrorReport does so via domain::scrub.
-// The daily/reconciliation reports emit only counts, client_refs, final_state
-// and discrepancy strings built from a client_ref plus fixed text — non-secret,
-// so they are not scrubbed.
+//
+// PROVENANCE COLUMNS (IMP-15): every rendered `client_ref` — the error rows, the
+// reconciliation rows and the discrepancy strings — goes through
+// `domain::scrub_provenance_column`, so a well-formed ref is carried VERBATIM
+// (a report that cannot name the order it is about is useless) while an
+// anomalous value in that column is scrubbed (fail closed; the column used to be
+// copied raw). The daily report's `orders_per_strategy` KEYS go through the same
+// helper. Every one of these GROUPS ON THE RAW VALUE and sanitizes only at
+// output, so two distinct anomalous values can never merge into one row before
+// they are counted; where two of them do sanitize to the same rendered key, the
+// counts are SUMMED, never overwritten.
 //
 // Cross-platform: C++20 standard library + nlohmann only. No OS APIs, no
 // `#ifdef`, no localtime/strftime — UTC is formatted via std::chrono.

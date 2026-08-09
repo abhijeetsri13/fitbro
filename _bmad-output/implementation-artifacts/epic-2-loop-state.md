@@ -456,3 +456,16 @@ loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier
   remainder cancelled + fill naked, M2 square_off flattened its OWN exit (re-opening the position),
   M3-M5 vacuous coverage (cancel-tolerance test never issued a cancel -> exposed that Kite could never
   mint OrderNotFound, so AC-1b was unimplementable there), M6 stale docs. 50/50 green.
+- ITER 8 / IMP-14 DONE (b1cd415): killed the last fail-open money parsers. Kite carried its OWN
+  decimal_to_paise/parse_int that broke on the first non-digit and returned the partial value, no overflow
+  guard — on the PRIMARY LIVE broker: '1,450.25'->Rs1.00, 'N/A'->0, 20-digit->signed-overflow UB, and
+  quantity '1,450'->1 so an IMP-13 flatten of a 30-lot short could go out as a ONE-LOT buy returning ok.
+  (Kotak was fixed in the 6-2 review; Kite never was.) All copies now on domain::parse_decimal_paise
+  (4th duplicate found+killed: Kite paise_to_decimal, UB at INT64_MIN). Absent stays absent; malformed
+  surfaces at Kotak parity (order row->Unknown, trade reported-not-attributed, positions/funds whole-read
+  fail, square_off refuses pre-side-effect). Review SHIP; mediums applied because fail-closed must not
+  become an availability regression: M1 funds fallback poisoned by the garbage it routes around, M2 parse
+  error categorized Unknown -> crash recovery called it "broker unreachable" and escalated a readable-broker
+  glitch to terminal ManualInterventionRequired (now DataStale + recovery whitelist), M3 fixture sent every
+  number as a STRING so the is_number->dump->parse path that runs on every live read had ZERO coverage,
+  M4 unclamped negative qty published an attributed -5 trade. 50/50 green.

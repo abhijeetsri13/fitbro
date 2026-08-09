@@ -171,6 +171,16 @@ std::vector<ManualInterventionEvent> ManualInterventionDetector::detect(
       event.client_ref = local.intent.client_ref;
       event.detail = std::string(to_string(event.kind)) + " ref=" + local.intent.client_ref +
                      " symbol=" + local.intent.symbol;
+      // KNOWN LIMITATION: `event.client_ref` is a typed field and stays intact for
+      // in-process consumers, but the ALERT does not carry it. AlertSink
+      // implementations scrub the whole FREE-FORM body (multi_channel_alert_sink.cpp)
+      // and a client_ref is one long token-shaped run, so the operator sees
+      // `ref=***REDACTED***` here. The IMP-15 provenance exemption is a
+      // WHOLE-TYPED-COLUMN allowlist and deliberately does NOT reach into a
+      // free-form body — a substring exemption there would disable the bare
+      // high-entropy rule for every alert. The fix is a TYPED provenance parameter
+      // on AlertSink::send (and Ledger::append), an ABI change across every
+      // implementation and caller, tracked as a separate story.
       (void)alerts_.send(ports::AlertLevel::Warning, event.detail);
       events.push_back(std::move(event));
     }

@@ -262,6 +262,172 @@ TEST_CASE("reconciliation treats a broker reject/cancel as a confirmed verdict (
   }
 }
 
+// ── IMP-15: the reports' own provenance columns stay legible ─────────────────
+
+TEST_CASE("a real client_ref survives every report VERBATIM (IMP-15)") {
+  // EXACTLY the shape make_client_ref mints — `<strategy>-<sig8>-<uuid>` with the
+  // canonical 8-4-4-4-12 uuid text (uuid.cpp format_uuid_v4) — plus an IMP-13
+  // exit ref and a slicer child.
+  const std::string ref = "alpha-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab";
+  const std::string exit_ref = ref + "#X";
+  const std::string child_ref = ref + "#2";
+
+  std::vector<AuditEvent> events;
+  events.push_back(make_event(EventType::OrderPlaced, ref, "alpha"));
+  events.push_back(make_event(EventType::OrderFilled, ref));  // filled, never reconciled
+  events.push_back(make_event(EventType::OrderPlaced, exit_ref, "alpha"));  // never confirmed
+  events.push_back(make_event(EventType::OrderPlaced, child_ref, "alpha"));
+  events.push_back(make_event(EventType::OrderAcknowledged, child_ref));
+  AuditEvent err = make_event(EventType::Error, ref);
+  err.fields["message"] = "broker rejected the exit";
+  events.push_back(err);
+
+  // (1) The error report names the order it is about.
+  const ErrorReport errors = ReportGenerator::errors(events);
+  REQUIRE(errors.errors.size() == 1);
+  CHECK(errors.errors[0].client_ref == ref);
+  CHECK(errors.to_json().find(ref) != std::string::npos);
+
+  // (2) So does every reconciliation row...
+  const ReconciliationReport recon = ReportGenerator::reconciliation(events);
+  REQUIRE(recon.orders.size() == 3);
+  const json parsed = json::parse(recon.to_json(), nullptr, /*allow_exceptions=*/false);
+  REQUIRE_FALSE(parsed.is_discarded());
+  std::vector<std::string> rendered_refs;
+  for (const auto& row : parsed.at("orders")) {
+    rendered_refs.push_back(row.at("client_ref").get<std::string>());
+  }
+  // Sorted by client_ref: the parent, then "#2", then "#X".
+  REQUIRE(rendered_refs.size() == 3);
+  CHECK(rendered_refs[0] == ref);
+  CHECK(rendered_refs[1] == child_ref);
+  CHECK(rendered_refs[2] == exit_ref);
+
+  // (3) ...and every discrepancy line NAMES the order, which is its entire job.
+  REQUIRE(recon.discrepancies.size() == 2);
+  CHECK(recon.discrepancies[0] == "client_ref " + ref + ": filled but not reconciled");
+  CHECK(recon.discrepancies[1] == "client_ref " + exit_ref + ": intended but not confirmed");
+  CHECK(recon.to_json().find("REDACTED") == std::string::npos);
+}
+
+TEST_CASE("a token-shaped value in the client_ref column IS redacted in a report (IMP-15)") {
+  // The reports persist/serve their output, so an anomalous value in the id
+  // column fails closed — it used to be copied through raw.
+  const std::string token = "ABCDEF0123456789ABCDEF0123456789";  // 32-char alnum, no structure
+
+  std::vector<AuditEvent> events;
+  events.push_back(make_event(EventType::OrderPlaced, token));
+  AuditEvent err = make_event(EventType::Error, token);
+  err.fields["message"] = "boom";
+  events.push_back(err);
+
+  const ErrorReport errors = ReportGenerator::errors(events);
+  REQUIRE(errors.errors.size() == 1);
+  CHECK(errors.errors[0].client_ref.find(token) == std::string::npos);
+  CHECK(errors.to_json().find(token) == std::string::npos);
+
+  const ReconciliationReport recon = ReportGenerator::reconciliation(events);
+  CHECK(recon.to_json().find(token) == std::string::npos);
+  REQUIRE(recon.discrepancies.size() == 1);
+  CHECK(recon.discrepancies[0].find(token) == std::string::npos);
+}
+
+TEST_CASE("two distinct anomalous refs stay two rows: grouping keys on the RAW ref (IMP-15)") {
+  // Sanitizing happens at OUTPUT only. If it happened before grouping, these two
+  // would both become the marker and collapse into a single, wrong row.
+  const std::string token_a = "AAAAAA0123456789AAAAAA0123456789";
+  const std::string token_b = "BBBBBB0123456789BBBBBB0123456789";
+
+  std::vector<AuditEvent> events;
+  events.push_back(make_event(EventType::OrderPlaced, token_a));
+  events.push_back(make_event(EventType::OrderPlaced, token_b));
+  events.push_back(make_event(EventType::OrderFilled, token_b));
+
+  const ReconciliationReport recon = ReportGenerator::reconciliation(events);
+  CHECK(recon.orders.size() == 2);  // still two orders, not one merged row
+  CHECK(recon.intended == 2);
+  CHECK(recon.sent == 2);
+  CHECK(recon.to_json().find(token_a) == std::string::npos);
+  CHECK(recon.to_json().find(token_b) == std::string::npos);
+}
+
+TEST_CASE("the daily report's per-strategy KEYS are sanitized at OUTPUT (IMP-15)") {
+  // `strategy` is a typed column a caller fills, and this report is persisted, so
+  // a credential parked in it used to be emitted verbatim AS A JSON KEY.
+  const std::string secret = "abcd1234EFGH5678ijkl9012MNOP3456";
+  const std::string pasted = "access_token=" + secret;
+
+  std::vector<AuditEvent> events;
+  events.push_back(make_event(EventType::OrderPlaced, "a", "alpha"));
+  events.push_back(make_event(EventType::OrderPlaced, "b", "alpha"));
+  events.push_back(make_event(EventType::OrderPlaced, "c", pasted));
+
+  const DailyReport report = ReportGenerator::daily(events);
+
+  // Grouping still keys on the RAW strategy — sanitizing before the count could
+  // merge two distinct names into one row.
+  REQUIRE(report.orders_per_strategy.size() == 2);
+  CHECK(report.orders_per_strategy.at(pasted) == 1);
+
+  const std::string rendered = report.to_json();
+  // ZERO occurrences of the credential anywhere in the persisted report.
+  CHECK(rendered.find(secret) == std::string::npos);
+
+  const json parsed = json::parse(rendered, nullptr, /*allow_exceptions=*/false);
+  REQUIRE_FALSE(parsed.is_discarded());
+  const json& per = parsed.at("orders_per_strategy");
+  CHECK(per.at("alpha").get<int>() == 2);  // an ordinary name is untouched
+  CHECK(per.contains("access_token=***REDACTED***"));
+  CHECK(per.at("access_token=***REDACTED***").get<int>() == 1);
+}
+
+TEST_CASE("two strategies that sanitize to the SAME key have their counts summed (IMP-15)") {
+  // The reason the old code gave for skipping this column ("sanitizing a key
+  // could merge rows") is real — so it is handled, not used as an excuse: group
+  // on RAW, sanitize at output, and += on collision so nothing is under-counted.
+  const std::string token_a = "AAAAAA0123456789AAAAAA0123456789";
+  const std::string token_b = "BBBBBB0123456789BBBBBB0123456789";
+
+  std::vector<AuditEvent> events;
+  events.push_back(make_event(EventType::OrderPlaced, "a", token_a));
+  events.push_back(make_event(EventType::OrderPlaced, "b", token_a));
+  events.push_back(make_event(EventType::OrderPlaced, "c", token_b));
+
+  const DailyReport report = ReportGenerator::daily(events);
+  CHECK(report.orders_placed == 3);
+  REQUIRE(report.orders_per_strategy.size() == 2);  // two RAW rows, still distinct
+
+  const std::string rendered = report.to_json();
+  CHECK(rendered.find(token_a) == std::string::npos);
+  CHECK(rendered.find(token_b) == std::string::npos);
+
+  const json parsed = json::parse(rendered, nullptr, /*allow_exceptions=*/false);
+  REQUIRE_FALSE(parsed.is_discarded());
+  const json& per = parsed.at("orders_per_strategy");
+  // Both sanitize to the marker: ONE key carrying the FULL count, not 2 or a
+  // silently overwritten 1.
+  REQUIRE(per.size() == 1);
+  CHECK(per.at("***REDACTED***").get<int>() == 3);
+
+  // Still deterministic under the remapping.
+  CHECK(ReportGenerator::daily(events).to_json() == rendered);
+}
+
+TEST_CASE("a real strategy name survives the daily report VERBATIM (IMP-15)") {
+  std::vector<AuditEvent> events;
+  events.push_back(make_event(EventType::OrderPlaced, "a", "alpha"));
+  events.push_back(make_event(EventType::OrderPlaced, "b", "momentum_v2"));
+  events.push_back(make_event(EventType::OrderPlaced, "c", "alpha-beta"));
+
+  const json parsed =
+      json::parse(ReportGenerator::daily(events).to_json(), nullptr, /*allow_exceptions=*/false);
+  REQUIRE_FALSE(parsed.is_discarded());
+  const json& per = parsed.at("orders_per_strategy");
+  CHECK(per.at("alpha").get<int>() == 1);
+  CHECK(per.at("momentum_v2").get<int>() == 1);
+  CHECK(per.at("alpha-beta").get<int>() == 1);
+}
+
 TEST_CASE("reports are byte-identical across permuted input orderings (AC-3)") {
   // Two DIFFERENT orderings of the SAME events must yield byte-identical daily()
   // and reconciliation() output — proving the sorted/std::map determinism, not

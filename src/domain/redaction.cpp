@@ -21,11 +21,29 @@ namespace {
 
 [[nodiscard]] bool is_digit(char c) noexcept { return c >= '0' && c <= '9'; }
 
+// A hex digit in EITHER case. Used only by the provenance-id shape rule: every
+// id this library mints is built from hex runs (a sha256 sig8, a v4 UUID's five
+// groups), so "all hex" is a homogeneity class an id satisfies and a base64url
+// credential run essentially never does.
+[[nodiscard]] bool is_hex_digit(char c) noexcept {
+  return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
 // A "token char": the alphabet of base64url / hex / opaque-credential runs and
 // of `key` names. Deliberately excludes '.' so dotted paths (host names, dotted
 // config keys) split into separate words at boundaries.
 [[nodiscard]] bool is_token_char(char c) noexcept {
   return is_letter(c) || is_digit(c) || c == '_' || c == '-';
+}
+
+[[nodiscard]] bool is_alnum(char c) noexcept { return is_letter(c) || is_digit(c); }
+
+// The provenance-id charset: the token chars PLUS '#', which is what joins a
+// slicer child (`<parent>#<k>`) and an IMP-13 square-off exit (`<parent>#X`) to
+// its parent. Deliberately no '.', '=', '/', ':' or space — those mark a URL,
+// a `key=value` pair or a pasted blob, none of which is an identifier.
+[[nodiscard]] bool is_provenance_id_char(char c) noexcept {
+  return is_token_char(c) || c == '#';
 }
 
 [[nodiscard]] bool is_space(char c) noexcept {
@@ -265,6 +283,60 @@ std::string scrub(std::string_view text) {
   }
 
   return out;
+}
+
+bool is_provenance_id_shape(std::string_view value) noexcept {
+  // (1) BOUNDED. An empty column carries no provenance and a long one is a blob.
+  if (value.empty() || value.size() > kMaxProvenanceIdChars) {
+    return false;
+  }
+
+  // (2) CHARSET, and (3) STRUCTURE in the same pass over the maximal alphanumeric
+  // SEGMENTS — the runs between the '-'/'_'/'#' separators.
+  //
+  // (3) has TWO halves, and BOTH are load-bearing:
+  //   (3a) COUNT: two or more non-empty segments, i.e. a separator standing
+  //        strictly between two alphanumerics. A bare credential pasted whole is
+  //        one unbroken segment and fails here.
+  //   (3b) HOMOGENEITY: every segment must be all-hex (either case), all-digits
+  //        (a subset of all-hex) or all-letters. THIS is what the count alone
+  //        could not do: `[A-Za-z0-9_-]` IS the base64url alphabet, so a URL-safe
+  //        credential carrying a single '-' or '_' between alphanumerics passes
+  //        (3a) and would otherwise be emitted in full. A base64url/JWT run mixes
+  //        digits with non-hex letters inside ONE segment, so it fails here; every
+  //        segment of a minted ref is a hex run (sig8, the five UUID groups), a
+  //        decimal counter (`#3`) or a word (the strategy name, `#X`).
+  std::size_t segments = 0;
+  bool in_segment = false;
+  bool all_letters = false;  // homogeneity flags for the segment being scanned
+  bool all_hex = false;
+  for (const char c : value) {
+    if (!is_provenance_id_char(c)) {
+      return false;  // a '=', '.', '/', ':', space, quote... — not an id.
+    }
+    if (is_alnum(c)) {
+      if (!in_segment) {
+        ++segments;
+        in_segment = true;
+        all_letters = true;
+        all_hex = true;
+      }
+      all_letters = all_letters && is_letter(c);
+      all_hex = all_hex && is_hex_digit(c);
+      if (!all_letters && !all_hex) {
+        return false;  // a heterogeneous segment — credential-shaped, not an id.
+      }
+    } else {
+      in_segment = false;  // a separator closes the current segment
+    }
+  }
+  return segments >= 2;
+}
+
+std::string scrub_provenance_column(std::string_view value) {
+  // FAIL CLOSED: verbatim only for a value that IS an id shape; everything else
+  // takes the ordinary, unchanged scrub path.
+  return is_provenance_id_shape(value) ? std::string(value) : scrub(value);
 }
 
 }  // namespace broker_exec::domain

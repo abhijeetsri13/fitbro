@@ -69,6 +69,9 @@ DailyReport ReportGenerator::daily(const std::vector<AuditEvent>& events) {
         // Per-strategy counts are taken on OrderPlaced ONLY: an order emits many
         // lifecycle events (ack/fill/...), so counting on placement gives one
         // count per order instead of double counting the same order's strategy.
+        // Keyed on the RAW strategy on purpose — redaction of this column happens
+        // at OUTPUT (DailyReport::to_json), so two distinct anomalous names cannot
+        // merge into one row here. Same grouping discipline as reconciliation().
         if (!ev.strategy.empty()) {
           ++report.orders_per_strategy[ev.strategy];
         }
@@ -109,7 +112,14 @@ ErrorReport ReportGenerator::errors(const std::vector<AuditEvent>& events) {
     }
     ErrorReportEntry entry;
     entry.ts = to_iso8601_utc(ev.ts);
-    entry.client_ref = ev.client_ref;
+    // PROVENANCE COLUMN (IMP-15): the client_ref is the whole point of an error
+    // row — it is what joins the row to the store, the log and the intent log —
+    // so a well-formed ref is carried VERBATIM. It used to be copied raw, which
+    // meant a caller who stuffed a credential into the column leaked it into this
+    // persisted report; `scrub_provenance_column` closes that fail-closed without
+    // touching the ids. (The bare-run rule never reached this field, so nothing
+    // that was legible before becomes redacted now.)
+    entry.client_ref = domain::scrub_provenance_column(ev.client_ref);
     // The in-memory `fields` are stored RAW — domain::scrub runs only on the
     // rendered log line in StructuredLogger (Story 4.1), NOT on the in-memory
     // event. So a "message"/fields value can carry a token-shaped secret; the
@@ -191,6 +201,13 @@ ReconciliationReport ReportGenerator::reconciliation(const std::vector<AuditEven
     if (order.final_state.empty()) {
       order.final_state = "open";
     }
+    // PROVENANCE COLUMN (IMP-15), sanitized at OUTPUT ONLY: the grouping above
+    // keys on the RAW ref, so two distinct anomalous refs can never collapse into
+    // one row. A well-formed ref (the normal case) is carried verbatim into both
+    // the row and its discrepancy lines — a reconciliation statement that cannot
+    // name the order it is complaining about is useless to an operator.
+    const std::string safe_ref = domain::scrub_provenance_column(ref);
+    order.client_ref = safe_ref;
     report.intended += order.intended ? 1 : 0;
     report.sent += order.sent ? 1 : 0;
     report.confirmed += order.confirmed ? 1 : 0;
@@ -202,7 +219,7 @@ ReconciliationReport ReportGenerator::reconciliation(const std::vector<AuditEven
     // dangerous possible-UNKNOWN gap. A clean reject/cancel is confirmed, so it
     // is NOT flagged here.
     if (order.intended && !order.confirmed) {
-      report.discrepancies.push_back("client_ref " + ref + ": intended but not confirmed");
+      report.discrepancies.push_back("client_ref " + safe_ref + ": intended but not confirmed");
     }
     // Fill-specific: only an actual FILL changes position and must be reconciled
     // against the broker. An ack/reject/cancel without a fill needs no reconcile,
@@ -210,7 +227,7 @@ ReconciliationReport ReportGenerator::reconciliation(const std::vector<AuditEven
     // reconciled order DOES.
     const bool filled = had_fill.find(ref) != had_fill.end();
     if (filled && !order.reconciled) {
-      report.discrepancies.push_back("client_ref " + ref + ": filled but not reconciled");
+      report.discrepancies.push_back("client_ref " + safe_ref + ": filled but not reconciled");
     }
 
     report.orders.push_back(order);
@@ -227,10 +244,21 @@ std::string DailyReport::to_json() const {
   out["unknown"] = unknown;
   out["realized_pnl_paise"] = realized_pnl_paise;  // int64 paise — never a float.
 
-  // std::map iterates sorted by key, so the rendered object is deterministic.
+  // PROVENANCE COLUMN (IMP-15), sanitized at OUTPUT ONLY — the same shape the
+  // reconciliation report uses, for the same reason. `strategy` is a typed column
+  // that a caller fills, so a persisted report used to emit whatever was in it
+  // (a pasted `access_token=...` went out verbatim AS A JSON KEY). Grouping in
+  // daily() still keys on the RAW strategy, so two distinct anomalous names can
+  // never collapse before they are counted; the sanitize happens here, and two
+  // names that sanitize to the SAME key have their counts SUMMED rather than one
+  // silently overwriting the other (which would under-report placed orders).
+  //
+  // std::map iterates sorted by key and nlohmann's default object is itself
+  // sorted, so the rendered object stays deterministic under this remapping.
   json per_strategy = json::object();
   for (const auto& [strategy, count] : orders_per_strategy) {
-    per_strategy[strategy] = count;
+    const std::string safe = domain::scrub_provenance_column(strategy);
+    per_strategy[safe] = per_strategy.value(safe, 0) + count;
   }
   out["orders_per_strategy"] = std::move(per_strategy);
 
