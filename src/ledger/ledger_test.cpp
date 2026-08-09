@@ -12,6 +12,10 @@
 #include <string_view>
 #include <vector>
 
+// IMP-17: the tests assert the dump-identity claim against the REAL serialiser,
+// so they use nlohmann directly rather than trusting a paraphrase of it.
+#include <nlohmann/json.hpp>
+
 #include "broker_exec/clock/test_clock.hpp"
 #include "broker_exec/domain/redaction.hpp"  // kRedactionMarker, for the IMP-16 assertions
 #include "broker_exec/errors/error.hpp"
@@ -757,4 +761,523 @@ TEST_CASE("IMP-16: the heartbeat can name what it reports on, and still scrubs",
       Ledger::make_heartbeat("net=+50", ts, broker_exec::ledger::ProvenanceContext{});
   CHECK(plain.exposure == plain_ctx.exposure);
   CHECK(plain.to_json() == plain_ctx.to_json());
+}
+
+// ── IMP-17: the stored bytes and the hash preimage are IDENTICAL BY CONSTRUCTION
+//
+// The defect: append() hashed the RAW bytes of the payload, but the line written
+// to disk was serialised through nlohmann with error_handler_t::replace, which
+// rewrites every ill-formed UTF-8 sequence as U+FFFD on the way out. So for a
+// payload carrying an invalid byte (a lone 0x80-0xFF, a truncated multi-byte run)
+// THE LINE ON DISK WAS NOT THE TEXT WE HASHED: load() read back the replaced form,
+// verify_chain() recomputed sha256(prev_hash + STORED payload), the hashes
+// disagreed, and the ledger reported ITSELF broken — a safe-start blocker any
+// untrusted byte could trigger. Denial of audit.
+//
+// The fix normalises to valid UTF-8 EXACTLY ONCE, up front, so the normalised text
+// IS both the preimage and the stored bytes and a later dump() has nothing left to
+// replace. NORMALISE, not REJECT: dropping the append would lose the audit entry.
+
+namespace {
+
+// Ill-formed UTF-8, spelled BYTE-EXACTLY. Every hex escape is followed by a SPACE
+// and never by a hex digit, because a C++ hex escape is greedy ("\xE2" + 'f' would
+// be read as one escape, not two characters).
+constexpr std::string_view kLoneContinuation = "lone \x80 byte";      // bare 0x80
+constexpr std::string_view kInvalidLead = "invalid \xFF byte";        // 0xFF, never a lead
+constexpr std::string_view kTruncatedRun = "truncated \xE2\x82 run";  // 2 of a 3-byte run
+
+// The canonical form of each: ONE U+FFFD (EF BF BD) per MAXIMAL ill-formed
+// subpart. Written out literally so these tests pin the exact replacement
+// semantics rather than merely "something was replaced" — note the truncated
+// two-byte run is ONE subpart and yields ONE replacement, not two.
+constexpr std::string_view kLoneContinuationCanonical = "lone \xEF\xBF\xBD byte";
+constexpr std::string_view kInvalidLeadCanonical = "invalid \xEF\xBF\xBD byte";
+constexpr std::string_view kTruncatedRunCanonical = "truncated \xEF\xBF\xBD run";
+
+// U+FFFD REPLACEMENT CHARACTER as the three bytes it actually occupies.
+constexpr std::string_view kReplacementChar = "\xEF\xBF\xBD";
+
+// VALID multi-byte UTF-8: U+20B9 INDIAN RUPEE SIGN (E2 82 B9). Must survive
+// normalisation byte-identically — it is well-formed, and normalisation touches
+// ill-formed sequences ONLY.
+constexpr std::string_view kRupeePayload = "net exposure \xE2\x82\xB9 125000";
+
+// sha256("payload-alpha") — the genesis hash of the oldest payload in this suite
+// (prev_hash is "" at seq 0). Pinned as a LITERAL so that if normalisation ever
+// touched a well-formed byte, this fails loudly instead of silently invalidating
+// every ledger ever written.
+constexpr std::string_view kGenesisAlphaHash =
+    "3d443e312f8216a5473df30a199b4b4814c077b5bc4fa7091d6c3f997e17c210";
+
+// The `payload` field of every line ON DISK, so a test can assert that the bytes
+// in the file are the bytes we hashed.
+[[nodiscard]] std::vector<std::string> stored_payloads(const fs::path& p) {
+  std::vector<std::string> out;
+  std::ifstream in(p, std::ios::binary);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty()) {
+      continue;
+    }
+    const nlohmann::json parsed = nlohmann::json::parse(line, nullptr, false);
+    REQUIRE_FALSE(parsed.is_discarded());
+    out.push_back(parsed.at("payload").get<std::string>());
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("IMP-17: an ill-formed UTF-8 payload appends, reloads and STILL VERIFIES",
+          "[ledger][utf8]") {
+  const TempDir dir("utf8_roundtrip");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+
+  std::string head;
+  {
+    Ledger ledger(clock, file);
+    // (a) IT APPENDS. An untrusted byte is normalised, never a rejected record.
+    const auto a = ledger.append(std::string(kLoneContinuation));
+    const auto b = ledger.append(std::string(kInvalidLead));
+    const auto c = ledger.append(std::string(kTruncatedRun));
+    REQUIRE(a.has_value());
+    REQUIRE(b.has_value());
+    REQUIRE(c.has_value());
+
+    // The stored payload is the canonical form, byte-exactly.
+    CHECK(a.value().payload == kLoneContinuationCanonical);
+    CHECK(b.value().payload == kInvalidLeadCanonical);
+    CHECK(c.value().payload == kTruncatedRunCanonical);
+
+    CHECK(ledger.verify_chain().has_value());
+    head = ledger.head_hash();
+  }
+
+  // (b) IT SURVIVES A WRITE/RELOAD CYCLE...
+  Ledger fresh(clock, file);
+  REQUIRE(fresh.load().has_value());
+  CHECK(fresh.size() == 3);
+  CHECK(fresh.head_hash() == head);
+  // (c) ...AND PASSES verify_chain. THIS IS WHAT FAILED BEFORE IMP-17: the line on
+  // disk had been silently rewritten, so the recomputed hash could not match.
+  CHECK(fresh.verify_chain().has_value());
+
+  // THE INVARIANT, ASSERTED DIRECTLY AGAINST THE FILE: the bytes on disk ARE the
+  // bytes that went into the hash.
+  const std::vector<std::string> on_disk = stored_payloads(file);
+  REQUIRE(on_disk.size() == 3);
+  CHECK(on_disk[0] == kLoneContinuationCanonical);
+  CHECK(on_disk[1] == kInvalidLeadCanonical);
+  CHECK(on_disk[2] == kTruncatedRunCanonical);
+}
+
+TEST_CASE("IMP-17: valid UTF-8 is byte-identical, so NO existing chain hash moves",
+          "[ledger][utf8]") {
+  const TempDir dir("utf8_identity");
+  const TestClock clock;
+  Ledger ledger(clock, dir.path / "ledger.jsonl");
+
+  // THE BACKWARD-COMPATIBILITY GUARD: an ordinary ASCII payload hashes to exactly
+  // what it hashed before IMP-17 existed.
+  const auto genesis = ledger.append("payload-alpha");
+  REQUIRE(genesis.has_value());
+  CHECK(genesis.value().payload == "payload-alpha");
+  CHECK(genesis.value().hash == kGenesisAlphaHash);
+
+  // ...and so does WELL-FORMED MULTI-BYTE text (U+20B9 RUPEE SIGN): normalisation
+  // rewrites ill-formed sequences only, so not one byte of it changes.
+  const auto rupee = ledger.append(std::string(kRupeePayload));
+  REQUIRE(rupee.has_value());
+  CHECK(rupee.value().payload == kRupeePayload);
+  CHECK(rupee.value().payload.find(kReplacementChar) == std::string::npos);
+  CHECK(ledger.verify_chain().has_value());
+}
+
+TEST_CASE("IMP-17: normalisation is idempotent (normalise ONCE, up front)", "[ledger][utf8]") {
+  const TempDir dir("utf8_idempotent");
+  const TestClock clock;
+  Ledger raw(clock, dir.path / "raw.jsonl");
+  Ledger pre(clock, dir.path / "pre.jsonl");
+
+  // Appending the ILL-FORMED text and appending its ALREADY-CANONICAL form must
+  // yield the same stored bytes AND the same hash — a second pass changes nothing.
+  const auto a = raw.append(std::string(kTruncatedRun));
+  const auto b = pre.append(std::string(kTruncatedRunCanonical));
+  REQUIRE(a.has_value());
+  REQUIRE(b.has_value());
+  CHECK(a.value().payload == b.value().payload);
+  CHECK(a.value().hash == b.value().hash);
+}
+
+TEST_CASE("IMP-17: a dump of the canonical payload is a NO-OP (the identity the fix rests on)",
+          "[ledger][utf8]") {
+  const TempDir dir("utf8_dump_identity");
+  const TestClock clock;
+  Ledger ledger(clock, dir.path / "ledger.jsonl");
+
+  // THE CLAIM, TESTED AGAINST THE REAL SERIALISER: after normalisation, nlohmann's
+  // error_handler_t::replace — the very transform that used to rewrite the payload
+  // behind the hash's back — has nothing left to replace, so dump()->parse()
+  // returns the identical bytes. That is what makes "stored == preimage" hold.
+  for (const std::string_view payload : {kLoneContinuation, kInvalidLead, kTruncatedRun,
+                                         kRupeePayload, std::string_view("plain ascii payload")}) {
+    const auto entry = ledger.append(std::string(payload));
+    REQUIRE(entry.has_value());
+
+    const nlohmann::json as_json = entry.value().payload;
+    const std::string dumped =
+        as_json.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+    const nlohmann::json back = nlohmann::json::parse(dumped, nullptr, false);
+    REQUIRE_FALSE(back.is_discarded());
+    CHECK(back.get<std::string>() == entry.value().payload);
+  }
+  CHECK(ledger.verify_chain().has_value());
+}
+
+TEST_CASE("IMP-17: a genuine edit is STILL detected, and the triage hint never excuses one",
+          "[ledger][utf8][tamper]") {
+  const TempDir dir("utf8_tamper");
+  const TestClock clock;
+
+  // (1) A well-formed payload edited on disk: BROKEN, and NO hint — nothing is
+  //     said that could soften a real edit.
+  {
+    const fs::path file = dir.path / "plain.jsonl";
+    {
+      Ledger ledger(clock, file);
+      REQUIRE(ledger.append("payload-alpha").has_value());
+      REQUIRE(ledger.append("payload-bravo").has_value());
+    }
+    std::string content = read_file(file);
+    const auto pos = content.find("bravo");
+    REQUIRE(pos != std::string::npos);
+    content.replace(pos, 5, "bravX");
+    write_file(file, content);
+
+    Ledger fresh(clock, file);
+    REQUIRE(fresh.load().has_value());
+    const auto verified = fresh.verify_chain();
+    REQUIRE_FALSE(verified.has_value());
+    CHECK(verified.error().category == ErrorCategory::Validation);
+    CHECK(verified.error().message.find("seq 1") != std::string::npos);
+    CHECK(verified.error().message.find("U+FFFD") == std::string::npos);
+  }
+
+  // (2) A payload that DOES contain U+FFFD, edited on disk: ALSO BROKEN. The hint
+  //     fires (this is the legacy signature: payload hash alone fails, link and seq
+  //     intact) but it is WORDING ONLY — same fail, same category, same "seq <n>",
+  //     and the text says out loud that it is not an exoneration.
+  {
+    const fs::path file = dir.path / "replaced.jsonl";
+    {
+      Ledger ledger(clock, file);
+      REQUIRE(ledger.append("payload-alpha").has_value());
+      REQUIRE(ledger.append(std::string(kLoneContinuation)).has_value());
+      REQUIRE(ledger.append("payload-charlie").has_value());
+    }
+    std::string content = read_file(file);
+    const auto pos = content.find("lone");
+    REQUIRE(pos != std::string::npos);
+    content.replace(pos, 4, "lonX");
+    write_file(file, content);
+
+    Ledger fresh(clock, file);
+    REQUIRE(fresh.load().has_value());
+    const auto verified = fresh.verify_chain();
+    REQUIRE_FALSE(verified.has_value());  // tamper detection is NOT weakened
+    CHECK(verified.error().category == ErrorCategory::Validation);
+    CHECK(verified.error().message.find("seq 1") != std::string::npos);
+    CHECK(verified.error().message.find("U+FFFD") != std::string::npos);
+    CHECK(verified.error().message.find("NOT an exoneration") != std::string::npos);
+
+    // IMP-17/C3: THE HINT REPORTS OBSERVED FACTS AND ASSERTS NO PROVENANCE. It
+    // used to tell the operator the entry "MAY PREDATE the IMP-17 fix" — an
+    // unverifiable claim about a record we cannot date, and one an ATTACKER
+    // triggers at will by including the bytes EF BF BD in any payload-only edit
+    // (which is exactly what this arm of the test just did). Interpretation
+    // belongs to the runbook; the message states only what was measured.
+    CHECK(verified.error().message.find("PREDATE") == std::string::npos);
+    CHECK(verified.error().message.find("predate") == std::string::npos);
+    CHECK(verified.error().message.find("observed:") != std::string::npos);
+    CHECK(verified.error().message.find("link and seq intact") != std::string::npos);
+  }
+}
+
+TEST_CASE("IMP-17: the provenance overload and make_heartbeat canonicalise too",
+          "[ledger][utf8][provenance]") {
+  const TempDir dir("utf8_provenance");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+
+  {
+    Ledger ledger(clock, file);
+    const auto entry = ledger.append(std::string(kTruncatedRun), order_ctx());
+    REQUIRE(entry.has_value());
+    // Canonical body + the unchanged IMP-16 block; the minted ref still survives.
+    CHECK(entry.value().payload ==
+          std::string(kTruncatedRunCanonical) +
+              " [client_ref=alpha-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab"
+              " broker_order_id=240627000123456 strategy=alpha]");
+    CHECK(ledger.verify_chain().has_value());
+  }
+  Ledger fresh(clock, file);
+  REQUIRE(fresh.load().has_value());
+  CHECK(fresh.size() == 1);
+  CHECK(fresh.verify_chain().has_value());
+  CHECK(read_file(file).find(kMintedRef) != std::string::npos);
+
+  // make_heartbeat runs the SAME normalisation in the SAME position, so the struct
+  // in memory and the JSON the operator reads can never disagree.
+  const auto ts = clock.now_wall();
+  const PositionHeartbeat hb = Ledger::make_heartbeat(kTruncatedRun, ts, order_ctx());
+  CHECK(hb.exposure.starts_with(kTruncatedRunCanonical));
+  CHECK(hb.exposure.find(kMintedRef) != std::string::npos);
+  const nlohmann::json parsed = nlohmann::json::parse(hb.to_json(), nullptr, false);
+  REQUIRE_FALSE(parsed.is_discarded());
+  CHECK(parsed.at("exposure").get<std::string>() == hb.exposure);
+
+  // The 2-argument overload canonicalises identically.
+  const PositionHeartbeat plain = Ledger::make_heartbeat(kLoneContinuation, ts);
+  CHECK(plain.exposure == kLoneContinuationCanonical);
+}
+
+TEST_CASE("IMP-17/C2: PositionHeartbeat::to_json normalises BOTH hand-fillable fields",
+          "[ledger][utf8]") {
+  // `ts` and `exposure` are the same KIND of field — two std::strings in a plain
+  // aggregate a caller or a test can fill by hand — and to_json() is the operator's
+  // view of both. Canonicalising one and not the other was an asymmetry with no
+  // justification: neither field is hashed or signed, so normalising is free, and
+  // "what we render is what we hold" must hold for the WHOLE struct or it is not a
+  // rule at all. (Contrast EodReport::head_hash, which is SIGNED and therefore must
+  // NOT be transformed on one side — see the B2 test.)
+  PositionHeartbeat hb;
+  hb.ts = std::string("2026-08-09T00:00:0\x80") + "Z";  // ill-formed, hand-filled
+  hb.exposure = std::string(kInvalidLead);
+
+  const std::string rendered = hb.to_json();
+  const nlohmann::json parsed = nlohmann::json::parse(rendered, nullptr, false);
+  REQUIRE_FALSE(parsed.is_discarded());
+  CHECK(parsed.at("ts").get<std::string>() == std::string("2026-08-09T00:00:0") +
+                                                  std::string(kReplacementChar) + "Z");
+  CHECK(parsed.at("exposure").get<std::string>() == kInvalidLeadCanonical);
+
+  // A heartbeat built the normal way is untouched by either call (both are no-ops
+  // on ASCII / already-canonical text), so no existing operator output changes.
+  const TestClock clock;
+  const PositionHeartbeat normal = Ledger::make_heartbeat("flat", clock.now_wall());
+  const nlohmann::json normal_json = nlohmann::json::parse(normal.to_json(), nullptr, false);
+  REQUIRE_FALSE(normal_json.is_discarded());
+  CHECK(normal_json.at("ts").get<std::string>() == normal.ts);
+  CHECK(normal_json.at("exposure").get<std::string>() == "flat");
+}
+
+TEST_CASE("IMP-17: scrub still runs FIRST, and normalisation changes nothing it redacts",
+          "[ledger][utf8][redaction]") {
+  const TempDir dir("utf8_scrub");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+  Ledger ledger(clock, file);
+
+  // An ill-formed byte sitting NEXT TO a secret: the secret is still destroyed
+  // (scrub runs on the raw text, exactly where it always ran) and the ill-formed
+  // byte is still normalised (canonicalisation runs after, on the scrubbed text).
+  const auto entry = ledger.append(std::string("\x80 order token=") + std::string(kToken));
+  REQUIRE(entry.has_value());
+  CHECK(entry.value().payload == std::string(kReplacementChar) + " order token=" +
+                                     std::string(broker_exec::domain::kRedactionMarker));
+  CHECK(entry.value().payload.find(kToken) == std::string::npos);
+  CHECK(read_file(file).find(kToken) == std::string::npos);
+  CHECK(ledger.verify_chain().has_value());
+
+  // THE TOKEN-SHAPED RULES ARE ORDER-INVARIANT, PINNED. Normalisation preserves
+  // the ASCII subsequence exactly (domain/utf8.hpp P4) and never deletes a run to
+  // nothing (P5), so it can neither JOIN two of scrub()'s ASCII token runs nor
+  // SPLIT one; scrub() tokenises identically on either side of it, and `key=value`
+  // plus the >=20-char high-entropy rule fire on exactly the same runs. Feeding
+  // the ALREADY-CANONICAL text (i.e. the normalise-then-scrub order) therefore
+  // gives byte-identical output HERE.
+  //
+  //   !! THIS IS NOT A GENERAL ORDER-EQUIVALENCE, AND IT MUST NOT BE READ AS ONE.
+  //   !! See the counterexample test immediately below, which is the REASON the
+  //   !! order is fixed. This case is non-discriminating: it would pass under
+  //   !! either order, so on its own it certifies nothing about the ordering.
+  Ledger swapped(clock, dir.path / "swapped.jsonl");
+  const auto other =
+      swapped.append(std::string(kReplacementChar) + " order token=" + std::string(kToken));
+  REQUIRE(other.has_value());
+  CHECK(other.value().payload == entry.value().payload);
+}
+
+TEST_CASE("IMP-17: the scrub/normalise ORDER IS OBSERVABLE — the counterexample that fixes it",
+          "[ledger][utf8][redaction]") {
+  // ── WHY THIS TEST EXISTS ───────────────────────────────────────────────────
+  //
+  // append()'s comment used to claim that scrub-then-canonicalise and
+  // canonicalise-then-scrub "redact identically". THAT CLAIM IS FALSE, and the
+  // green test that accompanied it certified the claim from a single
+  // non-discriminating example. Left standing, it would have licensed a future
+  // refactor to hoist the canonicalisation above the scrub — silently changing
+  // what gets redacted from an audit record.
+  //
+  // WHY IT IS FALSE: canonical_text is NOT length-preserving. One ill-formed byte
+  // becomes THREE (U+FFFD), and domain::auth_context_before() looks back a FIXED
+  // 10-BYTE window for an auth keyword — so normalising first MOVES the keyword
+  // relative to that byte window and flips the bare MPIN/TOTP digit-run rule.
+  //
+  // The library ships scrub-FIRST (scrub sees the RAW bytes, exactly where it has
+  // always run) and canonicalise-LAST (so the preimage==stored invariant holds for
+  // the FINAL string). These two cases pin that decision as a DECISION.
+  const TempDir dir("utf8_order");
+  const TestClock clock;
+
+  // ── (1) THE SHIPPED ORDER REDACTS; THE OTHER ORDER WOULD LEAK ──────────────
+  //
+  // "mpin " (5) + two bad bytes (2) + " " (1) puts the '1' at byte offset 8, so
+  // the 10-byte lookbehind is s[0..7] == "mpin \x80\x80 " and still reaches
+  // "mpin" — the PIN is destroyed. Normalise first and the two U+FFFDs occupy SIX
+  // bytes: the '1' moves to offset 12, the window becomes s[2..11], and "mpin"
+  // has fallen out of it entirely.
+  constexpr std::string_view kMpinRaw = "mpin \x80\x80 1234";
+  constexpr std::string_view kMpinCanonical = "mpin \xEF\xBF\xBD\xEF\xBF\xBD 1234";
+
+  Ledger shipped(clock, dir.path / "shipped.jsonl");
+  const auto shipped_entry = shipped.append(std::string(kMpinRaw));
+  REQUIRE(shipped_entry.has_value());
+  CHECK(shipped_entry.value().payload.find(broker_exec::domain::kRedactionMarker) !=
+        std::string::npos);
+  CHECK(shipped_entry.value().payload.find("1234") == std::string::npos);  // the PIN is GONE
+
+  // Appending the ALREADY-CANONICAL text is exactly the canonicalise-then-scrub
+  // order (canonical_text is idempotent, so the second pass is a no-op).
+  Ledger hoisted(clock, dir.path / "hoisted.jsonl");
+  const auto hoisted_entry = hoisted.append(std::string(kMpinCanonical));
+  REQUIRE(hoisted_entry.has_value());
+  CHECK(hoisted_entry.value().payload.find(broker_exec::domain::kRedactionMarker) ==
+        std::string::npos);
+  CHECK(hoisted_entry.value().payload.find("1234") != std::string::npos);  // ...it LEAKS
+
+  // The two orders therefore produce DIFFERENT ledger payloads. This single
+  // inequality is the whole point of the test.
+  CHECK(shipped_entry.value().payload != hoisted_entry.value().payload);
+
+  // ── (2) AND THE CONVERSE, so nobody "fixes" this by hoisting the call ──────
+  //
+  // Do NOT read (1) as "scrub-first always redacts more". Here "totp" is embedded
+  // inside a longer word, so auth_context_before's whole-word check rejects it on
+  // the RAW bytes and the 8-digit run SURVIVES the shipped order; after
+  // normalisation the expansion separates the keyword and it matches. The order is
+  // simply OBSERVABLE in both directions, which is precisely why it must be FIXED
+  // and stated rather than assumed away.
+  constexpr std::string_view kEmbeddedRaw = "passwordtokentotp\xC0\x80" "12345678";
+  constexpr std::string_view kEmbeddedCanonical =
+      "passwordtokentotp\xEF\xBF\xBD\xEF\xBF\xBD" "12345678";
+
+  Ledger shipped2(clock, dir.path / "shipped2.jsonl");
+  const auto shipped2_entry = shipped2.append(std::string(kEmbeddedRaw));
+  REQUIRE(shipped2_entry.has_value());
+  CHECK(shipped2_entry.value().payload.find("12345678") != std::string::npos);
+
+  Ledger hoisted2(clock, dir.path / "hoisted2.jsonl");
+  const auto hoisted2_entry = hoisted2.append(std::string(kEmbeddedCanonical));
+  REQUIRE(hoisted2_entry.has_value());
+  CHECK(hoisted2_entry.value().payload.find("12345678") == std::string::npos);
+  CHECK(hoisted2_entry.value().payload.find(broker_exec::domain::kRedactionMarker) !=
+        std::string::npos);
+  CHECK(shipped2_entry.value().payload != hoisted2_entry.value().payload);
+
+  // Both chains still verify — the ordering question is about REDACTION, never
+  // about integrity, and the IMP-17 invariant holds under either order.
+  CHECK(shipped.verify_chain().has_value());
+  CHECK(hoisted.verify_chain().has_value());
+  CHECK(shipped2.verify_chain().has_value());
+  CHECK(hoisted2.verify_chain().has_value());
+}
+
+TEST_CASE("IMP-17/C1: a RAW ill-formed byte in a stored LINE is REJECTED by load()",
+          "[ledger][utf8][load]") {
+  // THE GAP THIS CLOSES. The canonical_text choke point covers text this process
+  // AUTHORS. Text PARSED BACK out of the file relies on a DIFFERENT and
+  // THIRD-PARTY invariant: nlohmann's parser rejects a JSON string containing a
+  // raw ill-formed UTF-8 byte. Nothing in this repo enforces that, so a dependency
+  // bump could silently relax it and let a hand-planted raw byte into an in-memory
+  // payload — where it would be hashed raw, re-stored replaced, and reintroduce
+  // the exact IMP-17 divergence from the read side. Pin it.
+  const TempDir dir("utf8_load_reject");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+  {
+    Ledger ledger(clock, file);
+    REQUIRE(ledger.append("payload-alpha").has_value());
+    REQUIRE(ledger.append("payload-bravo").has_value());
+  }
+
+  // Plant a raw 0x80 INSIDE the first line's payload string. It is NOT the last
+  // content line, so the torn-write leniency does not apply and this must be FATAL.
+  std::string content = read_file(file);
+  const auto pos = content.find("alpha");
+  REQUIRE(pos != std::string::npos);
+  content.replace(pos, 5, "alph\x80");
+  write_file(file, content);
+
+  Ledger fresh(clock, file);
+  const auto loaded = fresh.load();
+  REQUIRE_FALSE(loaded.has_value());  // NOT ok(), and NOT a silently-skipped line
+  CHECK(loaded.error().category == ErrorCategory::Validation);
+  CHECK(loaded.error().message.find("malformed entry on line 1") != std::string::npos);
+
+  // Belt and braces: assert the third-party behaviour we are depending on,
+  // directly, so a dependency bump that changed it fails HERE with an obvious
+  // message rather than in the ledger's error text.
+  const nlohmann::json direct = nlohmann::json::parse(R"({"payload":"alph)" "\x80" R"("})",
+                                                      nullptr, false);
+  CHECK(direct.is_discarded());
+}
+
+TEST_CASE("IMP-17/B2: the checkpoint's head_hash IS the bytes sign_head signed",
+          "[ledger][utf8][checkpoint]") {
+  // ── THE ASYMMETRY THIS PINS SHUT ──────────────────────────────────────────
+  //
+  // sign_head() signs the RAW head_hash() string, eod_report() stores that same
+  // raw value, and verify_against_checkpoint() compares the PERSISTED head against
+  // a RAW in-memory entry hash. EodReport::to_json() briefly ran head_hash through
+  // canonical_text on the way out — a transform on ONE side of a signature, in the
+  // one place that is the anti-tamper ANCHOR. That is the IMP-17 defect itself
+  // (hash/sign one string, store another), even though it was unreachable while
+  // head_hash is ASCII hex. The transform is gone; this test is what keeps it gone.
+  const TempDir dir("checkpoint_head_identity");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+  Ledger ledger(clock, file);
+
+  const auto kp = Ledger::generate_keypair();
+  REQUIRE(kp.has_value());
+  append_all(ledger, {"p0", "p1", "p2"});
+
+  // ONE value, produced once, flowing into the signature, the struct and the JSON
+  // with NO transform anywhere along the way.
+  const std::string head = ledger.head_hash();
+  REQUIRE(head.size() == 64);
+  const auto report = ledger.eod_report(kp.value().private_key, kp.value().public_key);
+  REQUIRE(report.has_value());
+  CHECK(report.value().head_hash == head);
+
+  const nlohmann::json bundle = nlohmann::json::parse(report.value().to_json(), nullptr, false);
+  REQUIRE_FALSE(bundle.is_discarded());
+  // THE ASSERTION: the persisted bytes are byte-for-byte the signed bytes.
+  CHECK(bundle.at("head_hash").get<std::string>() == head);
+  // ...and that is exactly what the signature was taken over.
+  CHECK(Ledger::verify_head(bundle.at("head_hash").get<std::string>(), report.value().signature,
+                            kp.value().public_key)
+            .has_value());
+
+  // The same identity through the file the checkpoint actually publishes, and the
+  // full round-trip still verifies.
+  REQUIRE(ledger.write_checkpoint(kp.value().private_key, kp.value().public_key).has_value());
+  const nlohmann::json on_disk =
+      nlohmann::json::parse(read_file(file.string() + ".checkpoint"), nullptr, false);
+  REQUIRE_FALSE(on_disk.is_discarded());
+  CHECK(on_disk.at("head_hash").get<std::string>() == head);
+  CHECK(ledger.verify_against_checkpoint(kp.value().public_key).has_value());
 }

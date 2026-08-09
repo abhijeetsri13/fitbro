@@ -24,6 +24,25 @@
 // allowlist, so the chain can be joined to the log without weakening the payload's
 // redaction by one byte. See ProvenanceContext and append(payload, provenance).
 //
+// UTF-8 CANONICAL BY CONSTRUCTION (IMP-17): the payload is normalised to valid
+// UTF-8 (ill-formed sequences -> U+FFFD, one per maximal subpart) EXACTLY ONCE, at
+// a single choke point, BEFORE it becomes either the stored text or the hash
+// preimage — so the two are the SAME BYTES and cannot diverge. This closes a
+// denial-of-audit: the JSON writer replaces ill-formed sequences on the way out,
+// so text that was hashed raw and stored replaced made verify_chain() report the
+// ledger BROKEN — a safe-start blocker any untrusted byte could trigger. NORMALISE,
+// NOT REJECT: refusing the append would lose the audit entry entirely, which is
+// worse than recording a sanitised one. Valid UTF-8 (ASCII or multi-byte) passes
+// through byte-identical, so NO existing chain's hash moves.
+//
+// The normaliser itself is NOT owned by this module: it is
+// broker_exec::domain::canonical_text (include/broker_exec/domain/utf8.hpp),
+// SHARED with intentlog::IntentLog, which has the identical preimage/stored-bytes
+// duality over its own SHA-256 chain. There is exactly ONE implementation in the
+// tree on purpose — two copies of a UTF-8 decoder would eventually disagree about
+// what a "maximal subpart" is, and the two logs would then canonicalise the same
+// caller text into different bytes.
+//
 // Crypto is OpenSSL only (Story 2.2 dependency): SHA-256 and Ed25519 both via
 // the EVP interface, with RAII on every EVP context/PKEY so nothing leaks across
 // the no-throw boundary. No libsodium, no new Conan dependency.
@@ -47,8 +66,9 @@
 namespace broker_exec::ledger {
 
 // One link in the hash chain. `hash == sha256_hex(prev_hash + payload)`; the
-// genesis entry has `prev_hash == ""`. `payload` is always the SCRUBBED payload
-// (the hash is computed over the scrubbed text, so the chain and the file agree).
+// genesis entry has `prev_hash == ""`. `payload` is always the SCRUBBED and
+// UTF-8-CANONICAL payload — the hash is computed over exactly the bytes that are
+// stored, so the chain, the in-memory entry and the file all agree by construction.
 struct LedgerEntry {
   std::int64_t seq = 0;
   std::string prev_hash;
@@ -73,6 +93,15 @@ struct EodReport {
 
   // Compact, non-throwing JSON: {entry_count, head_hash, signature(hex),
   // public_key(hex)}. Binary fields are rendered as lowercase hex.
+  //
+  // `head_hash` IS EMITTED VERBATIM — no normalisation, deliberately (IMP-17).
+  // This bundle is what write_checkpoint() persists as the SIGNED high-water mark,
+  // and sign_head() signs the RAW head string; applying a text transform on only
+  // one of the two sides would make the stored bytes differ from the signed bytes,
+  // which is precisely the IMP-17 defect in the one place that is the anti-tamper
+  // anchor. One value, produced once by Ledger::head_hash(), flows unchanged into
+  // the signature, this struct and this JSON. DO NOT "harden" this by
+  // canonicalising here without also canonicalising where the head is signed.
   [[nodiscard]] std::string to_json() const;
 };
 
@@ -102,9 +131,13 @@ struct ProvenanceContext {
 // summary is scrubbed at construction so no secret reaches the operator sink.
 struct PositionHeartbeat {
   std::string ts;        // ISO-8601 UTC wall time
-  std::string exposure;  // scrubbed exposure/position summary
+  std::string exposure;  // scrubbed, UTF-8-canonical exposure/position summary
 
-  // Compact, non-throwing JSON: {ts, exposure}.
+  // Compact, non-throwing JSON: {ts, exposure}. BOTH fields are normalised on the
+  // way out (IMP-17): neither is signed or hashed, so there is no second producer
+  // they must agree with, and this struct is a plain aggregate a caller can fill by
+  // hand — so every hand-fillable field is treated the same way rather than one
+  // being trusted and its neighbour not. A no-op for anything make_heartbeat built.
   [[nodiscard]] std::string to_json() const;
 };
 
@@ -114,9 +147,17 @@ class Ledger {
   // ledger file. The Ledger borrows the clock — it must outlive the Ledger.
   Ledger(const ports::ClockPort& clock, std::filesystem::path path) noexcept;
 
-  // Scrub `payload`, link it onto the chain (seq, prev_hash, hash), append one
-  // JSON line to the file, and fsync via platform::durable_sync. Returns the new
-  // entry (carrying the SCRUBBED payload). The hash is over the scrubbed payload.
+  // Scrub `payload`, normalise it to valid UTF-8, link it onto the chain (seq,
+  // prev_hash, hash), append one JSON line to the file, and fsync via
+  // platform::durable_sync. Returns the new entry, carrying the SCRUBBED and
+  // CANONICAL payload — which is, by construction, both the persisted text and the
+  // hash preimage (IMP-17).
+  //
+  // NEVER REJECTS ON ENCODING. An ill-formed UTF-8 byte does not fail the append:
+  // the sequence is replaced by U+FFFD (one per maximal subpart, the same rule the
+  // JSON writer uses) and the entry is recorded. Losing an audit entry is strictly
+  // worse than recording a sanitised one. Valid UTF-8 is untouched, so a payload
+  // that was already well-formed hashes exactly as it did before IMP-17.
   [[nodiscard]] Result<LedgerEntry> append(std::string payload);
 
   // Same as append(payload), plus TYPED PROVENANCE (IMP-16). `payload` is scrubbed
@@ -140,6 +181,21 @@ class Ledger {
   // Walk head->tail: recompute each hash from prev_hash+payload, confirm each
   // entry links to the prior entry's hash, and confirm seq is contiguous from 0.
   // On the FIRST violation, fail (Validation) naming the bad seq. ok() if intact.
+  //
+  // STRICT, AND STAYS STRICT (IMP-17). Entries written before the UTF-8 fix that
+  // carried an ill-formed byte were hashed over bytes that no longer exist
+  // anywhere, so they CANNOT be repaired and MUST keep reporting broken; there is
+  // no tolerance, allowance or "legacy mode" here, and adding one would be a hole a
+  // real edit could walk through. The only concession is WORDING: when the payload
+  // hash alone fails, the link and seq are intact, AND the stored payload contains
+  // a U+FFFD, the Error message additionally reports THOSE THREE OBSERVED FACTS —
+  // and nothing else. It deliberately offers NO hypothesis about WHY (in
+  // particular, not that the entry predates the fix): that is unverifiable from
+  // here, and any payload-only edit can trigger the same signature just by
+  // including the bytes EF BF BD, so a guess at provenance would be a sentence an
+  // attacker gets to choose. Interpretation belongs to the runbook, which has the
+  // deployment timeline. The verdict, the category and the "seq <n>" text are
+  // identical either way.
   [[nodiscard]] Result<ports::Ok> verify_chain() const;
 
   // Clear in-memory state and rebuild it from the file (one JSON line per
@@ -148,6 +204,15 @@ class Ledger {
   // sequence is the caller's: load() -> verify_chain() (internal consistency) ->
   // verify_against_checkpoint() (truncation/rollback vs the retained signed
   // high-water mark). load() deliberately does NOT call either, per this contract.
+  //
+  // WHERE THE UTF-8 GUARANTEE COMES FROM ON THIS PATH (IMP-17, stated because it
+  // is NOT the same guarantee as append()'s): the canonical_text choke point
+  // covers text this process AUTHORS. For text PARSED back out of the file, the
+  // invariant is instead nlohmann's — its parser REJECTS a JSON string containing
+  // a raw ill-formed UTF-8 byte, so such a line is is_discarded() and load() fails
+  // it as malformed (or, if it is the last content line, skips it as a torn
+  // write). That is a THIRD-PARTY invariant a dependency bump could silently
+  // change, so it is pinned by a test in ledger_test.cpp rather than assumed.
   [[nodiscard]] Result<ports::Ok> load();
 
   // The chain head hash (last entry's hash), or "" when the ledger is empty.
@@ -189,7 +254,11 @@ class Ledger {
   [[nodiscard]] Result<EodReport> eod_report(const std::vector<unsigned char>& private_key,
                                              const std::vector<unsigned char>& public_key) const;
 
-  // Build a heartbeat: scrub the exposure summary, stamp `ts` as ISO-8601 UTC.
+  // Build a heartbeat: scrub the exposure summary, normalise it to valid UTF-8
+  // (IMP-17, the same choke point and the same last-position as append()), and
+  // stamp `ts` as ISO-8601 UTC. `exposure` therefore always equals the text
+  // to_json() emits, and a caller that forwards it into append() cannot smuggle an
+  // ill-formed byte into the chain.
   [[nodiscard]] static PositionHeartbeat make_heartbeat(std::string_view exposure_summary,
                                                         std::chrono::system_clock::time_point ts);
 

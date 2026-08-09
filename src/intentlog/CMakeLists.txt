@@ -24,6 +24,8 @@ target_link_libraries(broker_exec_intentlog
   PUBLIC
     broker_exec_ports
   PRIVATE
+    broker_exec_domain          # IMP-17: domain::canonical_text — the ONE UTF-8
+                                # canonicalisation, shared with broker_exec_ledger
     broker_exec_platform
     nlohmann_json::nlohmann_json
     broker_exec_warnings
@@ -38,6 +40,7 @@ if(BROKER_EXEC_BUILD_TESTS)
     PRIVATE
       broker_exec_intentlog
       broker_exec_clock          # TestClock for deterministic timestamps
+      nlohmann_json::nlohmann_json  # IMP-17: parse the real lines back off disk
       Catch2::Catch2WithMain
       broker_exec_warnings
       broker_exec_sanitizers)

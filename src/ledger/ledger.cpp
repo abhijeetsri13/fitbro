@@ -3,6 +3,7 @@
 #include <openssl/evp.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -15,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "broker_exec/domain/redaction.hpp"
+#include "broker_exec/domain/utf8.hpp"
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/platform/durable.hpp"
 
@@ -177,6 +179,34 @@ class Pkey {
   return value.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
+// ── IMP-17: THE ONE UTF-8 CANONICALISATION CHOKE POINT ───────────────────────
+//
+// EVERY string that becomes a ledger payload — or any other text field we render
+// through dump_compact — goes through domain::canonical_text() EXACTLY ONCE, UP
+// FRONT, and the value it returns IS, BY DEFINITION, both the hash preimage and
+// the bytes that reach the file. There is no second transform between the two, so
+// they cannot diverge. If you add a write path, it MUST call it; if you are
+// tempted to hash one string and store another, that is the IMP-17 defect.
+//
+// WHY IT IS NEEDED. dump_compact() serialises with error_handler_t::replace,
+// which rewrites every ill-formed UTF-8 sequence as U+FFFD on the way out. Any
+// text NOT canonicalised first is therefore stored in a form that differs from
+// the bytes we hashed, and verify_chain() — which recomputes over the STORED
+// payload — would report the chain BROKEN. Canonicalising first makes the
+// replacement a NO-OP at dump time, which is the entire fix.
+//
+// THE IMPLEMENTATION IS NOT HERE, DELIBERATELY. It was promoted to
+// broker_exec::domain (include/broker_exec/domain/utf8.hpp, src/domain/utf8.cpp)
+// so THE INTENT LOG SHARES IT: intentlog::IntentLog::append has the identical
+// preimage/stored-bytes duality over its own SHA-256 chain, and two copies of a
+// UTF-8 decoder would eventually disagree about what a "maximal subpart" is —
+// at which point the two logs would canonicalise the same caller text into
+// different bytes. ONE definition, two consumers. Read domain/utf8.hpp for the
+// full contract (P1..P5) and for the scrub-ordering theorem cited in append().
+// Every use below is spelled `domain::canonical_text` / `domain::kUtf8Replacement`
+// in full, so `grep -rn canonical_text` shows at a glance that this file DEFINES
+// nothing and only CALLS the shared one.
+
 // Format a wall-clock instant as ISO-8601 UTC ("YYYY-MM-DDTHH:MM:SSZ") purely
 // from std::chrono — NO localtime/strftime, NO `#ifdef`, identical everywhere.
 [[nodiscard]] std::string pad(long long value, std::size_t width) {
@@ -245,42 +275,79 @@ Result<LedgerEntry> Ledger::append(std::string payload, const ProvenanceContext&
   // redaction is not relaxed by one byte.
   //
   // The typed provenance is rendered SEPARATELY (whole-column allowlist) and
-  // appended AFTER the scrub. `safe` is then both the persisted payload and the
-  // hash preimage, exactly as it always was, so the chain stays self-consistent:
-  // verify_chain() recomputes sha256(prev_hash + STORED payload) and sees the same
-  // bytes we hashed here.
-  const std::string safe = domain::scrub(payload) + provenance_block(provenance);
-
-  // ── KNOWN LIMITATION (pre-existing, NOT introduced by IMP-16) — NEXT STORY ────
+  // appended AFTER the scrub.
   //
-  // THE PREIMAGE AND THE STORED BYTES CAN DIVERGE ON INVALID UTF-8. We hash the
-  // RAW bytes of `safe`, but entry_to_line() serialises the same string through
-  // nlohmann with json::error_handler_t::replace, which rewrites every ill-formed
-  // UTF-8 sequence as U+FFFD before it reaches the file. So for a payload carrying
-  // an invalid byte (a lone 0x80-0xFF, a truncated multi-byte run) the LINE ON DISK
-  // is not the text we hashed. load() then reads back the replaced form and
-  // verify_chain() recomputes sha256(prev_hash + STORED payload), which no longer
-  // matches `hash` — the chain reports itself BROKEN at that entry, and a broken
-  // audit chain is a safe-start blocker. A self-inflicted tamper signal, not a
-  // missed one, but it is still a denial-of-audit an untrusted byte can trigger.
+  // ── THE IMP-17 INVARIANT: PREIMAGE == STORED BYTES, BY CONSTRUCTION ─────────
   //
-  // THE FIX BELONGS IN ITS OWN STORY: `payload` must be UTF-8-VALIDATED (rejected,
-  // or replaced ONCE, up front) BEFORE it becomes both the stored text and the
-  // preimage, so the two are the same bytes by construction. Doing it here would
-  // change the hash of any chain that already contains such an entry, which is a
-  // migration, not a patch.
+  // canonical_text() runs LAST, at this single choke point, and its result is the
+  // ONLY text that goes any further. `entry.payload` is then BOTH the persisted
+  // payload AND the hash preimage — the hash below is taken from `entry.payload`
+  // itself, not from a parallel variable — so the two are the same std::string and
+  // cannot drift. Because the canonical form is valid UTF-8, entry_to_line()'s
+  // dump-with-replace has nothing to replace and writes those exact bytes, load()
+  // parses those exact bytes back, and verify_chain()'s
+  // sha256(prev_hash + STORED payload) reproduces the hash we computed here. The
+  // pre-IMP-17 divergence (hash the raw bytes, store the replaced form, then
+  // report your own ledger BROKEN — a denial-of-audit any untrusted byte could
+  // trigger) is closed at the source rather than tolerated downstream.
   //
-  // RESIDUAL VECTOR, NAMED PRECISELY: broker JSON is not the exposure — nlohmann
-  // has already validated anything parsed from a broker response. What remains is
-  // CALLER-SUPPLIED and STORE-SUPPLIED text reaching append() as raw bytes.
-  // IMP-16's typed provenance columns are NOT a way in: the block guard in
-  // domain::render_provenance_block is an allowlist over [A-Za-z0-9_#-*], so no
-  // byte >= 0x80 can enter through a provenance column at all.
+  // WHY NORMALISE **AFTER** THE SCRUB, NOT BEFORE. Two reasons, in order:
+  //   1. The invariant must hold for the FINAL string. Normalising earlier would
+  //      leave scrub() and render_provenance_block() free to reintroduce a bad
+  //      byte, so the guarantee would rest on auditing two other modules instead
+  //      of on this one line. Last means unbypassable.
+  //   2. THE ORDER IS LOAD-BEARING FOR REDACTION ITSELF — and the two orders are
+  //      NOT interchangeable. State the theorem precisely, because an earlier
+  //      version of this comment claimed the two orders "redact identically" and
+  //      THAT CLAIM IS FALSE; believing it would let a future refactor hoist the
+  //      canonicalisation and silently change what gets redacted.
+  //
+  //      TRUE (order-invariant): canonical_text preserves the ASCII subsequence
+  //      exactly (domain/utf8.hpp P4) and never shrinks a run to nothing (P5), so
+  //      it can neither JOIN two of scrub()'s ASCII [A-Za-z0-9_-] token runs nor
+  //      SPLIT one. scrub() therefore tokenises bit-for-bit identically on either
+  //      side of it, and every TOKEN-SHAPED rule — `key=value`, and the >=20-char
+  //      high-entropy run — fires on exactly the same runs in either order.
+  //
+  //      FALSE (order-SENSITIVE): canonical_text is NOT LENGTH-PRESERVING. One
+  //      ill-formed byte becomes THREE (U+FFFD), and domain::auth_context_before
+  //      looks back a FIXED 10-BYTE window for an auth keyword — so normalising
+  //      first MOVES the keyword relative to that byte window and flips the bare
+  //      MPIN/TOTP digit-run rule, in BOTH directions. The counterexample that
+  //      pins it: `mpin \x80\x80 1234` is REDACTED in the shipped order (the
+  //      window still reaches "mpin") and is NOT redacted if canonicalisation runs
+  //      first (the two U+FFFDs occupy 6 bytes and push "mpin" out of the window).
+  //      The converse also exists — `passwordtokentotp\xC0\x80` + `12345678` leaks
+  //      under the shipped order and is caught if normalisation runs first —
+  //      so this is NOT an argument that scrub-first redacts more; it is the
+  //      argument that the order is OBSERVABLE and must therefore be FIXED.
+  //
+  //      WHICH IS WHY: scrub() keeps running on the RAW bytes, exactly where it
+  //      has always run and exactly what every existing redaction test pins, and
+  //      canonicalisation stays LAST. The scrub call and its argument are
+  //      UNCHANGED from before IMP-16/IMP-17 — free-form redaction is not relaxed
+  //      or altered by one byte — and kRedactionMarker is pure ASCII so
+  //      normalisation cannot touch a marker already emitted.
+  //
+  // RESIDUAL VECTOR, NAMED PRECISELY (unchanged, now handled rather than merely
+  // named): broker JSON is not the exposure — nlohmann has already validated
+  // anything parsed from a broker response. What reaches append() as raw bytes is
+  // CALLER- and STORE-SUPPLIED text, and that is exactly what canonical_text()
+  // covers. NOTE the scope of "AUTHORED": this choke point governs text the
+  // process AUTHORS. Text PARSED BACK from the file by load() is covered by a
+  // different guarantee — nlohmann's parser rejects a JSON string containing a raw
+  // ill-formed byte — see the note on load() in ledger.hpp.
+  // IMP-16's typed provenance columns were never a way in either: the
+  // block guard in domain::render_provenance_block is an allowlist over
+  // [A-Za-z0-9_#-*], so no byte >= 0x80 can enter through a provenance column at
+  // all — but the general payload does not rely on that.
   LedgerEntry entry;
   entry.seq = static_cast<std::int64_t>(entries_.size());
   entry.prev_hash = entries_.empty() ? std::string{} : entries_.back().hash;
-  entry.payload = safe;
-  entry.hash = sha256_hex(entry.prev_hash + safe);
+  entry.payload = domain::canonical_text(domain::scrub(payload) + provenance_block(provenance));
+  // HASH WHAT WE STORE, LITERALLY: read the preimage back out of the field that
+  // entry_to_line() will serialise. Mirrors verify_chain() exactly.
+  entry.hash = sha256_hex(entry.prev_hash + entry.payload);
   if (entry.hash.empty()) {
     return fail(crypto_error("ledger: SHA-256 hashing failed"));
   }
@@ -316,8 +383,34 @@ Result<ports::Ok> Ledger::verify_chain() const {
         (i == 0) ? entry.prev_hash.empty() : entry.prev_hash == entries_[i - 1].hash;
     const bool seq_ok = entry.seq == static_cast<std::int64_t>(i);
     if (!hash_ok || !link_ok || !seq_ok) {
-      return fail(make_error(ErrorCategory::Validation,
-                             "ledger chain broken at seq " + std::to_string(i)));
+      std::string message = "ledger chain broken at seq " + std::to_string(i);
+      // ── TRIAGE FACTS — WORDING ONLY, NEVER A TOLERANCE ───────────────────────
+      //
+      // When the payload hash alone fails while the link and the seq are intact,
+      // and the stored payload contains a U+FFFD, we append THE THREE OBSERVED
+      // FACTS to the message. Nothing more.
+      //
+      // WE DO NOT ASSERT A CAUSE, AND THAT IS DELIBERATE. An earlier version of
+      // this hint told the operator the entry "MAY PREDATE the IMP-17 fix". That
+      // is an UNVERIFIABLE PROVENANCE HYPOTHESIS about a record we cannot date,
+      // and ANY payload-only edit can trigger it simply by including the three
+      // bytes EF BF BD — so the sentence is exactly the sentence an attacker
+      // would choose to have printed next to their edit. Facts are safe to print;
+      // a guess at history is not. The RUNBOOK owns the interpretation, where the
+      // deployment's own timeline (when the binary shipped, when the file was last
+      // written, what the checkpoint says) is actually available.
+      //
+      // This adds NO tolerance whatsoever: the call still returns the same
+      // fail(Validation) with the same "seq <n>" prefix, so every caller and every
+      // safe-start blocker behaves identically.
+      if (!hash_ok && link_ok && seq_ok &&
+          entry.payload.find(domain::kUtf8Replacement) != std::string::npos) {
+        message +=
+            " (observed: payload hash mismatch; link and seq intact; stored payload contains "
+            "U+FFFD. These are facts for the runbook to interpret, NOT an exoneration — the entry "
+            "is BROKEN and still blocks safe start.)";
+      }
+      return fail(make_error(ErrorCategory::Validation, std::move(message)));
     }
   }
   return ports::ok();
@@ -697,14 +790,42 @@ PositionHeartbeat Ledger::make_heartbeat(std::string_view exposure_summary,
   PositionHeartbeat hb;
   hb.ts = to_iso8601_utc(ts);
   // Same scrub as before (no secret reaches the operator), plus the typed columns
-  // rendered through the whole-column allowlist and appended after it.
-  hb.exposure = domain::scrub(exposure_summary) + provenance_block(provenance);
+  // rendered through the whole-column allowlist and appended after it, and then —
+  // IMP-17 — the SAME canonicalisation choke point append() uses, in the SAME
+  // position (last). `exposure` is not itself hashed, but to_json() dumps it with
+  // replace, so without this the struct in memory and the JSON the operator reads
+  // would disagree on any ill-formed byte, and a caller that forwards `exposure`
+  // into append() would carry that divergence straight into the chain.
+  hb.exposure =
+      domain::canonical_text(domain::scrub(exposure_summary) + provenance_block(provenance));
   return hb;
 }
 
 std::string EodReport::to_json() const {
   json out = json::object();
   out["entry_count"] = entry_count;
+  // ── IMP-17 (B2): NO canonical_text HERE, AND THAT IS THE FIX, NOT AN OMISSION.
+  //
+  // `head_hash` is the ANTI-TAMPER ANCHOR, and its invariant is the SIGNED bytes
+  // and the STORED bytes must be the same bytes. sign_head() signs the RAW
+  // `head_hash()` string; eod_report() stores that same raw value; so to_json()
+  // must WRITE that same raw value. Canonicalising in ONLY ONE of the two places
+  // was the IMP-17 asymmetry itself — hash (here, sign) one string and store
+  // another — reintroduced in the single place where it matters most:
+  // write_checkpoint() persists these bytes as the signed high-water mark, and
+  // verify_against_checkpoint() then (a) verifies the STORED head against a
+  // signature taken over the RAW head and (b) compares it to a RAW in-memory
+  // entry hash at :835. One value, produced once by head_hash(), now flows into
+  // the signature, the struct and the JSON with NO transform anywhere.
+  //
+  // It bought nothing to remove: head_hash is lowercase hex from to_hex() (or a
+  // string that verify_chain() would already reject), so canonical_text was
+  // provably the identity on every value that can reach here. And it is not a
+  // no-throw hole: dump_compact still serialises with error_handler_t::replace, so
+  // a hand-filled EodReport carrying an ill-formed byte renders instead of
+  // throwing — and then FAILS CLOSED at verify_head(), which is the correct
+  // outcome for a head nobody signed. The signature/public_key fields are hex from
+  // to_hex() and are ASCII by construction.
   out["head_hash"] = head_hash;
   out["signature"] = to_hex(signature);
   out["public_key"] = to_hex(public_key);
@@ -713,8 +834,21 @@ std::string EodReport::to_json() const {
 
 std::string PositionHeartbeat::to_json() const {
   json out = json::object();
-  out["ts"] = ts;
-  out["exposure"] = exposure;
+  // BOTH fields, for the SAME reason (IMP-17/C2). `ts` is our own ISO-8601 ASCII
+  // and `exposure` is already canonical whenever the struct came from
+  // make_heartbeat(), so canonicalising either is a NO-OP by construction
+  // (canonical_text is idempotent). But PositionHeartbeat is a PLAIN AGGREGATE a
+  // caller or a test can fill BY HAND, and this to_json() is the operator's view
+  // of it — so every hand-fillable field gets the same treatment and the JSON the
+  // operator reads can never differ from the field in memory. Treating one field
+  // as trusted and the other as untrusted, in the same struct, is exactly the kind
+  // of asymmetry IMP-17 exists to remove.
+  //
+  // (Unlike EodReport::head_hash above, NEITHER field here is signed or hashed, so
+  // there is no second producer these bytes must agree with — canonicalising is
+  // free, and the only correct choice is to do it consistently.)
+  out["ts"] = domain::canonical_text(ts);
+  out["exposure"] = domain::canonical_text(exposure);
   return dump_compact(out);
 }
 

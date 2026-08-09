@@ -9,6 +9,10 @@
 #include <system_error>
 #include <vector>
 
+// IMP-17: the payload projection is parsed back with the REAL serialiser rather
+// than pattern-matched, so the no-throw claim is checked against nlohmann itself.
+#include <nlohmann/json.hpp>
+
 #include "broker_exec/clock/test_clock.hpp"
 #include "broker_exec/domain/enums.hpp"
 #include "broker_exec/domain/money.hpp"
@@ -321,6 +325,45 @@ TEST_CASE("IMP-11: the intent payload carries the trigger only when engaged",
   const std::string armed = idem::intent_payload_json(stop);
   CHECK(armed.find("\"trigger_price_paise\":12400") != std::string::npos);
   CHECK(armed.find("\"schema\":1") != std::string::npos);  // marker NOT bumped
+}
+
+TEST_CASE("IMP-17: intent_payload_json NEVER THROWS on ill-formed caller text",
+          "[idempotency][utf8]") {
+  // THE HOT-PATH THROW, ONE FRAME ABOVE THE INTENT LOG. This function projects
+  // THREE caller-supplied strings — client_ref, strategy, symbol — into JSON and
+  // returns a plain std::string (no Result). dispatch()'s place/modify paths call
+  // it and hand the result to IntentLog::append(), so with nlohmann's DEFAULT dump
+  // handler (::strict) a single ill-formed UTF-8 byte in a strategy name or an
+  // instrument symbol raised json::type_error.316 across the dispatcher's no-throw
+  // boundary BEFORE the intent log ever got the chance to normalise anything.
+  // error_handler_t::replace makes the render total; the output is valid UTF-8, so
+  // the intent log's canonical_text() is then a provable no-op on this path.
+  OrderIntent bad = sample_intent();
+  bad.symbol = "NIFTY24\xFF" "JUN24000CE";  // 0xFF, never a valid UTF-8 lead
+  bad.strategy = "al\x80" "pha";            // bare continuation byte
+  bad.client_ref = "ref-\xE2\x82";          // truncated 3-byte run
+
+  std::string payload;
+  REQUIRE_NOTHROW(payload = idem::intent_payload_json(bad));
+  CHECK_FALSE(payload.empty());
+  CHECK(payload.find("\"schema\":1") != std::string::npos);
+
+  // The render is total AND well-formed: it parses back, and the ill-formed bytes
+  // have become U+FFFD rather than aborting the write.
+  const nlohmann::json parsed = nlohmann::json::parse(payload, nullptr, false);
+  REQUIRE_FALSE(parsed.is_discarded());
+  CHECK(parsed.at("symbol").get<std::string>() == "NIFTY24\xEF\xBF\xBD" "JUN24000CE");
+  CHECK(parsed.at("strategy").get<std::string>() == "al\xEF\xBF\xBD" "pha");
+
+  // The dedupe key is UNAFFECTED: signal_signature() hashes the RAW fields
+  // directly (canonical_signature_input, not this JSON projection), so restart
+  // dedup keys exactly as it did before — and as it will after a restart.
+  CHECK(parsed.at("sig").get<std::string>() == idem::signal_signature(bad));
+
+  // And an ASCII intent is BYTE-IDENTICAL to what the strict handler produced, so
+  // no committed payload — or the intent-log hash over it — moves.
+  CHECK(idem::intent_payload_json(sample_intent()).find("NIFTY24JUN24000CE") !=
+        std::string::npos);
 }
 
 // ── (c) dedup: reserve twice -> one order ──────────────────────────────────

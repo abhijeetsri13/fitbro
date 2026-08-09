@@ -135,7 +135,22 @@ std::string intent_payload_json(const domain::OrderIntent& intent) {
   if (intent.trigger_price.has_value()) {
     j["trigger_price_paise"] = intent.trigger_price->paise();
   }
-  return j.dump();
+  // error_handler_t::replace, NOT the default (IMP-17). The default handler is
+  // ::strict and THROWS json::type_error.316 on the first ill-formed UTF-8 byte,
+  // and THREE of the fields above are CALLER-SUPPLIED TEXT — client_ref, strategy
+  // and symbol. This function returns a plain std::string (no Result), and it is
+  // called from dispatch()'s place/modify paths ONE FRAME ABOVE
+  // IntentLog::append(), so a throw here escapes the dispatcher's no-throw
+  // boundary before the intent log ever gets a chance to normalise anything.
+  //
+  // BYTE-IDENTICAL for every payload written so far: the two handlers differ only
+  // on input the strict one would have rejected outright, so no existing record's
+  // payload — or the intent-log hash over it — moves. The output is valid UTF-8,
+  // which makes the intent log's own canonical_text() a provable no-op on this
+  // path; the signature in `sig` is computed over the RAW fields by
+  // signal_signature(), independently of this projection, so restart-dedup is
+  // unaffected either way.
+  return j.dump(-1, ' ', /*ensure_ascii=*/false, json::error_handler_t::replace);
 }
 
 std::string make_client_ref(std::string_view strategy, std::string_view signature_hex,

@@ -49,6 +49,7 @@ if(BROKER_EXEC_BUILD_TESTS)
       broker_exec_intentlog
       broker_exec_store
       broker_exec_clock          # TestClock for the intent-log restart test
+      nlohmann_json::nlohmann_json  # IMP-17: parse the payload projection back
       Catch2::Catch2WithMain
       broker_exec_warnings
       broker_exec_sanitizers)

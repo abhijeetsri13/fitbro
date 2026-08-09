@@ -511,4 +511,83 @@ loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier
   ALSO NEXT: ledger payload must be UTF-8-validated before it becomes both stored text and hash preimage
   (an invalid byte is rewritten to U+FFFD on disk, so verify_chain breaks after a restart and reads as
   "tamper detected"); pre-existing, and the H1 allowlist bars the channel IMP-16 opened.
+- ITER 11 / IMP-17 CODED (not built, not committed): ledger UTF-8 preimage divergence — the IMP-16
+  KNOWN-LIMITATION. append() hashed the RAW payload bytes while entry_to_line() dumped the same string
+  through nlohmann error_handler_t::replace, so an ill-formed byte (lone 0x80-0xFF, truncated multi-byte
+  run) meant THE LINE ON DISK WAS NOT THE TEXT WE HASHED: load()+verify_chain() recomputed over the
+  replaced form, missed, and the ledger reported ITSELF broken. A safe-start blocker any untrusted
+  caller/store byte could trigger — denial of audit, not a missed tamper.
+  Fix: ONE private choke point canonical_text() in ledger.cpp, applied EXACTLY ONCE and LAST, on every
+  write path (both append overloads, both make_heartbeat overloads, EodReport::to_json,
+  PositionHeartbeat::to_json). NORMALISE, not REJECT — refusing the append loses the audit entry, which is
+  worse than recording a sanitised one. Semantics are nlohmann's replace, deliberately: one U+FFFD per
+  MAXIMAL SUBPART, offending byte re-read as a fresh lead. Verified against the real DFA + replace handler
+  (serializer.hpp) by simulation: EXHAUSTIVE agreement over all 1- and 2-byte inputs and over all 3- and
+  4-byte inputs on a 25-byte class-boundary alphabet (~406k cases); output always valid UTF-8; idempotent.
+  That is the whole fix — valid UTF-8 makes the later dump() a provable no-op, so preimage == stored bytes
+  BY CONSTRUCTION, and entry.hash is now taken from entry.payload itself rather than a parallel variable.
+  ORDER vs scrub: scrub FIRST (unchanged, not relaxed one byte), canonicalise LAST. Last is unbypassable —
+  normalising earlier would leave scrub()/render_provenance_block() free to reintroduce a bad byte. It
+  costs redaction nothing PROVABLY: canonical_text only rewrites bytes >=0x80 into other bytes >=0x80,
+  never emits ASCII, never deletes a run to nothing, so it can neither JOIN nor SPLIT one of scrub's ASCII
+  token runs — both orders redact identically, and that equivalence is pinned by a test.
+  BACKWARD COMPAT — the honest answer: entries already written with the divergence CANNOT be repaired (the
+  hashed bytes exist nowhere), so such a chain STILL reports broken and that is correct. verify_chain stays
+  STRICT: no tolerance, no legacy mode. Only the MESSAGE distinguishes the two cases, and only on the exact
+  legacy signature (payload hash fails while link AND seq are intact, and the stored payload contains
+  U+FFFD) — same fail(Validation), same "seq <n>" prefix, plus a sentence saying it may predate the fix,
+  is STILL BROKEN, still blocks safe start, and is a triage hint NOT an exoneration (an attacker can plant
+  a U+FFFD too). Valid UTF-8 is byte-identical through normalisation, so NO existing hash moves; pinned by
+  asserting a literal sha256("payload-alpha").
+  7 new TEST_CASEs in ledger_test.cpp (no new ctest target, still 50). NOT BUILT — the helpers and every
+  new expression form were compiled standalone under MSVC /W4 /WX /permissive- /std:c++20: zero warnings.
 
+- ITER 11b / IMP-17 ADVERSARIAL-REVIEW FIXES CODED (not built, not committed). Four things, in order of
+  severity:
+  (A) HOT-PATH THROW, ADJACENT TO IMP-17 AND WORSE THAN IT. intent_log.cpp's to_json_line() dumped with
+      nlohmann's DEFAULT handler (= error_handler_t::strict), which THROWS type_error.316 on an ill-formed
+      UTF-8 byte — across IntentLog::append()'s Result<T> no-throw boundary, on the ORDER DISPATCH path
+      (dispatcher.cpp:152/185/244/311/363), fsync'ing the DURABLE TRUTH before the broker socket write.
+      Vector: caller/store text (strategy name, client_ref, symbol) via idempotency::intent_payload_json —
+      which ALSO dumped strict, one frame ABOVE the intent log, so it threw first; fixed there too
+      (::replace; byte-identical for every valid-UTF-8 payload, and `sig` is hashed off the RAW fields by
+      signal_signature() so restart-dedup is untouched). The intent log has the SAME preimage/stored-bytes
+      duality (its SHA-256 is over canonical_bytes(record), the JSON line is a projection), so it got the
+      SAME fix: canonicalise client_ref + payload_json ONCE at the top of append(), before compute_hash;
+      ::replace kept on the dump as belt and braces. last_for() canonicalises its QUERY too, so the
+      idempotency lookup stays total (identity for every valid-UTF-8 ref). NO hash moves: valid UTF-8 is a
+      fixed point, pinned with a literal sha256 of the frozen canonical stream for an ASCII genesis record
+      at wall_ts_ns==0 (platform-independent). NOT a schema bump.
+      canonical_text() was PROMOTED out of ledger.cpp into broker_exec::domain
+      (include/broker_exec/domain/utf8.hpp + src/domain/utf8.cpp) so there is EXACTLY ONE implementation
+      for both chains; two copies of a UTF-8 decoder would eventually disagree about "maximal subpart" and
+      the two logs would canonicalise the same caller text differently.
+  (B1) CORRECTION TO THE ITER-11 ENTRY ABOVE: "both orders redact identically" IS FALSE. canonical_text is
+      NOT length-preserving (1 ill-formed byte -> 3) and domain::auth_context_before uses a FIXED 10-BYTE
+      lookbehind, so normalisation MOVES an auth keyword relative to that window and flips the bare
+      MPIN/TOTP digit-run rule — in BOTH directions. `mpin \x80\x80 1234` redacts under the shipped order
+      and LEAKS if canonicalisation is hoisted; `passwordtokentotp\xC0\x80` + `12345678` LEAKS under the
+      shipped order and is caught if it is hoisted. What IS order-invariant is only the TOKEN-SHAPED rules
+      (key=value, the >=20-char high-entropy run), because normalisation preserves the ASCII subsequence
+      and never empties a run, so it can neither JOIN nor SPLIT one of scrub's ASCII token runs. Comment
+      restated as that theorem; the non-discriminating test kept (with a warning that it certifies nothing
+      about ordering) and the two counterexamples added as tests in both ledger_test.cpp and the new
+      domain/utf8_test.cpp. No live regression — scrub still sees the raw bytes exactly as before.
+  (B2) EodReport::to_json() canonicalised head_hash while sign_head() signed the RAW string — the IMP-17
+      asymmetry reintroduced at the ANTI-TAMPER ANCHOR (write_checkpoint persists these bytes as the signed
+      high-water mark; verify_against_checkpoint compares them to a raw in-memory hash). CHOSE: DROP the
+      transform, so one value from head_hash() flows unchanged into the signature, the struct and the JSON.
+      Unreachable today (ASCII hex), still fail-closed for a hand-filled report (::replace renders, then
+      verify_head rejects). Pinned by a test.
+  (C1) Added a test that a RAW ill-formed byte in a stored LINE is rejected by load() (the choke point
+      covers AUTHORED text; PARSED text rides on nlohmann's parser — an untested third-party invariant),
+      plus the direct nlohmann assertion and a sentence on load() in ledger.hpp.
+  (C2) PositionHeartbeat::to_json() now canonicalises `ts` as well as `exposure` (same hand-fillable
+      aggregate, neither field signed — so consistency is free and asymmetry is not).
+  (C3) verify_chain()'s triage hint no longer asserts the UNVERIFIABLE provenance hypothesis ("MAY PREDATE
+      the IMP-17 fix") — an attacker triggers it by putting EF BF BD in any payload-only edit. It now
+      reports OBSERVED FACTS only (payload hash mismatch; link and seq intact; payload contains U+FFFD) and
+      leaves interpretation to the runbook. Verdict/category/"seq <n>" unchanged.
+  Tests: +6 TEST_CASEs domain/utf8_test.cpp (new file, folded into the EXISTING domain test target),
+  +5 intentlog, +1 idempotency, +4 ledger. NO new ctest target — still 50. Zero existing assertions
+  deleted (the B1 comment+addition is the one sanctioned change and is strictly stronger). NOT BUILT.

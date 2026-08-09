@@ -7,6 +7,8 @@ add_library(broker_exec_domain STATIC
   money.cpp
   types.cpp
   redaction.cpp
+  utf8.cpp        # IMP-17: THE single UTF-8 canonicalisation, shared by the
+                  # ledger and the intent log (two hash chains, one transform).
 )
 add_library(broker_exec::domain ALIAS broker_exec_domain)
 
@@ -21,7 +23,13 @@ target_link_libraries(broker_exec_domain
     broker_exec_sanitizers)
 
 if(BROKER_EXEC_BUILD_TESTS)
-  add_executable(broker_exec_domain_tests value_types_test.cpp redaction_test.cpp)
+  # utf8_test.cpp joins the EXISTING domain test executable rather than adding a
+  # new ctest target: the canonicalisation is part of the pure core's surface, and
+  # the module-per-test-target convention is per MODULE, not per file.
+  add_executable(broker_exec_domain_tests
+    value_types_test.cpp
+    redaction_test.cpp
+    utf8_test.cpp)
   target_link_libraries(broker_exec_domain_tests
     PRIVATE
       broker_exec_domain
