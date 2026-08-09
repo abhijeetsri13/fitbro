@@ -618,4 +618,29 @@ loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier
   "---". F6 a policy number was presented as arithmetic. 50/50 green.
   NOTE: no SafeStartContext is constructed outside tests — no safe-start check has a production caller yet
   (pre-existing for all ten). Wiring the gate into a real entrypoint is the standing next step.
+- ITER 13 / IMP-20 DONE: THE ENTRYPOINT. Reviews had separately noted that safe-start, the ledger and the
+  kill control-plane have NO production caller — the root cause was that there is no int main anywhere in
+  src/. The library was a set of well-tested islands with no program, and 6-5b had already committed a
+  systemd unit whose ExecStart points at a broker-exec binary the repo never built.
+  New src/boot (testable Result<BootOutcome> boot(BootDeps)) + src/main (the broker-exec executable, a thin
+  CLI11 shell over it). Boot sequence, fail-closed at every step: config -> AccountDataDir (0700) -> ledger
+  chain verify (+ key-pinned checkpoint) -> session probe -> THE SAFE-START GATE WITH ALL TEN CHECKS WIRED
+  TO REAL COMPONENTS -> broker+engine via the composition root -> HealthSnapshot -> health endpoint ->
+  stubbed run phase. SafeStartAudit counts a check ONLY when it delegates to its real implementation, so a
+  stub cannot satisfy all_invoked() — there is no  anywhere.
+  EXIT-CODE CONTRACT NOW REAL: safe-start refusal => 70 FAIL_CLOSED_NEEDS_HUMAN (auto-restarting into the
+  same refusal is a flap loop) + dead-man absence alarm before exit; transient => crash class => restart
+  with backoff; clean => 0. Verified end to end on the built binary:  with a bad config exits
+  70, which is exactly what the committed unit's RestartPreventExitStatus=70 expects.
+  DELIBERATELY OUT OF SCOPE: the synchronous trading main loop (dispatcher pump, reconcile scheduling,
+  market-data ingest). The run phase is a NAMED seam returning a typed error, not a fake loop — so
+   boots, verifies the world, composes, publishes health, and then says a human is needed.
+  ORCHESTRATOR FIX: the executable did not link in the DEFAULT build — a machine with vcpkg's global
+  MSBuild integration gets a second (import-lib) zlib beside Conan's static one, LNK2005/LNK1169 on every
+  zlib symbol. Fixed in CMake (VS_GLOBAL_VcpkgEnabled false on that one target) rather than leaving
+  -p:VcpkgEnabled=false as folklore. 51/51 ctests green + the binary builds and runs.
+  WEAKEST LINKS, stated by the dev and worth tracking: egress-IP check is an env string compare (no CIDR,
+  no probe — the library has no "what is my egress address" seam); the reconciliation check is the
+  LOCAL-projection precondition only (the broker-truth fold needs RecoveryCoordinator, which needs the main
+  loop and would be circular here); persisted kills are not replayed (no module writes a kill journal yet).
 

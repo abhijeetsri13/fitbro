@@ -114,6 +114,12 @@ add_subdirectory(src/feedsub)          # websocket resubscribe guard: on every (
 # the boundary rule (enforced below) is that domain/ports must not, and nothing
 # inner links this.
 add_subdirectory(src/composition)
+# IMP-20: the process boot sequence + the exit-code contract, and the executable
+# the committed systemd unit's ExecStart points at. `boot` is the OUTERMOST
+# library layer (it links the composition root, and through it every adapter);
+# `src/main` is a thin shell over it. Both must come AFTER every module they wire.
+add_subdirectory(src/boot)
+add_subdirectory(src/main)
 # --- waves append here ---
 #   src/persistence  src/refdata  src/risk  src/session
 #   src/modes  src/runtime  src/observability  src/cli
@@ -132,10 +138,14 @@ endif()
 # `domain` link the real Kite adapter without tripping anything. The composition
 # root is listed for the same reason: it links every adapter, so an inner layer
 # reaching it would import all of them transitively.
+# `broker_exec_boot` is listed for the SAME reason `broker_exec_composition` is:
+# it links the composition root and therefore every adapter transitively, so an
+# inner layer reaching it would import all of them without naming one.
 set(BROKER_EXEC_OUTER_TARGETS
   broker_exec_adapters
   broker_exec_kite
   broker_exec_adapters_kotak
-  broker_exec_composition)
+  broker_exec_composition
+  broker_exec_boot)
 enforce_no_dependency(TARGET broker_exec_domain FORBIDS ${BROKER_EXEC_OUTER_TARGETS})
 enforce_no_dependency(TARGET broker_exec_ports  FORBIDS ${BROKER_EXEC_OUTER_TARGETS})
