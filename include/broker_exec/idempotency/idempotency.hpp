@@ -124,6 +124,36 @@ namespace broker_exec::idempotency {
 // Build a parent client-ref: "<strategy>-<sig8>-<uuid>". `signature_hex` is a
 // full hex signature (sig8 is taken as its first 8 chars); `uuid` is a canonical
 // 8-4-4-4-12 lowercase-hex UUID (from a UuidGenerator).
+//
+// ── THE STRATEGY CHARSET IS BINDING ON CALLERS, AND CURRENTLY UNENFORCED ──────
+//
+// `strategy` is concatenated in AS-IS. Nothing here (and nothing anywhere else in
+// this library) constrains it, so a caller can put any bytes into every client_ref
+// it mints. That has a REAL and non-obvious cost downstream, because the resulting
+// ref is what an operator alert and the ledger must be able to name:
+//
+//   REQUIRED: `strategy` should be drawn from [A-Za-z0-9_-] AND each of its
+//   '-'/'_'-separated segments should be HOMOGENEOUS — all letters, or all
+//   hex/digits. Not "nice to have": domain::is_provenance_id_shape (redaction.hpp)
+//   admits a whole client_ref into an alert or ledger block ONLY if EVERY segment
+//   is homogeneous, and the strategy name is the ref's FIRST segment.
+//
+//   CONSEQUENCE OF VIOLATING IT — the ref, not just the name, is destroyed:
+//     * "alpha", "ironcondor", "conformance" (all letters)  -> ref survives intact.
+//     * "S1", "strat2", "v2beta" (letter+digit in ONE run)  -> the ref is NOT
+//       id-shaped, falls back to domain::scrub(), and a ~50-char run mixing letters
+//       and digits is exactly what scrub() redacts. EVERY alert about an order from
+//       that strategy names it `client_ref=***REDACTED***`. Spell it "S-1" or
+//       "strat-2" and it is fine again.
+//     * a SPACE ("iron condor v2") -> additionally rejected wholesale by the block
+//       grammar guard, so `strategy=***REDACTED***` too.
+//
+// NOT ENFORCED HERE, DELIBERATELY. The only boundary that could reject a bad name
+// is reserve()/Dispatcher::place(), where rejecting means REFUSING TO PLACE AN
+// ORDER — a trading-behaviour change that needs its own story and its own operator
+// migration, not a silent side effect of a redaction fix. Until then this contract
+// is documentation plus a pinning test (redaction_test.cpp, "DOCUMENTED, PINNED:
+// an ordinary strategy name is WHOLLY REDACTED in every block").
 [[nodiscard]] std::string make_client_ref(std::string_view strategy,
                                           std::string_view signature_hex, std::string_view uuid);
 

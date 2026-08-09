@@ -35,7 +35,18 @@ class CountingAlertSink final : public broker_exec::ports::AlertSink {
     }
     last_level_ = level;
     last_message_ = message;
+    last_provenance_ = broker_exec::ports::AlertContext{};
     return broker_exec::ports::ok();
+  }
+  // IMP-16: the SYMBOL rides in the typed context now, so the stub records it —
+  // the base default would drop it and a test could not tell an alert that names
+  // the instrument from one that does not.
+  broker_exec::Result<broker_exec::ports::Ok> send_with_context(
+      AlertLevel level, const std::string& message,
+      const broker_exec::ports::AlertContext& provenance) override {
+    const auto out = send(level, message);
+    last_provenance_ = provenance;
+    return out;
   }
   broker_exec::Result<broker_exec::ports::Ok> send_test_alert() override {
     return broker_exec::ports::ok();
@@ -45,12 +56,16 @@ class CountingAlertSink final : public broker_exec::ports::AlertSink {
   [[nodiscard]] std::size_t error_count() const noexcept { return error_count_; }
   [[nodiscard]] AlertLevel last_level() const noexcept { return last_level_; }
   [[nodiscard]] const std::string& last_message() const noexcept { return last_message_; }
+  [[nodiscard]] const broker_exec::ports::AlertContext& last_provenance() const noexcept {
+    return last_provenance_;
+  }
 
  private:
   std::size_t count_ = 0;
   std::size_t error_count_ = 0;
   AlertLevel last_level_ = AlertLevel::Info;
   std::string last_message_;
+  broker_exec::ports::AlertContext last_provenance_;
 };
 
 // A configurable corporate-action source backed by a std::map<symbol, action>.
@@ -213,6 +228,30 @@ TEST_CASE("classify: a null source AND a change surfaces an Error (AC-2 fail-vis
   CHECK(alerts.count() > 0);
   CHECK(alerts.error_count() > 0);
   CHECK(alerts.last_level() == AlertLevel::Error);
+  // IMP-16: the symbol travels as a typed column, not inside the scrubbed body.
+  // `outcome.detail` is an in-process record and still names it inline.
+  CHECK(alerts.last_provenance().symbol == "X");
+  CHECK(outcome.detail.find("X") != std::string::npos);
+}
+
+TEST_CASE("classify: an unclassifiable change on a >=20-char option symbol still names it",
+          "[corporate_actions][provenance]") {
+  // scrub() redacts any >=20-char run mixing letters and digits, so an F&O
+  // adjustment on a real index option used to alert about a position change on
+  // `***REDACTED***`. The symbol is a typed column now.
+  CountingAlertSink alerts;
+  const rec::CorporateActionClassifier classifier(nullptr, alerts);
+
+  const std::string banknifty = "BANKNIFTY24JUN52000CE";
+  const Position believed = position(banknifty, 50, 10000);
+  const Position broker_observed = position(banknifty, 100, 5000);
+
+  const auto outcome = classifier.classify(believed, broker_observed);
+
+  CHECK(outcome.source_missing);
+  REQUIRE(alerts.count() == 1);
+  CHECK(alerts.last_provenance().symbol == banknifty);
+  CHECK(alerts.last_message().find("BANKNIFTY") == std::string::npos);
 }
 
 TEST_CASE("classify: a null source with NO change is a silent no-op (no alert)",

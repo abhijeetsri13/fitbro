@@ -18,6 +18,12 @@
 // run their text through domain::scrub() BEFORE hashing/persisting, so no
 // token-shaped secret ever lands in the chain, the file, or the hash preimage.
 //
+// TYPED PROVENANCE (IMP-16): because that scrub also destroyed a client_ref (one
+// long token-shaped run), the ids no longer travel inside the free-form payload —
+// they are passed as a ProvenanceContext and rendered through the whole-column
+// allowlist, so the chain can be joined to the log without weakening the payload's
+// redaction by one byte. See ProvenanceContext and append(payload, provenance).
+//
 // Crypto is OpenSSL only (Story 2.2 dependency): SHA-256 and Ed25519 both via
 // the EVP interface, with RAII on every EVP context/PKEY so nothing leaks across
 // the no-throw boundary. No libsodium, no new Conan dependency.
@@ -70,6 +76,28 @@ struct EodReport {
   [[nodiscard]] std::string to_json() const;
 };
 
+// TYPED PROVENANCE for a ledger record (IMP-16, FR-27/FR-29).
+//
+// THE DEFECT THIS EXISTS FOR: append() scrubs its FREE-FORM payload, and a minted
+// client_ref is one long token-shaped run — so a payload that interpolated
+// `client_ref=<ref>` was persisted (and HASHED) as `client_ref=***REDACTED***`.
+// The tamper-evident ledger could not be joined back to the log, the store or the
+// intent log, which is most of the reason a ledger entry exists. The IMP-15
+// exemption is a WHOLE-TYPED-COLUMN allowlist and must never reach into a
+// free-form body, so the ids travel BESIDE the payload instead, in typed columns.
+// PUT IDS HERE, NEVER IN THE PAYLOAD STRING.
+//
+// Deliberately a LEDGER type rather than a reuse of ports::AlertContext: the
+// ledger must not take an alerting dependency to record who an entry belongs to,
+// and the two surfaces are free to grow different columns. Only the RENDERING is
+// shared (domain::render_provenance_block), so the two can never drift in how a
+// column is redacted.
+struct ProvenanceContext {
+  std::string client_ref;       // our idempotency key (the store/intent-log join key)
+  std::string broker_order_id;  // the broker-minted order id
+  std::string strategy;         // the owning strategy name
+};
+
 // A periodic position/exposure "still safe" heartbeat (AC-2). The exposure
 // summary is scrubbed at construction so no secret reaches the operator sink.
 struct PositionHeartbeat {
@@ -90,6 +118,24 @@ class Ledger {
   // JSON line to the file, and fsync via platform::durable_sync. Returns the new
   // entry (carrying the SCRUBBED payload). The hash is over the scrubbed payload.
   [[nodiscard]] Result<LedgerEntry> append(std::string payload);
+
+  // Same as append(payload), plus TYPED PROVENANCE (IMP-16). `payload` is scrubbed
+  // by the IDENTICAL domain::scrub call — free-form redaction is untouched — and
+  // `provenance` is rendered SEPARATELY through the whole-column allowlist and
+  // APPENDED to the stored payload as ` [client_ref=... broker_order_id=...
+  // strategy=...]`, omitting empty fields. A column that is not id-shaped is
+  // redacted.
+  //
+  // HASH IMPACT — none, for anything already written. The stored payload IS the
+  // hash preimage (hash = sha256(prev_hash + stored_payload)) and verify_chain()
+  // recomputes from the STORED payload, so a chain written before this overload
+  // existed reloads and verifies bit-for-bit unchanged. Only NEW entries created
+  // through THIS overload with a NON-EMPTY context differ, and they differ
+  // consistently in both the stored bytes and the preimage. An EMPTY context
+  // renders "" and is therefore hash-identical to the 1-argument append — which is
+  // exactly how the 1-argument overload is implemented.
+  [[nodiscard]] Result<LedgerEntry> append(std::string payload,
+                                           const ProvenanceContext& provenance);
 
   // Walk head->tail: recompute each hash from prev_hash+payload, confirm each
   // entry links to the prior entry's hash, and confirm seq is contiguous from 0.
@@ -146,6 +192,16 @@ class Ledger {
   // Build a heartbeat: scrub the exposure summary, stamp `ts` as ISO-8601 UTC.
   [[nodiscard]] static PositionHeartbeat make_heartbeat(std::string_view exposure_summary,
                                                         std::chrono::system_clock::time_point ts);
+
+  // Same, plus TYPED PROVENANCE (IMP-16), so a per-strategy/per-order heartbeat
+  // can NAME what it is reporting on instead of a caller re-interpolating an id
+  // into the free-form summary (which the scrub would destroy — the exact defect
+  // IMP-16 fixes). The summary is scrubbed identically and the rendered block is
+  // appended to `exposure`; an all-empty context leaves `exposure` — and therefore
+  // to_json() — byte-identical to the 2-argument form.
+  [[nodiscard]] static PositionHeartbeat make_heartbeat(std::string_view exposure_summary,
+                                                        std::chrono::system_clock::time_point ts,
+                                                        const ProvenanceContext& provenance);
 
   // ── Tamper-evident truncation / rollback detection ───────────────────────
   //

@@ -37,7 +37,18 @@ class CountingAlertSink final : public broker_exec::ports::AlertSink {
     ++count_;
     last_level_ = level;
     last_message_ = message;
+    last_provenance_ = broker_exec::ports::AlertContext{};
     return broker_exec::ports::ok();
+  }
+  // IMP-16: the order ids ride in the TYPED context now (the free-form body is
+  // scrubbed by any real sink, which destroyed an interpolated client_ref), so
+  // the stub records it rather than inheriting the base default that drops it.
+  broker_exec::Result<broker_exec::ports::Ok> send_with_context(
+      AlertLevel level, const std::string& message,
+      const broker_exec::ports::AlertContext& provenance) override {
+    const auto out = send(level, message);
+    last_provenance_ = provenance;
+    return out;
   }
   broker_exec::Result<broker_exec::ports::Ok> send_test_alert() override {
     return broker_exec::ports::ok();
@@ -46,11 +57,15 @@ class CountingAlertSink final : public broker_exec::ports::AlertSink {
   [[nodiscard]] std::size_t count() const noexcept { return count_; }
   [[nodiscard]] AlertLevel last_level() const noexcept { return last_level_; }
   [[nodiscard]] const std::string& last_message() const noexcept { return last_message_; }
+  [[nodiscard]] const broker_exec::ports::AlertContext& last_provenance() const noexcept {
+    return last_provenance_;
+  }
 
  private:
   std::size_t count_ = 0;
   AlertLevel last_level_ = AlertLevel::Info;
   std::string last_message_;
+  broker_exec::ports::AlertContext last_provenance_;
 };
 
 // A local order in a given state with a known client_ref.
@@ -206,6 +221,12 @@ TEST_CASE("apply: a phantom broker order raises an alert and blocks new orders",
   CHECK(outcome.block_new_orders);
   CHECK(alerts.count() == 1);
   CHECK(alerts.last_level() == AlertLevel::Warning);
+  // IMP-16: the unmatched order is NAMED, in the typed context rather than
+  // interpolated into the free-form body (which a real sink scrubs). The old
+  // `ref_of()` helper carried the client_ref OR the broker id; the typed columns
+  // carry BOTH when both exist.
+  CHECK(alerts.last_provenance().client_ref == "ghost-1");
+  CHECK(alerts.last_message().find("ghost-1") == std::string::npos);
 }
 
 TEST_CASE("apply: a pre-ack local order (empty broker id) absent from snapshot is NOT a mismatch",
@@ -246,6 +267,11 @@ TEST_CASE("apply: a vanished acked local order (non-empty broker id) is flagged 
   CHECK(outcome.block_new_orders);
   CHECK(alerts.count() == 1);
   CHECK(alerts.last_level() == AlertLevel::Warning);
+  // IMP-16: the vanished order is NAMED in the typed context — both ids, since a
+  // broker-acked local order has both.
+  CHECK(alerts.last_provenance().client_ref == "alpha-9");
+  CHECK_FALSE(alerts.last_provenance().broker_order_id.empty());
+  CHECK(alerts.last_message().find("alpha-9") == std::string::npos);
 }
 
 TEST_CASE("apply: a stale (older ordering_key) snapshot does not re-escalate mismatches",

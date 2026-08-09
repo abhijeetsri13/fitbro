@@ -77,12 +77,28 @@ SlicedLegResult execute_sliced_leg(const domain::OrderIntent& parent, const doma
     result.children.push_back(ChildResult{ref, ChildPlacement::Unknown, ""});
     result.paused_at_ref = ref;
     result.outcome = SlicedLegOutcome::UnknownPaused;
+    // `result.detail` is an IN-PROCESS typed record (never run through a scrubbing
+    // sink), so it keeps naming the child ref inline.
     result.detail =
         "sliced leg UNKNOWN at " + ref + " (" + reason + "): placement STOPPED, reconcile before resume";
+    // THE ALERT NAMES THE CHILD (IMP-16) via the TYPED ports::AlertContext rather
+    // than by interpolation: a sink scrubs the whole free-form body, and a slicer
+    // child ref (`<parent>#<k>`) is one long token-shaped run, so the interpolated
+    // form reached the operator as `child ***REDACTED*** is ambiguous`. The typed
+    // column is rendered through the whole-column allowlist instead.
+    ports::AlertContext provenance;
+    provenance.client_ref = ref;
+    provenance.strategy = parent.strategy;
+    // ...and the INSTRUMENT, under its own (uppercase-alnum) shape rule: an option
+    // symbol of >=20 chars is a token-shaped run to scrub(), so it could no more
+    // have survived the body than the ref could.
+    provenance.symbol = parent.symbol;
     try {
-      (void)alerts.send(ports::AlertLevel::Critical,
-                        "SLICED LEG UNKNOWN: child " + ref +
-                            " is ambiguous; placement STOPPED, reconcile before resume");
+      (void)alerts.send_with_context(
+          ports::AlertLevel::Critical,
+          "SLICED LEG UNKNOWN: child order is ambiguous; placement STOPPED, "
+          "reconcile before resume",
+          provenance);
     } catch (...) {  // NOLINT(bugprone-empty-catch): alerting is strictly best-effort
     }
     return result;

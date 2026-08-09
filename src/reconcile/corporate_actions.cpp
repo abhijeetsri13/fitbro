@@ -25,6 +25,21 @@ namespace {
   return (value * num) % den == 0;
 }
 
+// The typed provenance for a corporate-action alert (IMP-16): the INSTRUMENT
+// only, since a CA is a position-level event with no order behind it.
+//
+// WHY IT LEFT THE BODY: a sink scrubs the whole free-form body, and scrub()'s bare
+// high-entropy rule redacts any >=20-char run mixing letters and digits — so an
+// F&O adjustment on BANKNIFTY24JUN52000CE alerted the operator about a position
+// change on `***REDACTED***`. `outcome.detail` is an IN-PROCESS typed record that
+// never passes a scrubbing sink, so it keeps naming the symbol inline; only the
+// ALERT body drops it in favour of this typed column.
+[[nodiscard]] ports::AlertContext symbol_provenance(const std::string& symbol) {
+  ports::AlertContext provenance;
+  provenance.symbol = symbol;
+  return provenance;
+}
+
 }  // namespace
 
 std::string_view to_string(CorporateActionKind kind) noexcept {
@@ -87,7 +102,10 @@ CorporateActionOutcome CorporateActionClassifier::classify(
     outcome.detail =
         "corporate-action source not configured; cannot classify position change on " +
         believed.symbol;
-    (void)alerts_.send(ports::AlertLevel::Error, outcome.detail);
+    (void)alerts_.send_with_context(
+        ports::AlertLevel::Error,
+        "corporate-action source not configured; cannot classify position change",
+        symbol_provenance(believed.symbol));
     return outcome;
   }
 
@@ -106,14 +124,21 @@ CorporateActionOutcome CorporateActionClassifier::classify(
     if (matches) {
       outcome.is_corporate_action = true;
       outcome.rebased = rebased;
+      // The alert body is `outcome.detail` MINUS the symbol, which travels as a
+      // typed column instead (see symbol_provenance). The truncation note is
+      // appended to both — it is an integer fact, not caller data.
       outcome.detail = std::string(to_string(ca->kind)) + " " +
                        ratio_tag(ca->qty_num, ca->qty_den) + " on " + believed.symbol;
+      std::string alert_body =
+          std::string(to_string(ca->kind)) + " " + ratio_tag(ca->qty_num, ca->qty_den);
       // A non-divisible re-base was integer-truncated (never a fractional share);
       // note it so the operator/audit sees the rounding.
       if (!divides_exactly(believed.net_qty.value(), ca->qty_num, ca->qty_den)) {
         outcome.detail += " (qty truncated: non-divisible re-base)";
+        alert_body += " (qty truncated: non-divisible re-base)";
       }
-      (void)alerts_.send(ports::AlertLevel::Info, outcome.detail);
+      (void)alerts_.send_with_context(ports::AlertLevel::Info, alert_body,
+                                      symbol_provenance(believed.symbol));
       return outcome;
     }
   }

@@ -44,6 +44,17 @@ class MultiChannelAlertSink final : public ports::AlertSink {
   [[nodiscard]] Result<ports::Ok> send(ports::AlertLevel level,
                                        const std::string& message) override;
 
+  // Same delivery, plus TYPED PROVENANCE (IMP-16). `message` is scrubbed by the
+  // IDENTICAL domain::scrub call as send() — nothing about free-form redaction is
+  // relaxed — and `provenance` is rendered SEPARATELY through the whole-column
+  // allowlist and APPENDED as ` [client_ref=... broker_order_id=... strategy=...]`,
+  // omitting empty fields. A context field that is not id-shaped is redacted; an
+  // all-empty context appends nothing, leaving the body byte-identical to send().
+  // Never throws.
+  [[nodiscard]] Result<ports::Ok> send_with_context(
+      ports::AlertLevel level, const std::string& message,
+      const ports::AlertContext& provenance) override;
+
   // Send a fixed self-test message to EVERY channel. ok() iff ALL channels
   // accepted (the test must prove each channel is wired). Never throws.
   [[nodiscard]] Result<ports::Ok> send_test_alert() override;
@@ -63,6 +74,11 @@ class MultiChannelAlertSink final : public ports::AlertSink {
   }
 
  private:
+  // Fan `text` (ALREADY scrubbed and already carrying any provenance block) out
+  // to every channel. The single delivery/heartbeat path that send() and
+  // send_with_context() share, so they cannot drift in best-effort semantics.
+  [[nodiscard]] Result<ports::Ok> deliver(ports::AlertLevel level, const std::string& text);
+
   PostFn post_;
   std::vector<AlertChannel> channels_;
   HeartbeatMonitor heartbeat_;

@@ -24,13 +24,26 @@ namespace {
   return false;
 }
 
-// A redaction-safe reference for an order: the client_ref (not a secret) if
-// present, else the broker order id. Never a token.
-[[nodiscard]] std::string ref_of(const domain::Order& order) {
-  if (!order.intent.client_ref.empty()) {
-    return order.intent.client_ref;
-  }
-  return order.broker_order_id;
+// TYPED PROVENANCE for an order's alert (IMP-16). This REPLACED a `ref_of()`
+// helper that returned "the client_ref, else the broker_order_id" as a bare
+// string to be interpolated into the alert body. That was silently useless: a
+// sink scrubs the whole free-form body and a client_ref is one long token-shaped
+// run, so the operator got `unmatched broker order ***REDACTED***`. Handing the
+// ids over as TYPED COLUMNS lets the sink render them through the whole-column
+// allowlist, and it is strictly more informative than the old either/or — both
+// ids are carried when both exist, each in its own column, and empty ones are
+// omitted by the renderer.
+[[nodiscard]] ports::AlertContext provenance_of(const domain::Order& order) {
+  ports::AlertContext ctx;
+  ctx.client_ref = order.intent.client_ref;
+  ctx.broker_order_id = order.broker_order_id;
+  ctx.strategy = order.intent.strategy;
+  // ...and the INSTRUMENT, which has the same defect the ids had: an option symbol
+  // of >=20 chars (BANKNIFTY24JUN52000CE) is a token-shaped run to scrub(), so it
+  // could never have survived the body either. It is measured against the SYMBOL
+  // shape rule (uppercase alnum), not the id one.
+  ctx.symbol = order.intent.symbol;
+  return ctx;
 }
 
 }  // namespace
@@ -100,8 +113,9 @@ ReconcileOutcome ReconcileApplier::apply(const ReconcileResult& result,
       if (!stale_snapshot) {
         ++outcome.mismatches;
         outcome.block_new_orders = true;
-        (void)alerts_.send(ports::AlertLevel::Warning,
-                           "reconcile: unmatched broker order " + ref_of(broker_order));
+        (void)alerts_.send_with_context(ports::AlertLevel::Warning,
+                                        "reconcile: unmatched broker order",
+                                        provenance_of(broker_order));
       }
       continue;
     }
@@ -159,9 +173,9 @@ ReconcileOutcome ReconcileApplier::apply(const ReconcileResult& result,
       if (!present) {
         ++outcome.mismatches;
         outcome.block_new_orders = true;
-        (void)alerts_.send(ports::AlertLevel::Warning,
-                           "reconcile: local order " + ref_of(local) +
-                               " missing from broker snapshot");
+        (void)alerts_.send_with_context(ports::AlertLevel::Warning,
+                                        "reconcile: local order missing from broker snapshot",
+                                        provenance_of(local));
       }
     }
   }

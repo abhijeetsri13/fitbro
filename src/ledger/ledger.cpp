@@ -203,6 +203,19 @@ class Pkey {
          pad(static_cast<long long>(tod.seconds().count()), 2) + 'Z';
 }
 
+// Render a ProvenanceContext as the shared ` [k=v k=v]` block (IMP-16). Delegates
+// to THE single definition in domain so the ledger and the alert sink can never
+// drift in how a typed column is redacted. Returns "" when every column is empty,
+// which is what makes an empty context byte- (and therefore hash-) identical to a
+// plain append.
+[[nodiscard]] std::string provenance_block(const ProvenanceContext& provenance) {
+  return domain::render_provenance_block({
+      {"client_ref", provenance.client_ref},
+      {"broker_order_id", provenance.broker_order_id},
+      {"strategy", provenance.strategy},
+  });
+}
+
 // Build the one-line JSON record persisted/parsed for a chain entry.
 [[nodiscard]] std::string entry_to_line(const LedgerEntry& entry) {
   json out = json::object();
@@ -219,10 +232,50 @@ Ledger::Ledger(const ports::ClockPort& clock, std::filesystem::path path) noexce
     : clock_(&clock), path_(std::move(path)) {}
 
 Result<LedgerEntry> Ledger::append(std::string payload) {
+  // An EMPTY context renders "" (see provenance_block), so this is byte-identical
+  // to the pre-IMP-16 behaviour: same stored payload, same hash preimage, same
+  // hash. Existing chains are unaffected by the new overload's existence.
+  return append(std::move(payload), ProvenanceContext{});
+}
+
+Result<LedgerEntry> Ledger::append(std::string payload, const ProvenanceContext& provenance) {
   // SCRUB FIRST (SEC-3): the persisted payload and the hash preimage must carry
   // no token-shaped secret. Everything downstream sees only the scrubbed text.
-  const std::string safe = domain::scrub(payload);
+  // The scrub call and its argument are UNCHANGED from before IMP-16 — free-form
+  // redaction is not relaxed by one byte.
+  //
+  // The typed provenance is rendered SEPARATELY (whole-column allowlist) and
+  // appended AFTER the scrub. `safe` is then both the persisted payload and the
+  // hash preimage, exactly as it always was, so the chain stays self-consistent:
+  // verify_chain() recomputes sha256(prev_hash + STORED payload) and sees the same
+  // bytes we hashed here.
+  const std::string safe = domain::scrub(payload) + provenance_block(provenance);
 
+  // ── KNOWN LIMITATION (pre-existing, NOT introduced by IMP-16) — NEXT STORY ────
+  //
+  // THE PREIMAGE AND THE STORED BYTES CAN DIVERGE ON INVALID UTF-8. We hash the
+  // RAW bytes of `safe`, but entry_to_line() serialises the same string through
+  // nlohmann with json::error_handler_t::replace, which rewrites every ill-formed
+  // UTF-8 sequence as U+FFFD before it reaches the file. So for a payload carrying
+  // an invalid byte (a lone 0x80-0xFF, a truncated multi-byte run) the LINE ON DISK
+  // is not the text we hashed. load() then reads back the replaced form and
+  // verify_chain() recomputes sha256(prev_hash + STORED payload), which no longer
+  // matches `hash` — the chain reports itself BROKEN at that entry, and a broken
+  // audit chain is a safe-start blocker. A self-inflicted tamper signal, not a
+  // missed one, but it is still a denial-of-audit an untrusted byte can trigger.
+  //
+  // THE FIX BELONGS IN ITS OWN STORY: `payload` must be UTF-8-VALIDATED (rejected,
+  // or replaced ONCE, up front) BEFORE it becomes both the stored text and the
+  // preimage, so the two are the same bytes by construction. Doing it here would
+  // change the hash of any chain that already contains such an entry, which is a
+  // migration, not a patch.
+  //
+  // RESIDUAL VECTOR, NAMED PRECISELY: broker JSON is not the exposure — nlohmann
+  // has already validated anything parsed from a broker response. What remains is
+  // CALLER-SUPPLIED and STORE-SUPPLIED text reaching append() as raw bytes.
+  // IMP-16's typed provenance columns are NOT a way in: the block guard in
+  // domain::render_provenance_block is an allowlist over [A-Za-z0-9_#-*], so no
+  // byte >= 0x80 can enter through a provenance column at all.
   LedgerEntry entry;
   entry.seq = static_cast<std::int64_t>(entries_.size());
   entry.prev_hash = entries_.empty() ? std::string{} : entries_.back().hash;
@@ -633,9 +686,19 @@ Result<ports::Ok> Ledger::verify_against_checkpoint(
 
 PositionHeartbeat Ledger::make_heartbeat(std::string_view exposure_summary,
                                          std::chrono::system_clock::time_point ts) {
+  // Empty context -> empty block -> `exposure` (and to_json) byte-identical to the
+  // pre-IMP-16 output.
+  return make_heartbeat(exposure_summary, ts, ProvenanceContext{});
+}
+
+PositionHeartbeat Ledger::make_heartbeat(std::string_view exposure_summary,
+                                         std::chrono::system_clock::time_point ts,
+                                         const ProvenanceContext& provenance) {
   PositionHeartbeat hb;
   hb.ts = to_iso8601_utc(ts);
-  hb.exposure = domain::scrub(exposure_summary);  // no secret reaches the operator
+  // Same scrub as before (no secret reaches the operator), plus the typed columns
+  // rendered through the whole-column allowlist and appended after it.
+  hb.exposure = domain::scrub(exposure_summary) + provenance_block(provenance);
   return hb;
 }
 

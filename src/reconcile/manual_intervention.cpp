@@ -47,6 +47,22 @@ namespace {
   return "believed=" + std::to_string(believed) + " broker=" + std::to_string(broker);
 }
 
+// The typed provenance for a position-level event (IMP-16). Only the INSTRUMENT
+// is known here — there is no order and therefore no client_ref/broker_order_id.
+//
+// WHY THE SYMBOL LEFT THE BODY: a sink scrubs the whole free-form body, and
+// scrub()'s bare high-entropy rule redacts any >=20-char run mixing letters and
+// digits. "PositionClosedManually BANKNIFTY24JUN52000CE believed=50 broker=0"
+// therefore reached the operator naming NO INSTRUMENT (NIFTY24JUN24000CE at 17
+// chars survived; FINNIFTY/BANKNIFTY/MIDCPNIFTY option symbols at 20-22 did not).
+// ports::AlertContext::symbol is rendered through the whole-column symbol
+// allowlist and appended after the scrub, so it arrives intact.
+[[nodiscard]] ports::AlertContext symbol_provenance(const std::string& symbol) {
+  ports::AlertContext provenance;
+  provenance.symbol = symbol;
+  return provenance;
+}
+
 }  // namespace
 
 std::string_view to_string(ManualInterventionEvent::Kind kind) noexcept {
@@ -115,9 +131,16 @@ std::vector<ManualInterventionEvent> ManualInterventionDetector::detect(
       event.symbol = believed.symbol;
       event.believed_qty = believed_qty;
       event.broker_qty = 0;
+      // `event.detail` is an IN-PROCESS typed record handed to callers/tests
+      // verbatim and never run through a scrubbing sink, so it keeps naming the
+      // symbol inline. The ALERT body deliberately does not — see
+      // symbol_provenance above.
       event.detail = std::string(to_string(event.kind)) + " " + believed.symbol + " " +
                      qty_tag(believed_qty, 0);
-      (void)alerts_.send(ports::AlertLevel::Warning, event.detail);
+      const std::string alert_body =
+          std::string(to_string(event.kind)) + " " + qty_tag(believed_qty, 0);
+      (void)alerts_.send_with_context(ports::AlertLevel::Warning, alert_body,
+                                      symbol_provenance(believed.symbol));
       events.push_back(std::move(event));
       continue;
     }
@@ -136,7 +159,10 @@ std::vector<ManualInterventionEvent> ManualInterventionDetector::detect(
       event.broker_qty = broker_qty;
       event.detail = std::string(to_string(event.kind)) + " " + believed.symbol + " " +
                      qty_tag(believed_qty, broker_qty);
-      (void)alerts_.send(ports::AlertLevel::Warning, event.detail);
+      const std::string alert_body =
+          std::string(to_string(event.kind)) + " " + qty_tag(believed_qty, broker_qty);
+      (void)alerts_.send_with_context(ports::AlertLevel::Warning, alert_body,
+                                      symbol_provenance(believed.symbol));
       events.push_back(std::move(event));
     }
   }
@@ -169,19 +195,33 @@ std::vector<ManualInterventionEvent> ManualInterventionDetector::detect(
       event.kind = ManualInterventionEvent::Kind::OrderCancelledManually;
       event.symbol = local.intent.symbol;
       event.client_ref = local.intent.client_ref;
+      // `event.detail` stays as it was: it is an IN-PROCESS typed record, handed
+      // to callers/tests verbatim and never run through a scrubbing sink, so it
+      // keeps naming the ref inline.
       event.detail = std::string(to_string(event.kind)) + " ref=" + local.intent.client_ref +
                      " symbol=" + local.intent.symbol;
-      // KNOWN LIMITATION: `event.client_ref` is a typed field and stays intact for
-      // in-process consumers, but the ALERT does not carry it. AlertSink
-      // implementations scrub the whole FREE-FORM body (multi_channel_alert_sink.cpp)
-      // and a client_ref is one long token-shaped run, so the operator sees
-      // `ref=***REDACTED***` here. The IMP-15 provenance exemption is a
-      // WHOLE-TYPED-COLUMN allowlist and deliberately does NOT reach into a
-      // free-form body — a substring exemption there would disable the bare
-      // high-entropy rule for every alert. The fix is a TYPED provenance parameter
-      // on AlertSink::send (and Ledger::append), an ABI change across every
-      // implementation and caller, tracked as a separate story.
-      (void)alerts_.send(ports::AlertLevel::Warning, event.detail);
+      // THE ALERT NAMES THE ORDER (IMP-16). Its body is deliberately NOT
+      // `event.detail`: a sink scrubs the whole free-form body
+      // (multi_channel_alert_sink.cpp) and a client_ref is one long token-shaped
+      // run, so `ref=<client_ref>` used to reach the operator as
+      // `ref=***REDACTED***`. The ref now travels in the TYPED ports::AlertContext,
+      // which the sink renders through the whole-column allowlist and appends as
+      // ` [client_ref=... broker_order_id=... strategy=...]` — the body's own
+      // redaction is untouched, and a column that is not id-shaped is still
+      // redacted.
+      //
+      // THE SYMBOL LEFT THE BODY TOO. `symbol=<...>` was still interpolated here,
+      // and it has the SAME defect the ids had: an option symbol of >=20 chars
+      // (BANKNIFTY24JUN52000CE) is a token-shaped run to scrub(), so it shipped as
+      // `symbol=***REDACTED***`. It now rides in the typed context, measured
+      // against the instrument-symbol shape rather than the id one.
+      const std::string alert_body = std::string(to_string(event.kind));
+      ports::AlertContext provenance;
+      provenance.client_ref = local.intent.client_ref;
+      provenance.broker_order_id = local.broker_order_id;
+      provenance.strategy = local.intent.strategy;
+      provenance.symbol = local.intent.symbol;
+      (void)alerts_.send_with_context(ports::AlertLevel::Warning, alert_body, provenance);
       events.push_back(std::move(event));
     }
   }

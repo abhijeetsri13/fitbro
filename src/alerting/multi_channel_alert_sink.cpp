@@ -66,21 +66,17 @@ MultiChannelAlertSink::MultiChannelAlertSink(PostFn post, std::vector<AlertChann
                                              const ports::ClockPort& clock)
     : post_(std::move(post)), channels_(std::move(channels)), heartbeat_(clock) {}
 
-Result<ports::Ok> MultiChannelAlertSink::send(ports::AlertLevel level,
-                                              const std::string& message) {
+Result<ports::Ok> MultiChannelAlertSink::deliver(ports::AlertLevel level,
+                                                 const std::string& text) {
   // No channel configured == cannot alert at all. Surface it as an Internal
   // wiring error rather than a silent success.
   if (channels_.empty()) {
     return fail(make_error(ErrorCategory::Internal, "alert sink has no channels configured"));
   }
 
-  // SCRUB FIRST: the in-memory message is not pre-scrubbed, so redact before any
-  // body is built — no token-shaped run reaches any outbound payload (SEC-3).
-  const std::string safe = domain::scrub(message);
-
   int delivered = 0;
   for (const AlertChannel& channel : channels_) {
-    const std::string body = build_body(channel, level, safe);
+    const std::string body = build_body(channel, level, text);
     if (post_ok(post_, channel.url, body)) {
       ++delivered;
     }
@@ -95,6 +91,41 @@ Result<ports::Ok> MultiChannelAlertSink::send(ports::AlertLevel level,
   // Every channel failed: the alert could not reach the operator. The absence of
   // heartbeats backstops this for the external watcher.
   return fail(make_error(ErrorCategory::Network, "alert delivery failed on all channels"));
+}
+
+Result<ports::Ok> MultiChannelAlertSink::send(ports::AlertLevel level,
+                                              const std::string& message) {
+  // SCRUB FIRST: the in-memory message is not pre-scrubbed, so redact before any
+  // body is built — no token-shaped run reaches any outbound payload (SEC-3).
+  return deliver(level, domain::scrub(message));
+}
+
+Result<ports::Ok> MultiChannelAlertSink::send_with_context(
+    ports::AlertLevel level, const std::string& message,
+    const ports::AlertContext& provenance) {
+  // THE FREE-FORM BODY IS SCRUBBED IDENTICALLY to the send() path — same call,
+  // same argument, no exemption, no relaxation. That is the whole point of
+  // IMP-16: the ids do NOT ride inside `message`, so `message` never needs (and
+  // never gets) a substring allowlist that would blunt the bare high-entropy rule.
+  const std::string safe = domain::scrub(message);
+
+  // The typed columns are rendered SEPARATELY, each through the whole-column
+  // allowlist, and appended AFTER the scrub. Empty fields are omitted; an
+  // all-empty context renders "" and leaves `safe` byte-identical to the send()
+  // path. A column holding something that is not id-shaped (a token, a
+  // URL, a blob) is redacted by domain::render_provenance_block — fail closed.
+  //
+  // `symbol` is rendered LAST and through the SYMBOL shape rule, not the id rule:
+  // an instrument is one unbroken heterogeneous run, so the id rule would reject
+  // it and the scrub fallback would destroy every >=20-char option symbol. Last
+  // position also keeps the field order of every pre-existing block unchanged.
+  const std::string block = domain::render_provenance_block({
+      {"client_ref", provenance.client_ref},
+      {"broker_order_id", provenance.broker_order_id},
+      {"strategy", provenance.strategy},
+      {"symbol", provenance.symbol, domain::ProvenanceField::Kind::Symbol},
+  });
+  return deliver(level, safe + block);
 }
 
 Result<ports::Ok> MultiChannelAlertSink::send_test_alert() {

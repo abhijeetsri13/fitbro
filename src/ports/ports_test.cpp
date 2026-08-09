@@ -146,6 +146,16 @@ TEST_CASE("ports are implementable and callable through abstract references", "[
   SECTION("AlertSink send + self-test") {
     REQUIRE(alerts.send(ports::AlertLevel::Critical, "halt"));
     REQUIRE(alerts.send_test_alert());
+
+    // IMP-16: send_with_context is ADDITIVE. MockBackend implements only the
+    // pure-virtual send(), exactly like the ~40 pre-existing stubs, and the
+    // base-class default delegates to it — so the port stays fully implementable
+    // without touching a single existing implementation.
+    ports::AlertContext provenance;
+    provenance.client_ref = "alpha-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab";
+    provenance.broker_order_id = "240627000123456";
+    provenance.strategy = "alpha";
+    REQUIRE(alerts.send_with_context(ports::AlertLevel::Critical, "halt", provenance));
   }
 
   SECTION("SecretProvider success and typed failure") {

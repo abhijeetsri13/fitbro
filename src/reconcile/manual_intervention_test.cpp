@@ -34,7 +34,17 @@ class CountingAlertSink final : public broker_exec::ports::AlertSink {
     ++count_;
     last_level_ = level;
     last_message_ = message;
+    last_provenance_ = broker_exec::ports::AlertContext{};
     return broker_exec::ports::ok();
+  }
+  // IMP-16: the ids ride in the TYPED context now, so the stub records it (the
+  // base default would drop it) and a test can assert the alert names the order.
+  broker_exec::Result<broker_exec::ports::Ok> send_with_context(
+      AlertLevel level, const std::string& message,
+      const broker_exec::ports::AlertContext& provenance) override {
+    const auto out = send(level, message);
+    last_provenance_ = provenance;
+    return out;
   }
   broker_exec::Result<broker_exec::ports::Ok> send_test_alert() override {
     return broker_exec::ports::ok();
@@ -43,11 +53,15 @@ class CountingAlertSink final : public broker_exec::ports::AlertSink {
   [[nodiscard]] std::size_t count() const noexcept { return count_; }
   [[nodiscard]] AlertLevel last_level() const noexcept { return last_level_; }
   [[nodiscard]] const std::string& last_message() const noexcept { return last_message_; }
+  [[nodiscard]] const broker_exec::ports::AlertContext& last_provenance() const noexcept {
+    return last_provenance_;
+  }
 
  private:
   std::size_t count_ = 0;
   AlertLevel last_level_ = AlertLevel::Info;
   std::string last_message_;
+  broker_exec::ports::AlertContext last_provenance_;
 };
 
 // An AlertSink whose send ALWAYS fails, to prove the detector swallows the Result
@@ -116,6 +130,40 @@ TEST_CASE("detect: a believed-open position the broker shows flat is a manual cl
   CHECK(events.front().broker_qty == 0);
   CHECK(alerts.count() > 0);
   CHECK(alerts.last_level() == AlertLevel::Warning);
+
+  // IMP-16: the INSTRUMENT rides in the TYPED context, not in the free-form body.
+  // A sink scrubs the body, and an option symbol of >=20 chars
+  // (BANKNIFTY24JUN52000CE) is a token-shaped run there — so a manual-close alert
+  // for a real index option named no instrument at all. `event.detail` is an
+  // in-process record that never meets a sink, so it still carries the symbol.
+  CHECK(alerts.last_provenance().symbol == "X");
+  CHECK(alerts.last_message().find("X") == std::string::npos);
+  CHECK(events.front().detail.find("X") != std::string::npos);
+}
+
+TEST_CASE("detect: a 21-char index-option symbol reaches the alert intact (IMP-16 / M4)",
+          "[manual_intervention][provenance]") {
+  // The symbol length that used to decide whether the operator learned WHICH
+  // position was closed behind their back: scrub() redacts any >=20-char run
+  // mixing letters and digits, and BANKNIFTY24JUN52000CE is 21.
+  CountingAlertSink alerts;
+  const rec::ManualInterventionDetector detector(alerts);
+
+  const std::string banknifty = "BANKNIFTY24JUN52000CE";
+  const std::vector<Position> believed{position(banknifty, 50)};
+  const std::vector<Order> local_orders;
+  const auto truth = truth_with({});
+
+  const auto events = detector.detect(believed, local_orders, truth);
+
+  REQUIRE(events.size() == 1);
+  CHECK(alerts.count() == 1);
+  // Carried as a typed column (rendered through the SYMBOL shape rule, which is
+  // what keeps it out of scrub()'s hands) and absent from the scrubbed body.
+  CHECK(alerts.last_provenance().symbol == banknifty);
+  CHECK(alerts.last_message().find(banknifty) == std::string::npos);
+  // The quantities still travel in the body — they are integers, not secrets.
+  CHECK(alerts.last_message().find("believed=50") != std::string::npos);
 }
 
 TEST_CASE("detect: an explicitly-flat (net 0) broker position is also a manual close",
@@ -284,6 +332,14 @@ TEST_CASE("detect: a broker-acked live order absent at the broker is a manual ca
   CHECK(events.front().symbol == "X");
   CHECK(alerts.count() > 0);
   CHECK(alerts.last_level() == AlertLevel::Warning);
+
+  // IMP-16: the ALERT names the order too, via the TYPED context. Before this the
+  // ref was interpolated into the free-form body, which a sink scrubs — so the
+  // operator saw `ref=***REDACTED***`. `event.detail` (an in-process typed record
+  // that never meets a sink) is unchanged and still carries the ref inline.
+  CHECK(alerts.last_provenance().client_ref == "ord-1");
+  CHECK(alerts.last_message().find("ord-1") == std::string::npos);
+  CHECK(events.front().detail.find("ord-1") != std::string::npos);
 }
 
 TEST_CASE("detect: a broker order present-but-CANCELLED is a manual cancel",

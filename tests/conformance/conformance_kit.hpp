@@ -29,7 +29,10 @@
 //   2. UNKNOWN HANDLING (FR-9/FR-10): an ambiguous outcome is recorded as
 //      OrderState::Unknown, is enumerable, and is then either resolved against
 //      broker truth by the precedence ladder OR stays UNKNOWN-with-an-alert
-//      (fail-closed) — never silently dropped, never a second fire.
+//      (fail-closed) — never silently dropped, never a second fire. The alert must
+//      also NAME THE ORDER: an escalation carrying no typed provenance leaves the
+//      operator with nothing to reconcile, which is not a resolvable fail-closed
+//      state at all (IMP-16). See CountingAlertSink.
 //   3. ZERO DUPLICATES (NFR-3): after reconciliation, the broker holds AT MOST
 //      ONE order per client signal. A duplicate = two broker orders for the same
 //      signal; the kit counts them directly from broker truth.
@@ -102,17 +105,45 @@ namespace detail {
 // A throwaway alert sink the kit hands to the UnknownResolver: it records the
 // count of escalations so a scenario can assert that a fail-closed NoMatch DID
 // alert (UNKNOWN handling property) without coupling to message text.
+//
+// IT MUST OVERRIDE send_with_context, AND THAT IS A CONTRACT MATTER, NOT A STUB
+// DETAIL. ports::AlertSink's default send_with_context DROPS the provenance and
+// delegates to send() — the fail-closed direction for a sink that opted out, but
+// it means a sink which never overrides it still increments `count_`. A kit whose
+// only escalation assertion is "count > 0" therefore certifies a stack in which
+// EVERY escalation is anonymous: the alert fires, and it names no order. That is
+// the exact defect IMP-16 exists to fix, so the kit has to be able to SEE it.
+// Recording the context here is what lets `escalations_named_the_order()` below
+// be a real conformance property rather than a tautology.
 class CountingAlertSink final : public ports::AlertSink {
  public:
   Result<ports::Ok> send(ports::AlertLevel, const std::string&) override {
     ++count_;
+    ++anonymous_count_;  // an escalation with NO typed provenance at all
     return ports::ok();
+  }
+  Result<ports::Ok> send_with_context(ports::AlertLevel level, const std::string& message,
+                                      const ports::AlertContext& provenance) override {
+    const Result<ports::Ok> out = send(level, message);
+    if (!provenance.client_ref.empty()) {
+      --anonymous_count_;  // this one named the order
+      last_client_ref_ = provenance.client_ref;
+    }
+    return out;
   }
   Result<ports::Ok> send_test_alert() override { return ports::ok(); }
   [[nodiscard]] std::size_t count() const noexcept { return count_; }
 
+  // True iff EVERY escalation so far carried a non-empty client_ref.
+  [[nodiscard]] bool escalations_named_the_order() const noexcept {
+    return anonymous_count_ == 0;
+  }
+  [[nodiscard]] const std::string& last_client_ref() const noexcept { return last_client_ref_; }
+
  private:
   std::size_t count_ = 0;
+  std::size_t anonymous_count_ = 0;
+  std::string last_client_ref_;
 };
 
 // A scenario's declarative description: a readable name and the fault profile to
@@ -379,6 +410,22 @@ inline int count_broker_orders_for(ports::BrokerPort& broker, const std::string&
           stack.pause.mark_unknown(client_ref);
           if (stack.alerts.count() == 0) {
             fail("a fail-closed UNKNOWN did not raise an operator alert");
+          } else {
+            // ...AND THE ESCALATION MUST NAME THE ORDER (IMP-16). An alert that
+            // fires but carries no client_ref tells the operator that SOMETHING is
+            // in an unresolvable state and gives them nothing to reconcile against
+            // the broker — the safety property is "the operator can act", not "a
+            // message was sent". Asserted structurally (typed provenance present
+            // and equal to the signal's ref) rather than by grepping the body,
+            // because the body is scrubbed and a ref interpolated there would be
+            // redacted — which is the whole defect.
+            if (!stack.alerts.escalations_named_the_order()) {
+              fail("a fail-closed UNKNOWN escalated ANONYMOUSLY: the alert carried no "
+                   "typed provenance, so it named no order");
+            } else if (stack.alerts.last_client_ref() != client_ref) {
+              fail("the fail-closed escalation named '" + stack.alerts.last_client_ref() +
+                   "', not the signal that went UNKNOWN");
+            }
           }
         }
       }

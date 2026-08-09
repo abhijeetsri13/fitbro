@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 
@@ -18,6 +19,8 @@ namespace {
 [[nodiscard]] bool is_letter(char c) noexcept {
   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
 }
+
+[[nodiscard]] bool is_upper_letter(char c) noexcept { return c >= 'A' && c <= 'Z'; }
 
 [[nodiscard]] bool is_digit(char c) noexcept { return c >= '0' && c <= '9'; }
 
@@ -337,6 +340,116 @@ std::string scrub_provenance_column(std::string_view value) {
   // FAIL CLOSED: verbatim only for a value that IS an id shape; everything else
   // takes the ordinary, unchanged scrub path.
   return is_provenance_id_shape(value) ? std::string(value) : scrub(value);
+}
+
+bool is_instrument_symbol_shape(std::string_view value) noexcept {
+  // BOUNDED, and TIGHTER than the id rule rather than looser: UPPERCASE letters
+  // and digits only. An exchange symbol never mixes case; every realistic broker
+  // credential does. See the contract block in redaction.hpp for why a symbol
+  // cannot reuse is_provenance_id_shape (it is ONE heterogeneous segment, so it
+  // fails the >=2-segment rule and would fall through to scrub(), whose bare
+  // high-entropy rule destroys every >=20-char option symbol we trade).
+  if (value.empty() || value.size() > kMaxInstrumentSymbolChars) {
+    return false;
+  }
+  for (const char c : value) {
+    if (!is_upper_letter(c) && !is_digit(c)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string scrub_symbol_column(std::string_view value) {
+  return is_instrument_symbol_shape(value) ? std::string(value) : scrub(value);
+}
+
+namespace {
+
+// True iff `rendered` can sit inside the ` [k=v k=v]` block without being able to
+// terminate it, forge a neighbouring field, or inject a line break.
+//
+// AN ALLOWLIST, DELIBERATELY — see the long rationale in redaction.hpp. The
+// previous denylist (c <= 0x20, '[', ']', '=') was the ONLY guard in an otherwise
+// allowlist-shaped design, and scrub() passes unrecognised bytes through
+// unchanged, so every byte >= 0x7F reached the operator verbatim. Unicode
+// substitutes for the four blocked ASCII bytes (U+00A0 for space, U+2028 for the
+// newline, U+FF3D for ']', U+202E to reverse the run) let a broker-controlled
+// broker_order_id compose arbitrary multi-line prose inside a Critical alert.
+// Enumerating hostile code points is unwinnable; admitting only the charset a
+// legitimate value can possibly use is. This ONE predicate is shared with
+// is_provenance_id_shape so the two can never drift apart.
+[[nodiscard]] bool is_block_safe(std::string_view rendered) noexcept {
+  for (const char c : rendered) {
+    if (!is_provenance_id_char(c) && c != '*') {  // '*' for kRedactionMarker
+      return false;
+    }
+  }
+  return true;
+}
+
+// A key must satisfy the SAME charset (no '*' — a key is never the marker) and be
+// non-empty. Keys are first-party literals today; this is defence-in-depth for a
+// public renderer whose `key` is a view the caller supplies.
+[[nodiscard]] bool is_block_safe_key(std::string_view key) noexcept {
+  if (key.empty()) {
+    return false;
+  }
+  for (const char c : key) {
+    if (!is_provenance_id_char(c)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Render ONE column through the shape rule its Kind names. The two rules are
+// genuinely different (an id has >=2 homogeneous segments; a symbol is one
+// uppercase-alnum run) and neither may be applied to the other's column.
+[[nodiscard]] std::string render_column(const ProvenanceField& field) {
+  switch (field.kind) {
+    case ProvenanceField::Kind::Symbol:
+      return scrub_symbol_column(field.value);
+    case ProvenanceField::Kind::Id:
+      break;
+  }
+  return scrub_provenance_column(field.value);
+}
+
+}  // namespace
+
+std::string render_provenance_block(std::initializer_list<ProvenanceField> fields) {
+  std::string block;
+  for (const ProvenanceField& field : fields) {
+    if (field.value.empty()) {
+      continue;  // an absent id is omitted entirely, never a dangling `key=`
+    }
+    if (!is_block_safe_key(field.key)) {
+      continue;  // a key we cannot render safely cannot attribute its value: drop the field
+    }
+    // THE ONLY exemption path: a WHOLE typed column, never a substring of the
+    // body. A value that does not match its column's shape takes the ordinary scrub.
+    std::string rendered = render_column(field);
+    // ONE guard, BOTH properties, applied to BOTH branches above (the verbatim
+    // shape branch and the scrub fallback). The length bound must live HERE and
+    // not only inside is_provenance_id_shape: scrub() leaves an all-digit or
+    // all-letter run of ANY length untouched, and broker order ids are numeric, so
+    // the fallback was an unbounded broker-controlled write into an alert body, a
+    // ledger hash preimage and the JSONL file. An oversized block overruns
+    // Telegram's 4096-char message limit, failing every channel and SUPPRESSING
+    // the Critical alert outright.
+    if (rendered.size() > kMaxProvenanceIdChars || !is_block_safe(rendered)) {
+      rendered.assign(kRedactionMarker);  // fail closed: a wrong id is worse than none
+    }
+    block += block.empty() ? " [" : " ";
+    block.append(field.key);
+    block += '=';
+    block += rendered;
+  }
+  if (!block.empty()) {
+    block += ']';
+  }
+  return block;  // "" when nothing survived -> the caller's body is unchanged
 }
 
 }  // namespace broker_exec::domain

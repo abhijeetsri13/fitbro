@@ -44,27 +44,59 @@ class SpyAlertSink final : public ports::AlertSink {
     ++count_;
     last_level_ = level;
     last_message_ = message;
+    last_provenance_ = ports::AlertContext{};
     if (fail_send_) {
       return broker_exec::fail(
           errors::make_error(errors::ErrorCategory::Network, "alert channel down"));
     }
     return ports::ok();
   }
+  // IMP-16: the child ref now rides in the TYPED context instead of being
+  // interpolated into the free-form body (a sink scrubs the body, and a slicer
+  // child ref `<parent>#<k>` is one long token-shaped run, so the interpolated
+  // form reached the operator as `child ***REDACTED***`). Overriding this — rather
+  // than inheriting the base default, which drops the context — is what keeps the
+  // "the alert names the child" assertion meaningful.
+  Result<ports::Ok> send_with_context(AlertLevel level, const std::string& message,
+                                      const ports::AlertContext& provenance) override {
+    const Result<ports::Ok> out = send(level, message);
+    last_provenance_ = provenance;
+    return out;
+  }
   Result<ports::Ok> send_test_alert() override { return ports::ok(); }
 
   [[nodiscard]] std::size_t count() const noexcept { return count_; }
   [[nodiscard]] AlertLevel last_level() const noexcept { return last_level_; }
   [[nodiscard]] const std::string& last_message() const noexcept { return last_message_; }
+  [[nodiscard]] const ports::AlertContext& last_provenance() const noexcept {
+    return last_provenance_;
+  }
 
  private:
   bool fail_send_;
   std::size_t count_ = 0;
   AlertLevel last_level_ = AlertLevel::Info;
   std::string last_message_;
+  ports::AlertContext last_provenance_;
 };
 
+// The owning strategy. ALL-LETTERS ON PURPOSE — see kParent.
+const std::string kStrategy = "alpha";
+
 // The parent client_ref the slicer fans into "<parent>#<k>" children.
-const std::string kParent = "S1-deadbeef-0001";
+//
+// THIS MUST BE A REAL MINTED REF, NOT A SHORT STAND-IN. It is exactly what
+// idempotency::make_client_ref spells — `<strategy>-<8 hex sig8>-<canonical
+// RFC-4122 v4 uuid>` — because the provenance assertions below are only
+// meaningful against the shape the library actually produces. The previous
+// fixture ("S1-deadbeef-0001") was NOT that shape: "S1" is a HETEROGENEOUS
+// segment (a letter and a digit in one unbroken run), which fails the homogeneity
+// half of domain::is_provenance_id_shape, so the whole ref took the SCRUB FALLBACK
+// instead of the allowlist. The test then proved the fallback, not the exemption —
+// and since the stand-in was short enough to survive scrub() anyway, it would have
+// passed even if the allowlist were deleted. A real 51-char minted ref is one
+// token-shaped run that scrub() destroys, so the assertion now has teeth.
+const std::string kParent = kStrategy + "-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab";
 
 // The deterministic child ref for k (mirrors slicing::child_ref's binding format).
 [[nodiscard]] std::string ref(std::int64_t k) { return kParent + "#" + std::to_string(k); }
@@ -78,7 +110,7 @@ const std::string kParent = "S1-deadbeef-0001";
   parent.symbol = "NIFTY24JUN24000CE";
   parent.quantity = domain::Quantity::of(30);
   parent.price = domain::Price::from_rupees(100);
-  parent.strategy = "S1";
+  parent.strategy = kStrategy;
   return parent;
 }
 
@@ -261,10 +293,20 @@ TEST_CASE("AC-3 child Unknown at #2 => STOP (no #3), UnknownPaused, paused_at #2
   CHECK(count_of(place_log, ref(2)) == 1);
   CHECK(count_of(place_log, ref(3)) == 0);
   CHECK(result.placed_count == 1);
-  // ONE Critical alert, redaction-safe (names only the child ref).
+  // ONE Critical alert, redaction-safe, and it NAMES THE CHILD (IMP-16): the ref
+  // rides in the TYPED provenance context, not interpolated into the free-form
+  // body (where a sink's scrub would destroy it).
+  //
+  // SCOPE OF WHAT THIS PROVES, STATED HONESTLY: SpyAlertSink does not scrub, so
+  // these two lines prove the CALLER's half of the contract (the ref is handed
+  // over as a typed column and is absent from the body) and nothing about the
+  // renderer. The end-to-end half — that this exact `<minted>#2` child ref
+  // survives a REAL scrubbing sink verbatim — is asserted in alerting_test.cpp
+  // ("IMP-16: a minted CHILD slice ref survives a real sink verbatim").
   CHECK(alerts.count() == 1);
   CHECK(alerts.last_level() == AlertLevel::Critical);
-  CHECK(alerts.last_message().find(ref(2)) != std::string::npos);
+  CHECK(alerts.last_provenance().client_ref == ref(2));
+  CHECK(alerts.last_message().find(ref(2)) == std::string::npos);
 }
 
 TEST_CASE("AC-3 place Error at #2 => UnknownPaused (ambiguous mutating failure, no blind retry)") {

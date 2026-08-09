@@ -41,23 +41,38 @@ class SpyAlertSink final : public ports::AlertSink {
     ++count_;
     last_level_ = level;
     last_message_ = message;
+    last_provenance_ = ports::AlertContext{};
     if (fail_send_) {
       return broker_exec::fail(
           errors::make_error(errors::ErrorCategory::Network, "alert channel down"));
     }
     return ports::ok();
   }
+  // IMP-16: the SYMBOL rides in the typed context now (a real index-option symbol
+  // is >=20 chars and would be redacted inside the scrubbed body), so the spy has
+  // to record it — the base default would silently drop it and every assertion
+  // below would pass against an alert that named no instrument.
+  Result<ports::Ok> send_with_context(AlertLevel level, const std::string& message,
+                                      const ports::AlertContext& provenance) override {
+    const Result<ports::Ok> out = send(level, message);
+    last_provenance_ = provenance;
+    return out;
+  }
   Result<ports::Ok> send_test_alert() override { return ports::ok(); }
 
   [[nodiscard]] std::size_t count() const noexcept { return count_; }
   [[nodiscard]] AlertLevel last_level() const noexcept { return last_level_; }
   [[nodiscard]] const std::string& last_message() const noexcept { return last_message_; }
+  [[nodiscard]] const ports::AlertContext& last_provenance() const noexcept {
+    return last_provenance_;
+  }
 
  private:
   bool fail_send_;
   std::size_t count_ = 0;
   AlertLevel last_level_ = AlertLevel::Info;
   std::string last_message_;
+  ports::AlertContext last_provenance_;
 };
 
 // An AlertSink that THROWS from send() — models a real comms adapter blowing up
@@ -189,6 +204,38 @@ TEST_CASE("RE-ARM: long, trigger crossed, protective order Rejected => ReArmNeed
   CHECK(d.alert);
   CHECK(alerts.count() == 1);
   CHECK(alerts.last_level() == AlertLevel::Critical);
+  // IMP-16: the alert NAMES THE INSTRUMENT, via the typed context rather than the
+  // body. "your position is unprotected" is worthless without it, and interpolated
+  // into the scrubbed body a real >=20-char option symbol is destroyed.
+  CHECK(alerts.last_provenance().symbol == stop.symbol);
+  CHECK(alerts.last_message().find(stop.symbol) == std::string::npos);
+}
+
+TEST_CASE("RE-ARM: a >=20-char option symbol survives the protective alert (IMP-16 / M4)",
+          "[protection][provenance]") {
+  // The exact instruments this library trades. scrub() redacts any >=20-char run
+  // mixing letters and digits, so BANKNIFTY24JUN52000CE (21) interpolated into the
+  // alert body reached the operator as ***REDACTED*** — the most urgent alert in
+  // the module, naming no contract. NIFTY24JUNFUT survived only by being shorter.
+  SpyAlertSink alerts;
+  ProtectiveStop stop = long_stop(/*qty=*/75);
+  stop.symbol = "BANKNIFTY24JUN52000CE";
+
+  StopInputs in;
+  in.trigger_crossed = true;
+  in.protective_order_known = true;
+  in.protective_order_state = OrderState::Rejected;
+  in.band = wide_band();
+
+  const auto d = evaluate_protection(stop, in, alerts);
+
+  CHECK(d.state == ProtectionState::ReArmNeeded);
+  REQUIRE(alerts.count() == 1);
+  CHECK(alerts.last_provenance().symbol == "BANKNIFTY24JUN52000CE");
+  CHECK(alerts.last_message().find("BANKNIFTY") == std::string::npos);
+  // `decision.detail` is an in-process record that never meets a scrubbing sink,
+  // so it still carries the symbol inline for the caller and the audit log.
+  CHECK(d.detail.find("BANKNIFTY24JUN52000CE") != std::string::npos);
 }
 
 TEST_CASE("RE-ARM: every fired-but-unfilled state drives a re-arm") {

@@ -469,3 +469,46 @@ loop till 20 iterations." Queue: 6-1, 6-2, 6-3, 6-5b (process wiring), then tier
   glitch to terminal ManualInterventionRequired (now DataStale + recovery whitelist), M3 fixture sent every
   number as a STRING so the is_number->dump->parse path that runs on every live read had ZERO coverage,
   M4 unclamped negative qty published an attributed -5 trade. 50/50 green.
+- ITER 9 / IMP-15 DONE (fd207dc): audit provenance survives redaction. The 2-2 note was real and WORSE than
+  written: '-' is a token char, so a whole client_ref was ONE >=20 alnum run -> every audit line rendered
+  "client_ref":"***REDACTED***" (not a partial). Trail could not be joined to store/intent-log/ledger.
+  Fix: exempt ONLY the typed provenance columns via a shape allowlist (1..128, [A-Za-z0-9_#-], >=2 segments,
+  every segment homogeneous all-hex or all-letters); non-conforming column values still scrubbed; `fields`
+  byte-identical (sentinel swap -> single whole-line scrub -> splice back; splice miss = legacy render).
+  Review FIX-REQUIRED: H1 the FIRST charset was exactly the base64url alphabet -> a URL-safe credential with
+  one '-' passed all conditions and was emitted IN FULL (proven for 5 real token shapes incl. a JWT sig
+  segment); segment-homogeneity closes it, residual (pure-hex-with-separator) documented + pinned. H2
+  sentinels were CONSTANT literals -> broker text containing one silently stripped provenance from chosen
+  lines (anti-forensics) -> per-process random from an alphabet that cannot spell any needle. H3
+  orders_per_strategy keys raw in a persisted report. H5 no fixture used the ref shape uuid.cpp mints.
+  Review also caught a PRE-EXISTING leak: reports.cpp copied client_ref raw into persisted rows. 50/50 green.
+  KNOWN LIMITATION -> NEXT STORY: alerting + ledger take FREE-FORM bodies, so an alert/ledger payload naming
+  an order still loses the ref (unknown_resolver's Critical fail-closed alert and manual_intervention are the
+  live call sites). A free-form body must NOT get a substring exemption, so the fix is a typed provenance
+  parameter on AlertSink::send / Ledger::append — an ABI change across implementations + callers.
+  The false comments claiming "redaction-safe: only the client_ref" are corrected.
+- ITER 10 / IMP-16 DONE: typed provenance on alerts + ledger (the IMP-15 follow-up). AlertContext
+  {client_ref, broker_order_id, strategy, symbol} + ledger ProvenanceContext travel BESIDE the still-fully-
+  scrubbed free-form body and render through the IMP-15 allowlist into a  [k=v ...] block. Named
+  send_with_context, NOT an overload: -Woverloaded-virtual -Werror would hide the base send in all ~40
+  stubs. Base-class default delegates to 2-arg send, so nothing broke. 5 live call sites migrated to stop
+  interpolating ids into scrubbed bodies (unknown_resolver Critical alert, manual_intervention, reconciler
+  x2, sliced_leg). Ledger: provenance is INSIDE the hash preimage, and the no-provenance path is byte- and
+  hash-identical so existing chains still verify.
+  Review FIX-REQUIRED, both HIGHs probe-verified: H1 the new guard was a DENYLIST in an allowlist codebase
+  (blocked only <=0x20, [, ], =) so every byte >=0x7F passed verbatim — U+00A0 substitutes for the blocked
+  space and U+2028 for the blocked newline, letting a broker-controlled broker_order_id compose arbitrary
+  MULTI-LINE PROSE into the Critical UNKNOWN alert (one alert made to look like two); U+FF3D/U+202E forge
+  the terminator. Now an allowlist sharing ONE charset predicate with is_provenance_id_shape. H2 the length
+  bound applied only to the verbatim branch, so an all-digit value of ANY length passed — a 5000-digit
+  broker order id pushes the body past Telegram largest 4096 cap, the POST fails, and on a Telegram-only
+  deployment the CRITICAL alert never reaches the operator (broker-controlled suppression of the fail-closed
+  escalation path). M4: symbol had the identical defect and needed its OWN predicate (BANKNIFTY/FINNIFTY
+  20-23 chars were destroyed, NIFTY 17 survived — exactly the instruments traded). 50/50 green.
+  FOUND, DOCUMENTED, NOT ENFORCED (next story): a strategy named e.g. "S1" is a heterogeneous segment, so
+  EVERY client_ref it mints is non-id-shaped and destroyed in every alert; enforcing the charset at the real
+  boundary means refusing to place an order, so it is pinned + documented on make_client_ref instead.
+  ALSO NEXT: ledger payload must be UTF-8-validated before it becomes both stored text and hash preimage
+  (an invalid byte is rewritten to U+FFFD on disk, so verify_chain breaks after a restart and reads as
+  "tamper detected"); pre-existing, and the H1 allowlist bars the channel IMP-16 opened.
+

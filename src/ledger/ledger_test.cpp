@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "broker_exec/clock/test_clock.hpp"
+#include "broker_exec/domain/redaction.hpp"  // kRedactionMarker, for the IMP-16 assertions
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/result.hpp"
 
@@ -593,4 +594,167 @@ TEST_CASE("a present-but-malformed checkpoint fails closed (not ok)", "[ledger]"
   REQUIRE_FALSE(verified.has_value());
   CHECK(verified.error().category == ErrorCategory::Validation);
   CHECK(verified.error().message.find("malformed") != std::string::npos);
+}
+
+// ── IMP-16: typed provenance on a ledger entry ───────────────────────────────
+//
+// The defect: append() scrubs its FREE-FORM payload, and a minted client_ref is
+// one long token-shaped run — so a payload carrying `client_ref=<ref>` was
+// PERSISTED AND HASHED as `client_ref=***REDACTED***`, and the tamper-evident
+// chain could not be joined back to the log, the store or the intent log. The fix
+// passes the ids beside the payload as typed columns. The payload's own scrubbing
+// is UNCHANGED (re-asserted below).
+
+namespace {
+
+// A real minted client_ref, EXACTLY as make_client_ref() spells it:
+// `<strategy>-<8 hex sig>-<canonical RFC-4122 v4 uuid>` (idempotency/uuid.cpp).
+constexpr std::string_view kMintedRef = "alpha-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab";
+
+[[nodiscard]] broker_exec::ledger::ProvenanceContext order_ctx() {
+  broker_exec::ledger::ProvenanceContext ctx;
+  ctx.client_ref = std::string(kMintedRef);
+  ctx.broker_order_id = "240627000123456";  // a Kite 15-digit order id
+  ctx.strategy = "alpha";
+  return ctx;
+}
+
+}  // namespace
+
+TEST_CASE("IMP-16: a REAL minted client_ref survives a ledger entry end-to-end",
+          "[ledger][provenance]") {
+  const TempDir dir("provenance");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+  Ledger ledger(clock, file);
+
+  const auto entry = ledger.append("position closed per policy", order_ctx());
+  REQUIRE(entry.has_value());
+
+  // The ref is in the STORED payload (and therefore in the hash preimage), in the
+  // structured, greppable block — this is what makes the chain joinable to the log.
+  CHECK(entry.value().payload ==
+        "position closed per policy"
+        " [client_ref=alpha-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab"
+        " broker_order_id=240627000123456 strategy=alpha]");
+  // ...and on disk.
+  CHECK(read_file(file).find(kMintedRef) != std::string::npos);
+  // ...and the chain still verifies, because the hash is over exactly these bytes.
+  CHECK(ledger.verify_chain().has_value());
+
+  // It also survives a restart: reload from the file and re-verify.
+  Ledger fresh(clock, file);
+  REQUIRE(fresh.load().has_value());
+  CHECK(fresh.size() == 1);
+  CHECK(fresh.verify_chain().has_value());
+  CHECK(fresh.head_hash() == entry.value().hash);
+
+  // THE BASELINE THIS FIXES, pinned: the SAME ref interpolated into the FREE-FORM
+  // payload is still destroyed. The exemption reaches typed columns only.
+  Ledger legacy(clock, dir.path / "legacy.jsonl");
+  const auto legacy_entry = legacy.append("position closed; ref=" + std::string(kMintedRef));
+  REQUIRE(legacy_entry.has_value());
+  CHECK(legacy_entry.value().payload.find(kMintedRef) == std::string::npos);
+}
+
+TEST_CASE("IMP-16: an EMPTY context is hash-identical to a plain append (no chain can break)",
+          "[ledger][provenance]") {
+  const TempDir dir("provenance_hash");
+  const TestClock clock;
+  Ledger one_arg(clock, dir.path / "one.jsonl");
+  Ledger two_arg(clock, dir.path / "two.jsonl");
+
+  // The load-bearing guarantee: adding the overload cannot change ANY byte of a
+  // record written without provenance, so no existing on-disk chain is invalidated.
+  const auto a = one_arg.append("payload-alpha");
+  const auto b = two_arg.append("payload-alpha", broker_exec::ledger::ProvenanceContext{});
+  REQUIRE(a.has_value());
+  REQUIRE(b.has_value());
+  CHECK(a.value().payload == b.value().payload);
+  CHECK(a.value().payload == "payload-alpha");  // no block, no trailing space
+  CHECK(a.value().hash == b.value().hash);      // ...therefore the same preimage and hash
+}
+
+TEST_CASE("IMP-16: verify_chain passes over entries written BEFORE and AFTER provenance",
+          "[ledger][provenance]") {
+  const TempDir dir("provenance_mixed");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+
+  std::string head_before;
+  {
+    // Phase 1 — a chain written the old way (no provenance at all).
+    Ledger ledger(clock, file);
+    append_all(ledger, {"p0", "p1", "p2"});
+    head_before = ledger.head_hash();
+    REQUIRE(ledger.verify_chain().has_value());
+  }
+
+  {
+    // Phase 2 — the SAME file grown with provenance-carrying entries.
+    Ledger ledger(clock, file);
+    REQUIRE(ledger.load().has_value());
+    CHECK(ledger.size() == 3);
+    CHECK(ledger.head_hash() == head_before);  // the pre-existing tail is untouched
+    CHECK(ledger.verify_chain().has_value());  // ...and still verifies as loaded
+
+    REQUIRE(ledger.append("order filled", order_ctx()).has_value());
+    REQUIRE(ledger.append("position squared off", order_ctx()).has_value());
+    CHECK(ledger.size() == 5);
+    CHECK(ledger.verify_chain().has_value());  // mixed old + new links verify
+  }
+
+  // Phase 3 — a cold reload of the mixed file verifies too, and the old entries
+  // are byte-for-byte what they were.
+  Ledger fresh(clock, file);
+  REQUIRE(fresh.load().has_value());
+  CHECK(fresh.size() == 5);
+  CHECK(fresh.verify_chain().has_value());
+  CHECK(read_file(file).find(kMintedRef) != std::string::npos);
+}
+
+TEST_CASE("IMP-16: a token in a ledger provenance column is still REDACTED (fail closed)",
+          "[ledger][provenance][redaction]") {
+  const TempDir dir("provenance_redaction");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+  Ledger ledger(clock, file);
+
+  // A credential parked in every id column, AND a credential in the free-form
+  // payload: both must be gone, proving the typed block is no escape hatch and
+  // that the payload's own scrubbing is unchanged.
+  broker_exec::ledger::ProvenanceContext ctx;
+  ctx.client_ref = std::string(kToken);
+  ctx.broker_order_id = std::string(kToken);
+  ctx.strategy = std::string(kToken);
+
+  const auto entry = ledger.append(std::string("order token=") + std::string(kToken), ctx);
+  REQUIRE(entry.has_value());
+
+  CHECK(entry.value().payload.find(kToken) == std::string::npos);
+  CHECK(read_file(file).find(kToken) == std::string::npos);
+  CHECK(entry.value().payload.find(broker_exec::domain::kRedactionMarker) != std::string::npos);
+  CHECK(ledger.verify_chain().has_value());
+}
+
+TEST_CASE("IMP-16: the heartbeat can name what it reports on, and still scrubs",
+          "[ledger][provenance]") {
+  const TestClock clock;
+  const auto ts = clock.now_wall();
+
+  const std::string summary = std::string("net=+50 exposure=") + std::string(kToken);
+  const PositionHeartbeat hb = Ledger::make_heartbeat(summary, ts, order_ctx());
+
+  CHECK(hb.exposure.find("net=+50") != std::string::npos);   // exposure preserved
+  CHECK(hb.exposure.find(kToken) == std::string::npos);      // the secret is still scrubbed
+  CHECK(hb.exposure.find(kMintedRef) != std::string::npos);  // ...and the ref now survives
+  CHECK(hb.to_json().find(kMintedRef) != std::string::npos);
+  CHECK(hb.to_json().find(kToken) == std::string::npos);
+
+  // An empty context leaves the heartbeat byte-identical to the 2-argument form.
+  const PositionHeartbeat plain = Ledger::make_heartbeat("net=+50", ts);
+  const PositionHeartbeat plain_ctx =
+      Ledger::make_heartbeat("net=+50", ts, broker_exec::ledger::ProvenanceContext{});
+  CHECK(plain.exposure == plain_ctx.exposure);
+  CHECK(plain.to_json() == plain_ctx.to_json());
 }

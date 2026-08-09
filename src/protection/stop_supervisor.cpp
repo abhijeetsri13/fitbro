@@ -35,9 +35,22 @@ namespace {
 // outcome or break evaluate_protection's no-throw contract (mirrors
 // options::hedge_first's best-effort alerting). The decision is returned
 // regardless of whether delivery succeeded.
-void best_effort_alert(ports::AlertSink& alerts, const std::string& message) {
+//
+// THE SYMBOL TRAVELS AS TYPED PROVENANCE, NOT IN THE BODY (IMP-16). A sink scrubs
+// the whole free-form body, and scrub()'s bare high-entropy rule redacts any
+// >=20-char run mixing letters and digits — so an interpolated
+// "PROTECTION: BANKNIFTY24JUN52000CE ..." reached the operator as
+// "PROTECTION: ***REDACTED*** ...". The single most urgent alert this module can
+// raise — "your position is unprotected" — named NO INSTRUMENT for precisely the
+// index options this library trades (NIFTY at 17 chars survived; FINNIFTY,
+// BANKNIFTY and MIDCPNIFTY at 20-22 did not). ports::AlertContext::symbol is
+// rendered through the whole-column symbol allowlist instead.
+void best_effort_alert(ports::AlertSink& alerts, const std::string& message,
+                       const std::string& symbol) {
+  ports::AlertContext provenance;
+  provenance.symbol = symbol;
   try {
-    (void)alerts.send(ports::AlertLevel::Critical, message);
+    (void)alerts.send_with_context(ports::AlertLevel::Critical, message, provenance);
   } catch (...) {  // NOLINT(bugprone-empty-catch): alerting is strictly best-effort
   }
 }
@@ -85,9 +98,10 @@ ProtectionDecision evaluate_protection(const ProtectiveStop& stop, const StopInp
     decision.state = ProtectionState::Unprotected;
     decision.detail =
         "non-positive exit qty for " + stop.symbol + ": cannot form protective exit";
-    best_effort_alert(alerts, "PROTECTION: " + stop.symbol +
-                                  " has a non-positive exit quantity; cannot arm a "
-                                  "protective exit — manual intervention required");
+    best_effort_alert(alerts,
+                      "PROTECTION: non-positive exit quantity; cannot arm a protective "
+                      "exit — manual intervention required",
+                      stop.symbol);
     decision.alert = true;
     return decision;
   }
@@ -131,9 +145,10 @@ ProtectionDecision evaluate_protection(const ProtectiveStop& stop, const StopInp
     decision.exit.limit_price = clamp_into_band(exit_side, stop.protective_limit, in.band);
     decision.detail = "re-arm protective " + side_tag + " for " + stop.symbol +
                       ": stop fired-but-unfilled; limit clamped into band";
-    best_effort_alert(alerts, "PROTECTION: re-arming protective " + side_tag + " exit for " +
-                                  stop.symbol +
-                                  " — stop trigger crossed but protective order did NOT fill");
+    best_effort_alert(alerts,
+                      "PROTECTION: re-arming protective " + side_tag +
+                          " exit — stop trigger crossed but protective order did NOT fill",
+                      stop.symbol);
   } else {
     // FAIL-CLOSED for the price: we do NOT skip the exit (an unprotected
     // position is worse than an at-risk price), but we send it UNCLAMPED and
@@ -142,9 +157,10 @@ ProtectionDecision evaluate_protection(const ProtectiveStop& stop, const StopInp
     decision.detail = "re-arm protective " + side_tag + " for " + stop.symbol +
                       ": stop fired-but-unfilled; band unknown — protective limit unclamped";
     best_effort_alert(alerts,
-                      "PROTECTION: re-arming protective " + side_tag + " exit for " +
-                          stop.symbol +
-                          " — band unknown; protective limit UNCLAMPED (price not made safe)");
+                      "PROTECTION: re-arming protective " + side_tag +
+                          " exit — band unknown; protective limit UNCLAMPED (price not "
+                          "made safe)",
+                      stop.symbol);
   }
   decision.alert = true;
   return decision;
