@@ -143,6 +143,19 @@ TEST_CASE("Aggregate value types compare by value", "[domain][types]") {
   intent2.side = Side::Buy;
   REQUIRE(intent != intent2);
 
+  // The trigger price (IMP-11) is part of value identity, and — because it is an
+  // optional — ABSENT and PRESENT are distinguishable, not collapsed onto a zero.
+  REQUIRE_FALSE(intent.trigger_price.has_value());  // default: not a stop order
+  OrderIntent armed = intent;
+  armed.trigger_price = Price::from_rupees(119, 50);
+  REQUIRE(intent != armed);
+  OrderIntent armed_higher = armed;
+  armed_higher.trigger_price = Price::from_rupees(121);
+  REQUIRE(armed != armed_higher);  // a different LEVEL is a different order
+  OrderIntent armed_at_zero = intent;
+  armed_at_zero.trigger_price = Price::from_paise(0);
+  REQUIRE(intent != armed_at_zero);  // absent != engaged-at-zero
+
   const Order order{.intent = intent,
                     .state = OrderState::PartiallyFilled,
                     .broker_order_id = "BRK-1",
@@ -192,6 +205,16 @@ TEST_CASE("Value types serialize to a stable, non-empty string", "[domain][seria
   REQUIRE(is.find("order_type=LIMIT") != std::string::npos);
   REQUIRE(is.find("product=DELIVERY") != std::string::npos);
   REQUIRE(is.find("price=99.95") != std::string::npos);
+  // An absent trigger prints "none" — a log reader must be able to tell "not a
+  // stop order" from "a stop armed at 0.00".
+  REQUIRE(is.find("trigger_price=none") != std::string::npos);
+
+  OrderIntent stop = intent;
+  stop.order_type = OrderType::StopLoss;
+  stop.trigger_price = Price::from_rupees(99, 50);
+  const std::string ss = stop.to_string();
+  REQUIRE(ss.find("trigger_price=99.50") != std::string::npos);
+  REQUIRE(ss.find("price=99.95") != std::string::npos);  // BOTH numbers, distinctly
 
   const Order order{.intent = intent,
                     .state = OrderState::Sent,

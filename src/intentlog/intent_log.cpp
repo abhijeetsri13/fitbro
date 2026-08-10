@@ -12,6 +12,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "broker_exec/domain/utf8.hpp"
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/platform/durable.hpp"
 #include "sha256.hpp"
@@ -44,6 +45,36 @@
 // The JSON line on disk is a *projection* of the same fields (human/diff
 // friendly); the hash is computed over the canonical form above, NOT over the
 // JSON text, so JSON key ordering / whitespace can never affect integrity.
+//
+// ── UTF-8 CANONICAL BY CONSTRUCTION (IMP-17) ─────────────────────────────────
+//
+// The projection above only holds if the JSON writer reproduces the SAME BYTES
+// the canonical form hashed, and for two of those fields — `client_ref` and
+// `payload_json` — the bytes are CALLER-SUPPLIED (a strategy name, an instrument
+// symbol, an operator-provided ref; see idempotency::intent_payload_json). An
+// ill-formed UTF-8 byte in either one used to have two failure modes, both bad:
+//
+//   * WITH THE DEFAULT DUMP HANDLER (which is error_handler_t::strict, what this
+//     file used) nlohmann THROWS json::type_error.316. append() returns
+//     Result<IntentRecord> — a NO-THROW BOUNDARY — and sits on the ORDER DISPATCH
+//     HOT PATH (runtime/dispatcher.cpp). This log is the DURABLE TRUTH, fsync'd
+//     BEFORE the broker socket write, so a throw here is a crash between "decided
+//     to trade" and "recorded that we decided".
+//   * WITH error_handler_t::replace ALONE the throw goes away but the ill-formed
+//     sequence is rewritten to U+FFFD ON THE WAY OUT, so the line on disk is not
+//     the text we hashed and replay() reports "record tampered" on our own record.
+//
+// The fix is the SAME ONE the ledger uses, from the SAME implementation:
+// domain::canonical_text() normalises caller text to valid UTF-8 EXACTLY ONCE, at
+// the top of append(), BEFORE the canonical bytes are built. From there the
+// hashed bytes and the written bytes are the same std::string by construction, and
+// the dump (which now also passes error_handler_t::replace, belt and braces) has
+// nothing left to replace. Valid UTF-8 — ASCII and multi-byte alike — is
+// byte-identical through canonical_text, so NO existing record's hash moves and
+// this is NOT a schema-version bump.
+//
+// NORMALISE, NOT REJECT: an untrusted byte must not be able to fail an order's
+// write-ahead record. See include/broker_exec/domain/utf8.hpp for the contract.
 
 namespace broker_exec::intentlog {
 
@@ -112,7 +143,17 @@ void append_framed(std::string& out, std::string_view value) {
   j["wall_ts_ns"] = record.wall_ts_ns;
   j["prev_hash"] = record.prev_hash;
   j["hash"] = record.hash;
-  std::string line = j.dump();
+  // error_handler_t::replace, NOT the default (which is ::strict and THROWS
+  // json::type_error.316 on an ill-formed UTF-8 byte — across append()'s no-throw
+  // Result boundary, on the order hot path). This is BELT AND BRACES: append()
+  // has already run every caller-supplied field through domain::canonical_text,
+  // so by construction there is nothing here to replace and the bytes written are
+  // exactly the bytes hashed. Keeping the handler anyway makes the NO-THROW
+  // contract independent of the normaliser being correct — if the normaliser ever
+  // regressed we would get a (loud, detectable) hash mismatch on replay instead of
+  // an exception escaping mid-dispatch. `op` is a fixed ASCII enum name and the
+  // hashes are hex, so no other field can reach the handler at all.
+  std::string line = j.dump(-1, ' ', /*ensure_ascii=*/false, json::error_handler_t::replace);
   line.push_back('\n');
   return line;
 }
@@ -205,9 +246,24 @@ Result<IntentRecord> IntentLog::append(IntentOp op, std::string client_ref,
   IntentRecord record;
   record.schema_version = kSchemaVersion;
   record.seq = next_seq_;
-  record.client_ref = std::move(client_ref);
   record.op = op;
-  record.payload_json = std::move(payload_json);
+  // ── THE IMP-17 CHOKE POINT: PREIMAGE == STORED BYTES, BY CONSTRUCTION ───────
+  //
+  // The ONLY two caller-supplied byte strings in a record, normalised to valid
+  // UTF-8 HERE, ONCE, and BEFORE anything reads them. `record.client_ref` and
+  // `record.payload_json` are from this line on BOTH the hash preimage (via
+  // canonical_bytes() below) AND the text to_json_line() writes — the same two
+  // std::strings, with no transform in between, so they cannot diverge and the
+  // serialiser's replace handler is provably a no-op. Every other field is
+  // machine-generated ASCII (a hex hash, "GENESIS", a fixed enum name, integers).
+  //
+  // NEVER REJECTS: an ill-formed byte yields U+FFFD (one per maximal subpart), not
+  // a failed append — refusing to record an order intent because a strategy name
+  // carried a stray byte would leave a possibly-sent order un-enumerable, which is
+  // the exact failure this log exists to prevent. Valid UTF-8 passes through
+  // byte-identical, so every record ever written keeps its hash.
+  record.client_ref = domain::canonical_text(client_ref);
+  record.payload_json = domain::canonical_text(payload_json);
 
   const auto wall = clock_->now_wall().time_since_epoch();
   record.wall_ts_ns =
@@ -338,7 +394,15 @@ Result<std::vector<IntentRecord>> IntentLog::replay() {
 }
 
 std::optional<IntentRecord> IntentLog::last_for(std::string_view client_ref) const {
-  const auto it = index_.find(std::string(client_ref));
+  // Look up by the CANONICAL ref, because that is the only key the index can
+  // contain: append() canonicalises before inserting, and replay() reads back the
+  // canonical bytes from disk. Canonicalising the QUERY too is what keeps the
+  // idempotency lookup total — a caller that appended with an ill-formed ref and
+  // then asks with the same (still ill-formed) bytes must find its own record, or
+  // restart-dedup would silently miss and the order could be placed twice. Free
+  // for every real ref: canonical_text is the identity on valid UTF-8, and is
+  // idempotent, so an already-canonical query hashes to the same key.
+  const auto it = index_.find(domain::canonical_text(client_ref));
   if (it == index_.end()) {
     return std::nullopt;
   }

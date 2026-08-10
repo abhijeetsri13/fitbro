@@ -11,6 +11,7 @@
 #include <sqlite3.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -80,6 +81,7 @@ class Statement {
   [[nodiscard]] int bind_int64(int index, std::int64_t value) noexcept {
     return sqlite3_bind_int64(stmt_, index, static_cast<sqlite3_int64>(value));
   }
+  [[nodiscard]] int bind_null(int index) noexcept { return sqlite3_bind_null(stmt_, index); }
 
   // ── Column accessors (0-based index) ──────────────────────────────────────
   [[nodiscard]] std::string column_text(int index) const {
@@ -96,6 +98,18 @@ class Statement {
   [[nodiscard]] std::int64_t column_int64(int index) const noexcept {
     return static_cast<std::int64_t>(sqlite3_column_int64(stmt_, index));
   }
+  // A NULL column reads back as 0 through column_int64(), which is exactly the
+  // "absent vs zero" confusion an optional column exists to avoid — so ask.
+  [[nodiscard]] bool column_is_null(int index) const noexcept {
+    return sqlite3_column_type(stmt_, index) == SQLITE_NULL;
+  }
+  // A nullable integer column as an optional: NULL -> nullopt, else the value.
+  [[nodiscard]] std::optional<std::int64_t> column_opt_int64(int index) const noexcept {
+    if (column_is_null(index)) {
+      return std::nullopt;
+    }
+    return column_int64(index);
+  }
 
   // ── Fluent binding ────────────────────────────────────────────────────────
   // text()/i64() bind the next positional parameter (1-based, auto-incrementing)
@@ -111,6 +125,14 @@ class Statement {
   Statement& i64(std::int64_t value) noexcept {
     if (status_ == SQLITE_OK) {
       status_ = bind_int64(next_++, value);
+    }
+    return *this;
+  }
+  // An optional integer: an absent value binds SQL NULL rather than a sentinel,
+  // so the round-trip preserves "absent" instead of inventing a number for it.
+  Statement& opt_i64(std::optional<std::int64_t> value) noexcept {
+    if (status_ == SQLITE_OK) {
+      status_ = value.has_value() ? bind_int64(next_++, *value) : bind_null(next_++);
     }
     return *this;
   }

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -33,7 +34,7 @@ using detail::step_done;
 // from version i to version i+1. NEVER edit a shipped migration's SQL — add a
 // new one. Each migration runs inside the same transaction that bumps the
 // version row, so a crash leaves the database either fully at N or fully at N-1.
-constexpr int kCurrentSchemaVersion = 1;
+constexpr int kCurrentSchemaVersion = 2;
 
 // Migration 1: the initial schema. Tables orders/trades/positions/funds/
 // risk_events/audit, with UNIQUE(client_ref) on orders (the idempotency
@@ -89,8 +90,26 @@ CREATE TABLE audit (
 );
 )sql";
 
-// Ordered, append-only. Index i migrates version i -> i+1.
-constexpr std::array<std::string_view, kCurrentSchemaVersion> kMigrations = {kMigration1};
+// Migration 2 (IMP-11): a stop order's ACTIVATION price, distinct from the limit
+// price already in `price_paise`. An SL needs both numbers and an SL-M needs the
+// trigger alone; projecting only `price_paise` would silently drop the trigger of
+// every stop order this store round-trips.
+//
+// `NULL` IS THE ABSENT TRIGGER — the direct projection of the domain's
+// `std::optional<Price>`, and the reason this is an added COLUMN rather than a
+// reused one. A sentinel number (0, -1) would be indistinguishable from a real
+// value read back through an integer accessor, which is precisely the "absent vs
+// zero" confusion this whole change exists to remove. Every pre-existing row gets
+// NULL, which decodes to nullopt: correct by construction, since no order written
+// before this migration ever had a distinct trigger to lose.
+constexpr std::string_view kMigration2 = R"sql(
+ALTER TABLE orders ADD COLUMN trigger_price_paise INTEGER;
+)sql";
+
+// Ordered, append-only. Index i migrates version i -> i+1. NEVER edit a shipped
+// migration's SQL — append a new one.
+constexpr std::array<std::string_view, kCurrentSchemaVersion> kMigrations = {kMigration1,
+                                                                             kMigration2};
 
 // Every table the schema owns, for reset()/rebuild (drop in any order — no FKs).
 constexpr std::array<std::string_view, 6> kTableNames = {"orders", "trades",     "positions",
@@ -470,6 +489,11 @@ namespace {
 // statement must declare the parameters in this exact order (1-based).
 [[nodiscard]] Result<Ok> bind_order(Statement& stmt, const domain::Order& o) {
   const domain::OrderIntent& in = o.intent;
+  // An ABSENT trigger binds SQL NULL (see kMigration2): the projection must be
+  // able to say "this is not a stop order" without picking a number that means it.
+  const std::optional<std::int64_t> trigger =
+      in.trigger_price.has_value() ? std::optional<std::int64_t>{in.trigger_price->paise()}
+                                   : std::nullopt;
   const int rc = stmt.text(in.client_ref)
                      .text(in.symbol)
                      .text(encode(in.side))
@@ -482,6 +506,7 @@ namespace {
                      .text(o.broker_order_id)
                      .i64(o.filled_qty.value())
                      .i64(o.avg_price.paise())
+                     .opt_i64(trigger)
                      .bind_status();
   if (rc != SQLITE_OK) {
     return fail(detail::sqlite_error(rc, "bind order"));
@@ -491,7 +516,8 @@ namespace {
 
 // Read a domain::Order out of a stepped statement whose columns are, in order:
 // client_ref, symbol, side, quantity, price_paise, order_type, product,
-// strategy, state, broker_order_id, filled_qty, avg_price_paise.
+// strategy, state, broker_order_id, filled_qty, avg_price_paise,
+// trigger_price_paise (nullable — NULL means "not a stop order").
 [[nodiscard]] domain::Order read_order(const Statement& stmt) {
   domain::Order o;
   o.intent.client_ref = stmt.column_text(0);
@@ -506,19 +532,23 @@ namespace {
   o.broker_order_id = stmt.column_text(9);
   o.filled_qty = domain::Quantity::of(stmt.column_int64(10));
   o.avg_price = domain::Price::from_paise(stmt.column_int64(11));
+  // NULL (a row written before migration 2, or a non-stop order) -> nullopt.
+  if (const std::optional<std::int64_t> trigger = stmt.column_opt_int64(12)) {
+    o.intent.trigger_price = domain::Price::from_paise(*trigger);
+  }
   return o;
 }
 
 constexpr std::string_view kOrderColumns =
     "client_ref, symbol, side, quantity, price_paise, order_type, product, "
-    "strategy, state, broker_order_id, filled_qty, avg_price_paise";
+    "strategy, state, broker_order_id, filled_qty, avg_price_paise, trigger_price_paise";
 
 }  // namespace
 
 Result<Ok> Store::insert_order(const domain::Order& order) {
   auto stmt = prepare(db_.get(),
                       "INSERT INTO orders (" + std::string(kOrderColumns) +
-                          ") VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12);");
+                          ") VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13);");
   if (!stmt) {
     return fail(stmt.error());
   }
@@ -541,13 +571,14 @@ Result<Ok> Store::upsert_order(const domain::Order& order) {
   auto stmt = prepare(
       db_.get(),
       "INSERT INTO orders (" + std::string(kOrderColumns) +
-          ") VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) "
+          ") VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) "
           "ON CONFLICT(client_ref) DO UPDATE SET "
           "symbol=excluded.symbol, side=excluded.side, quantity=excluded.quantity, "
           "price_paise=excluded.price_paise, order_type=excluded.order_type, "
           "product=excluded.product, strategy=excluded.strategy, state=excluded.state, "
           "broker_order_id=excluded.broker_order_id, filled_qty=excluded.filled_qty, "
-          "avg_price_paise=excluded.avg_price_paise;");
+          "avg_price_paise=excluded.avg_price_paise, "
+          "trigger_price_paise=excluded.trigger_price_paise;");
   if (!stmt) {
     return fail(stmt.error());
   }

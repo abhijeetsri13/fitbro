@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include "broker_exec/domain/enums.hpp"
@@ -33,7 +34,23 @@ struct OrderIntent {
   std::string symbol;
   Side side{Side::Buy};
   Quantity quantity;
-  Price price;  // Limit/trigger price; ignored for Market orders.
+  // The LIMIT price. Meaningful for Limit and StopLoss (SL); IGNORED for Market
+  // and StopLossMarket (SL-M), which have no limit to enforce.
+  Price price;
+  // The ACTIVATION (stop) price, DISTINCT from the limit price above.
+  //
+  // ABSENT (nullopt) == "this is not a stop order". A stop-loss-LIMIT (SL) needs
+  // BOTH numbers — the trigger that arms it and the limit it then works at — and
+  // a stop-loss-MARKET (SL-M) needs the trigger alone. Before this field existed
+  // the adapters sent `price` as both, so a live SL either armed at its limit or
+  // could not be expressed at all.
+  //
+  // The shape invariants (SL requires trigger+price, SL-M requires trigger and
+  // ignores the limit, Limit/Market forbid a trigger) are enforced FAIL-CLOSED at
+  // the validation gate (risk::ValidationGate), which also tick-checks the
+  // trigger exactly as it tick-checks the limit. Producers should leave this
+  // nullopt for any non-stop order rather than parking a stale number in it.
+  std::optional<Price> trigger_price;
   OrderType order_type{OrderType::Market};
   Product product{Product::Intraday};
   std::string strategy;  // Owning strategy id (multi-strategy isolation).

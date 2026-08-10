@@ -59,58 +59,58 @@ development_status:
   epic-1-retrospective: optional
 
   # ── Epic 2: Live Kite Trading — Validation Gate, Risk, Reference Data & Session ──
-  epic-2: backlog
-  2-1-typed-configuration-system: backlog
-  2-2-secret-provider-token-encryption-and-the-redaction-scrubber: backlog
-  2-3-kite-connect-rest-client-the-transport: backlog
-  2-4-kite-daily-session-establishment-and-expiry-detection: backlog
-  2-5-capability-model-and-early-rejection: backlog
-  2-6-instrument-master-lifecycle: backlog
-  2-7-trading-calendar-lifecycle: backlog
-  2-8-pre-submission-validation-gate: backlog
-  2-9-freeze-quantity-slicer: backlog
-  2-10-four-level-risk-engine: backlog
-  2-11-funds-margin-view-with-cadence-and-fail-closed-gate: backlog
-  2-12-rate-limiter-with-reserved-exit-lane: backlog
-  2-13-safe-start-cold-boot-gate: backlog
-  2-14-kite-adapter-conformance-and-live-min-qty-smoke: backlog
+  epic-2: done
+  2-1-typed-configuration-system: done
+  2-2-secret-provider-token-encryption-and-the-redaction-scrubber: done
+  2-3-kite-connect-rest-client-the-transport: done
+  2-4-kite-daily-session-establishment-and-expiry-detection: done
+  2-5-capability-model-and-early-rejection: done
+  2-6-instrument-master-lifecycle: done
+  2-7-trading-calendar-lifecycle: done
+  2-8-pre-submission-validation-gate: done
+  2-9-freeze-quantity-slicer: done
+  2-10-four-level-risk-engine: done
+  2-11-funds-margin-view-with-cadence-and-fail-closed-gate: done
+  2-12-rate-limiter-with-reserved-exit-lane: done
+  2-13-safe-start-cold-boot-gate: done
+  2-14-kite-adapter-conformance-and-live-min-qty-smoke: done
   epic-2-retrospective: optional
 
   # ── Epic 3: Resilience — Reconciliation, Recovery, Safe Degradation & Kill Switches ──
-  epic-3: backlog
-  3-1-continuous-reconciliation-fetch-off-loop-apply-on-loop: backlog
-  3-2-manual-intervention-detection: backlog
-  3-3-corporate-action-awareness: backlog
-  3-4-crash-recovery-reconcile-before-resume: backlog
-  3-5-market-data-tick-stream-with-tradability-states: backlog
-  3-6-liveness-and-process-self-health-watchdogs: backlog
-  3-7-degradation-posture-coordinator: backlog
-  3-8-kill-switches-with-operator-control-plane: backlog
+  epic-3: done
+  3-1-continuous-reconciliation-fetch-off-loop-apply-on-loop: done
+  3-2-manual-intervention-detection: done
+  3-3-corporate-action-awareness: done
+  3-4-crash-recovery-reconcile-before-resume: done
+  3-5-market-data-tick-stream-with-tradability-states: done
+  3-6-liveness-and-process-self-health-watchdogs: done
+  3-7-degradation-posture-coordinator: done
+  3-8-kill-switches-with-operator-control-plane: done
   epic-3-retrospective: optional
 
   # ── Epic 4: Operator Visibility — Observability, Alerts, Ledger, Modes & Surface ──
-  epic-4: backlog
-  4-1-structured-logging-provenance-audit: backlog
-  4-2-daily-error-reconciliation-reports: backlog
-  4-3-alerting-with-dead-man-s-switch: backlog
-  4-4-tamper-evident-ledger-eod-signed-report-heartbeat: backlog
-  4-5-trading-modes: backlog
-  4-6-cli-and-localhost-health-endpoint: backlog
+  epic-4: done
+  4-1-structured-logging-provenance-audit: done
+  4-2-daily-error-reconciliation-reports: done
+  4-3-alerting-with-dead-man-s-switch: done
+  4-4-tamper-evident-ledger-eod-signed-report-heartbeat: done
+  4-5-trading-modes: done
+  4-6-cli-and-localhost-health-endpoint: done
   epic-4-retrospective: optional
 
   # ── Epic 5: Option-Selling Safety — Hedge-First, Baskets, Slicing & Margin Shock ──
-  epic-5: backlog
-  5-1-hedge-first-execution-with-naked-sell-prevention: backlog
-  5-2-basket-multi-leg-execution: backlog
-  5-3-freeze-slicing-at-option-size: backlog
-  5-4-margin-span-shock-simulation-capability-gated: backlog
+  epic-5: done
+  5-1-hedge-first-execution-with-naked-sell-prevention: done
+  5-2-basket-multi-leg-execution: done
+  5-3-freeze-slicing-at-option-size: done
+  5-4-margin-span-shock-simulation-capability-gated: done
   epic-5-retrospective: optional
 
   # ── Epic 6: Breadth — Kotak Neo Adapter & Multi-Account ──
-  epic-6: backlog
-  6-1-kotak-neo-rest-websocket-client-and-multi-step-auth: backlog
-  6-2-kotak-neo-adapter-certification: backlog
-  6-3-broker-portability-proof: backlog
-  6-4-multi-strategy-isolation: backlog
-  6-5-multi-account-process-per-account-with-supervisor: backlog
+  epic-6: done
+  6-1-kotak-neo-rest-websocket-client-and-multi-step-auth: done
+  6-2-kotak-neo-adapter-certification: done
+  6-3-broker-portability-proof: done
+  6-4-multi-strategy-isolation: done
+  6-5-multi-account-process-per-account-with-supervisor: done
   epic-6-retrospective: optional

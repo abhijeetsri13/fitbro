@@ -5,7 +5,11 @@ Documentation for the **Broker-Neutral Trading Execution Library** (C++20). The 
 ## Start here
 - [Project README](../README.md) — what it is, the core promise, the stack.
 - [Architecture Overview](architecture-overview.md) — the design, the safety guarantees, and the C++ technology stack.
+- [Multi-account operation](multi-account.md) — process-per-account layout, the shared refdata cache and its cross-process lock, the exit-code contract, and the systemd template unit.
 - [Roadmap](roadmap.md) — the 6 epics and what ships in the MVP.
+
+## Operations
+- [Upgrade: IMP-11 stop orders](upgrade-imp-11-stops.md) — **flatten stops before deploying (either direction).** Why a stop's signal signature changes across this release, the duplicate-order hazard that follows, and the cold-boot gate that enforces the procedure.
 
 ## The full design contract
 - **Specification** — the canonical machine contract (34 capabilities CAP-1…CAP-34):

@@ -1,0 +1,93 @@
+# broker_exec — example configuration (Story 2.1, FR-34).
+#
+# This documents the full, NON-SECRET configuration surface. The same binary
+# runs dev/paper/live by config alone. Layering order (lowest -> highest):
+#
+#     built-in defaults  ->  this TOML file  ->  environment overrides (env WINS)
+#
+# Every field has an environment override named BROKER_EXEC_<SECTION>_<FIELD>
+# (uppercase), e.g. engine.mode -> BROKER_EXEC_ENGINE_MODE. Use env overrides to
+# specialize one shared file into dev/paper/live-small/live-prod.
+#
+# SECRETS DO NOT BELONG HERE. API keys, tokens, passwords, MPIN, TOTP seeds, etc.
+# are provided ONLY via the environment seam / SecretProvider. Any key whose name
+# contains token/secret/password/api_key/mpin/totp (case-insensitive) is REJECTED
+# at load — the config file fails fast rather than ever persisting a credential.
+
+[engine]
+# Trading run mode: "dry-run" | "paper" | "live" | "replay". dry-run is the safe
+# default and never touches a live broker. (env: BROKER_EXEC_ENGINE_MODE)
+mode = "paper"
+# Logical account label this process trades. Required.
+# (env: BROKER_EXEC_ENGINE_ACCOUNT_ID)
+account_id = "acct-dev-01"
+
+[broker]
+# Broker adapter selector, e.g. "kite" | "kotak_neo". Required.
+# (env: BROKER_EXEC_BROKER_NAME)
+name = "kite"
+# REST base URL for the broker (optional). (env: BROKER_EXEC_BROKER_BASE_URL)
+base_url = "https://api.kite.trade"
+# Per-call timeout in milliseconds; must be > 0. (env: BROKER_EXEC_BROKER_TIMEOUT_MS)
+timeout_ms = 5000
+
+[risk]
+# Hard cap on a single order's notional, in integer paise (never a float).
+# 0 means no cap configured here. Must be >= 0.
+# (env: BROKER_EXEC_RISK_MAX_ORDER_VALUE_PAISE)
+max_order_value_paise = 5000000
+# Maximum number of simultaneously open positions; must be >= 0.
+# (env: BROKER_EXEC_RISK_MAX_OPEN_POSITIONS)
+max_open_positions = 10
+
+[paths]
+# Base directory for durable state (intent log, store, ...). Required.
+# Use a real path for your platform; std::filesystem resolves the grammar.
+# (env: BROKER_EXEC_PATHS_DATA_DIR)
+data_dir = "/var/lib/broker_exec"
+# Directory for logs (optional). (env: BROKER_EXEC_PATHS_LOG_DIR)
+log_dir = "/var/log/broker_exec"
+
+[logging]
+# Verbosity: "trace" | "debug" | "info" | "warn" | "error".
+# (env: BROKER_EXEC_LOGGING_LEVEL)
+level = "info"
+
+[strategies]
+# The strategies this deployment DECLARES, by name (IMP-19). Optional: an absent
+# or empty list is legal (a host that registers strategies programmatically
+# declares none here). The list is VALIDATED, not required.
+#
+# EVERY ENTRY IS CHECKED AT LOAD and a bad one FAILS the load, naming the entry
+# (as `strategies.names entry #N`) and the rule it broke. A name must be 1..64
+# bytes drawn from [A-Za-z0-9_-], carry at least one letter or digit, and have
+# every '-'/'_'-separated segment either ALL LETTERS or ALL HEX/DIGITS:
+#
+#   accepted:  "alpha"  "S-1"  "IRON_CONDOR"  "atm-straddle-9-20"  "momentum-v-2"
+#   rejected:  "S1"  "momentum-v2"  "iron condor v2"  "a.b"  "a#b"  "-"  ""
+#
+# That is not cosmetic. The name is the FIRST SEGMENT of every client_ref it mints
+# ("<strategy>-<sig8>-<uuid>"), and the redaction scrubber only lets a provenance
+# column through verbatim when every segment is homogeneous — so "S1" makes every
+# alert and every ledger entry about that strategy's orders read
+# `client_ref=***REDACTED***`, unlinkable to the store and the intent log. The
+# loader PRINTS THE FIX where one exists ("S1" -> use 'S-1'). The same rule is
+# re-checked at cold boot by the safe-start gate.
+#
+# SCOPE: this list is a DECLARATION, not a whitelist the order path enforces. A
+# host that fills OrderIntent::strategy directly is not checked against it.
+#
+# RENAMING IS NOT FREE: the strategy name is hashed into the signal signature, so
+# a rename changes the signature of every signal that strategy emits and restart
+# dedupe will not recognise its own in-flight orders. Rename BETWEEN sessions,
+# FLAT, never with working orders outstanding.
+#
+# ENV OVERRIDE (BROKER_EXEC_STRATEGIES_NAMES, comma-separated) — note the exact
+# semantics, they are load-bearing:
+#   * it REPLACES THE WHOLE LIST rather than adding to it;
+#   * ASCII spaces/tabs around each entry are trimmed ("alpha, S-1" is two names);
+#   * an EMPTY or all-blank variable means an EMPTY LIST (not "one empty name");
+#   * a TRAILING COMMA is NOT ignored: "alpha," yields a second, EMPTY entry, and
+#     an empty name FAILS the load. That is deliberate — a typo is named rather
+#     than silently guessed away.
+names = ["alpha", "S-1", "atm-straddle-9-20"]

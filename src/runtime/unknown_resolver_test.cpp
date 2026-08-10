@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,10 +48,19 @@ class RecordingAlertSink final : public AlertSink {
   struct Entry {
     AlertLevel level;
     std::string message;
+    bx::ports::AlertContext provenance;  // IMP-16: the TYPED ids that rode alongside
   };
 
   bx::Result<bx::ports::Ok> send(AlertLevel level, const std::string& message) override {
-    entries_.push_back({level, message});
+    entries_.push_back({level, message, bx::ports::AlertContext{}});
+    return bx::ports::ok();
+  }
+  // IMP-16: overriding send_with_context (rather than inheriting the base
+  // default, which drops the context) is what lets a test assert that the
+  // fail-closed Critical alert NAMES THE ORDER.
+  bx::Result<bx::ports::Ok> send_with_context(AlertLevel level, const std::string& message,
+                                              const bx::ports::AlertContext& provenance) override {
+    entries_.push_back({level, message, provenance});
     return bx::ports::ok();
   }
   bx::Result<bx::ports::Ok> send_test_alert() override { return bx::ports::ok(); }
@@ -203,6 +213,72 @@ TEST_CASE("resolve: attribute corroboration when neither id matches",
   CHECK(h.alerts.count() == 0);
 }
 
+// ── (c2) IMP-11: the TRIGGER is part of attribute corroboration ───────────────
+//
+// For a stop, the trigger is not a detail — it IS the order. Two protective stops
+// on the same symbol, side and size, differing only in the level at which they
+// arm, are different orders carrying different risk. Corroborating on
+// (symbol, side, qty, price) alone would let this rung adopt a stop armed at the
+// WRONG level as though it were ours, and the local order would then be marked
+// resolved against protection that fires somewhere else entirely.
+TEST_CASE("resolve: stops at DIFFERENT trigger levels do not cross-corroborate",
+          "[runtime][unknown][resolve][IMP-11]") {
+  const auto stop_intent = [](std::string ref, std::int64_t trigger_rupees) {
+    OrderIntent intent = sample_intent(std::move(ref));
+    intent.order_type = OrderType::StopLoss;
+    intent.price = Price::from_rupees(123, 50);  // identical limit on both
+    intent.trigger_price = Price::from_rupees(trigger_rupees);
+    return intent;
+  };
+
+  SECTION("a different trigger level blocks the match -> fails closed to NoMatch") {
+    Harness h;
+    h.seed_broker(stop_intent("broker-side-ref-zzzz", /*trigger=*/124));
+
+    Order local;
+    local.intent = stop_intent("alpha-dddd-0004", /*trigger=*/125);  // armed elsewhere
+    local.state = OrderState::Unknown;
+    REQUIRE(h.store.insert_order(local).has_value());
+
+    auto result = h.resolver.resolve(local);
+    REQUIRE(result.has_value());
+    CHECK(result.value().kind == MatchKind::NoMatch);
+    CHECK_FALSE(result.value().resolved_ok);
+    CHECK(h.alerts.count() == 1);  // fail-closed escalation, nothing adopted
+  }
+
+  SECTION("the SAME trigger level still corroborates") {
+    Harness h;
+    h.seed_broker(stop_intent("broker-side-ref-zzzz", /*trigger=*/124));
+
+    Order local;
+    local.intent = stop_intent("alpha-eeee-0005", /*trigger=*/124);
+    local.state = OrderState::Unknown;
+    REQUIRE(h.store.insert_order(local).has_value());
+
+    auto result = h.resolver.resolve(local);
+    REQUIRE(result.has_value());
+    CHECK(result.value().kind == MatchKind::AttributeCorroboration);
+    CHECK(result.value().resolved_ok);
+  }
+
+  SECTION("an ARMED stop never corroborates an UNARMED order") {
+    // std::optional equality gives the right answer at the boundary: absent is
+    // not "zero", so a plain order can never stand in for a stop.
+    Harness h;
+    h.seed_broker(sample_intent("broker-side-ref-zzzz"));  // plain Limit, no trigger
+
+    Order local;
+    local.intent = stop_intent("alpha-ffff-0006", /*trigger=*/124);
+    local.state = OrderState::Unknown;
+    REQUIRE(h.store.insert_order(local).has_value());
+
+    auto result = h.resolver.resolve(local);
+    REQUIRE(result.has_value());
+    CHECK(result.value().kind == MatchKind::NoMatch);
+  }
+}
+
 // ── (d) NoMatch fails closed: stays Unknown, alert raised, NOTHING sent ───────
 TEST_CASE("resolve: no authoritative match fails closed with a Critical alert, nothing sent",
           "[runtime][unknown][resolve][fail-closed]") {
@@ -238,6 +314,18 @@ TEST_CASE("resolve: no authoritative match fails closed with a Critical alert, n
   // A Critical alert WAS raised (the dead-man's-switch escalation).
   REQUIRE(h.alerts.count() == 1);
   CHECK(h.alerts.entries().front().level == AlertLevel::Critical);
+
+  // ...AND IT NAMES THE ORDER (IMP-16). The ids ride in the TYPED context, not
+  // interpolated into the free-form body — a sink scrubs the body, and a
+  // client_ref is one long token-shaped run, so an interpolated ref reached the
+  // operator as `ref=***REDACTED***`: the most urgent alert in the system named
+  // no order at all.
+  const auto& alert = h.alerts.entries().front();
+  CHECK(alert.provenance.client_ref == "alpha-dddd-0004");
+  CHECK(alert.provenance.broker_order_id == "LOCAL-ID-NOT-AT-BROKER");
+  CHECK(alert.provenance.strategy == "alpha");
+  // The body itself no longer carries the ids (that is the point of the move).
+  CHECK(alert.message.find("alpha-dddd-0004") == std::string::npos);
 
   // NOTHING was sent: only the single fetch_orders read advanced the request
   // count, and the broker book is unchanged (no place/modify/cancel happened).

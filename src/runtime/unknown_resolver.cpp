@@ -16,13 +16,23 @@ using domain::Order;
 using domain::OrderState;
 
 // Attribute equality for the WEAKEST rung: two orders corroborate when their
-// (symbol, side, quantity, price) all agree. Deliberately does NOT consider
-// product/order_type — corroboration is a best-effort "same economic trade", and
-// over-narrowing it would make a real match harder while the precedence already
-// prefers the two id-based rungs whenever they exist.
+// (symbol, side, quantity, price, TRIGGER price) all agree. Deliberately does NOT
+// consider product/order_type — corroboration is a best-effort "same economic
+// trade", and over-narrowing it would make a real match harder while the
+// precedence already prefers the two id-based rungs whenever they exist.
+//
+// THE TRIGGER IS THE ONE EXCEPTION TO THAT LENIENCE (IMP-11), because for a stop
+// it is not a detail — it IS the order. Two protective stops on the same symbol,
+// side and size, differing only in the level at which they arm, are DIFFERENT
+// orders with different risk. Matching on (symbol, side, qty, price) alone would
+// let this rung adopt a stop armed at the wrong level as though it were ours,
+// and the local order would then be marked resolved against a protection that
+// fires somewhere else entirely. `std::optional` equality also gives the right
+// answer at the boundary: an armed stop never corroborates an unarmed order.
 [[nodiscard]] bool attributes_match(const Order& a, const Order& b) noexcept {
   return a.intent.symbol == b.intent.symbol && a.intent.side == b.intent.side &&
-         a.intent.quantity == b.intent.quantity && a.intent.price == b.intent.price;
+         a.intent.quantity == b.intent.quantity && a.intent.price == b.intent.price &&
+         a.intent.trigger_price == b.intent.trigger_price;
 }
 
 }  // namespace
@@ -161,18 +171,31 @@ Result<UnknownResolution> UnknownResolver::resolve(const Order& unknown_order) {
     out.resolved_ok = false;
     out.new_state = OrderState::Unknown;
     out.resolved = std::nullopt;
-    // The message is redaction-safe: only the client_ref (our own idempotency key)
-    // and the order's broker_order_id (a broker-minted id), never a token/body.
-    std::string message = "UNKNOWN order has no authoritative broker match (fail-closed): ref=";
-    message += unknown_order.intent.client_ref;
-    if (!unknown_order.broker_order_id.empty()) {
-      message += " broker_order_id=";
-      message += unknown_order.broker_order_id;
-    }
+    // THIS ALERT NAMES THE ORDER (IMP-16). The ids are NOT interpolated into the
+    // free-form body: a sink scrubs the whole body (see
+    // multi_channel_alert_sink.cpp) and a client_ref is one long token-shaped run,
+    // so an interpolated ref used to reach the operator as `ref=***REDACTED***` —
+    // the most urgent alert in the system named no order. They travel instead in
+    // the TYPED ports::AlertContext, which the sink renders through the
+    // whole-column allowlist (domain::scrub_provenance_column) and appends as
+    // ` [client_ref=... broker_order_id=... strategy=...]`. The body's own
+    // redaction is unchanged, and a column that is not id-shaped is still redacted.
+    const std::string message =
+        "UNKNOWN order has no authoritative broker match (fail-closed)";
+    ports::AlertContext provenance;
+    provenance.client_ref = unknown_order.intent.client_ref;
+    provenance.broker_order_id = unknown_order.broker_order_id;  // empty fields are omitted
+    provenance.strategy = unknown_order.intent.strategy;
+    // ...AND THE INSTRUMENT. An operator resolving an UNKNOWN by hand needs to
+    // know WHICH contract is in doubt, and `symbol` has the same defect the ids
+    // had: an option symbol of >=20 chars (BANKNIFTY24JUN52000CE) is a
+    // token-shaped run to scrub(), so it could never have been carried in the
+    // body. It is measured against the SYMBOL shape rule, not the id one.
+    provenance.symbol = unknown_order.intent.symbol;
     // Best-effort escalation. An alert-delivery failure does not turn the safe
     // fail-closed posture into an error: the order is (and stays) Unknown either
     // way, so we still report NoMatch to the caller.
-    (void)alerts_.send(ports::AlertLevel::Critical, message);
+    (void)alerts_.send_with_context(ports::AlertLevel::Critical, message, provenance);
     return out;
   }
 
