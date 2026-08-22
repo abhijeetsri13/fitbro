@@ -205,3 +205,24 @@ TEST_CASE("expected<T,E> destroys the active alternative correctly for non-trivi
   REQUIRE_FALSE(c.has_value());
   CHECK(c.error().category == ErrorCategory::Internal);
 }
+
+TEST_CASE("make_error with an explicit action overrides the category default", "[errors]") {
+  // Internal defaults to RaiseAlert. A schema too new to understand IS internal,
+  // but retrying it is futile — the store's open paths need to say so without
+  // aggregate-initializing Error, which is what broke the clang build (#8).
+  REQUIRE(default_action_for(ErrorCategory::Internal) == SuggestedAction::RaiseAlert);
+
+  const auto err = make_error(ErrorCategory::Internal, SuggestedAction::DoNotRetry,
+                              "store: schema newer than this build", "SQLITE_SCHEMA");
+
+  CHECK(err.category == ErrorCategory::Internal);
+  CHECK(err.action == SuggestedAction::DoNotRetry);
+  CHECK(err.message == "store: schema newer than this build");
+  CHECK(err.broker_code == "SQLITE_SCHEMA");
+}
+
+TEST_CASE("make_error with an explicit action leaves broker_code empty by default", "[errors]") {
+  const auto err = make_error(ErrorCategory::Validation, SuggestedAction::DoNotRetry, "bad input");
+  CHECK(err.broker_code.empty());
+  CHECK(err.action == SuggestedAction::DoNotRetry);
+}

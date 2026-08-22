@@ -16,6 +16,20 @@
 namespace broker_exec::store {
 namespace {
 
+// A schema the build does not understand is refused on BOTH open paths (strict
+// `open` and `open_or_rebuild`), with the same category, action and text — so
+// the error is built once here rather than duplicated at each site.
+//
+// `make_error` with an explicit action, not an aggregate initializer: a
+// designated initializer that stops before `Error::broker_code` is a hard error
+// under clang's `-Wmissing-field-initializers -Werror` while MSVC accepts it,
+// which breaks the Linux and macOS builds invisibly from Windows.
+[[nodiscard]] errors::Error schema_too_new_error() {
+  return errors::make_error(
+      errors::ErrorCategory::Internal, errors::SuggestedAction::DoNotRetry,
+      "store: database schema is newer than this build supports — refusing to start");
+}
+
 using detail::exec;
 using detail::is_constraint;
 using detail::prepare;
@@ -377,10 +391,7 @@ Result<Store> Store::open(std::filesystem::path path) {
   if (version.value() > kCurrentSchemaVersion) {
     // NEWER/unknown schema: refuse to start (NFR-4). DoNotRetry — this is a
     // deployment/version fault, not something a retry fixes.
-    return fail(errors::Error{
-        .category = errors::ErrorCategory::Internal,
-        .action = errors::SuggestedAction::DoNotRetry,
-        .message = "store: database schema is newer than this build supports — refusing to start"});
+    return fail(schema_too_new_error());
   }
 
   auto consistent = tables_consistent(handle, version.value());
@@ -428,11 +439,7 @@ Result<Store::OpenOutcome> Store::open_or_rebuild(std::filesystem::path path) {
       return fail(version.error());
     }
     if (version.value() > kCurrentSchemaVersion) {
-      return fail(errors::Error{
-          .category = errors::ErrorCategory::Internal,
-          .action = errors::SuggestedAction::DoNotRetry,
-          .message =
-              "store: database schema is newer than this build supports — refusing to start"});
+      return fail(schema_too_new_error());
     }
 
     // 3) Half-migration is recoverable (rebuild from the intent log).
