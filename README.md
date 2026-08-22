@@ -6,7 +6,9 @@ A **broker-neutral execution and safety layer** that sits between strategy code 
 >
 > **When something fails, it fails _visibly_, _safely_, _without duplicate orders_, and _with a clear recovery path_.**
 
-**Status:** 📐 **Design / planning complete — pre-implementation.** This repository currently holds the full design contract (spec → PRD → architecture → epics & stories). Implementation language is **C++ (C++20)**.
+**Status:** 🚧 **All six epics implemented; unproven against a live broker account.** ~63k lines of C++20 across 41 modules, 51 test suites, an adversarial fake broker, a Kite adapter, a Kotak Neo adapter, a cross-adapter conformance kit and a SIGKILL durability harness — plus the full design contract (spec → PRD → architecture → epics & stories) it was built from.
+
+> **What that does _not_ mean.** No part of this has placed an order with real money. The zero-duplicate guarantee is proven against a recorded fake broker and a fault matrix, not against Zerodha or Kotak in production. Treat it as unproven until you have run it yourself in dry-run and min-quantity live mode. Known defects are tracked as [open issues](https://github.com/abhijeetsri13/fitbro/issues).
 
 ---
 

@@ -4,14 +4,16 @@ Six epics decomposed into 49 implementable stories. The full breakdown with acce
 
 ## Epics
 
-| # | Epic | Demonstrable value |
-|---|---|---|
-| 1 | **Order-Safety Substrate** | A strategy places orders vs an adversarial fake broker; **zero duplicate orders provable** across the fault matrix (incl. SIGKILL-between-fsync-and-send). |
-| 2 | **Live Kite Trading** | Validated, risk-checked orders on real Kite (paper / dry-run / live-min-qty); safe-start blocks until session + reference data are fresh. |
-| 3 | **Resilience** | Reconciles, recovers after a crash, degrades safely under each failure; the operator can kill it (soft → panic). |
-| 4 | **Operator Visibility** | A silent breach pushes to the operator's phone; EOD signed report; `kill` / `status` / `reconcile` from the CLI; tamper-evident ledger. |
-| 5 | **Option-Selling Safety** | A hedged NIFTY/BANKNIFTY basket as one logical trade — hedge-first, sliced over freeze, blocked if a vol-shock projection crosses the auto-square-off threshold. |
-| 6 | **Breadth — Kotak + Multi-Account** | The same unchanged strategy runs on Kotak Neo; isolated multi-strategy / multi-account with bounded kill blast radius. |
+| # | Epic | Status | Demonstrable value |
+|---|---|---|---|
+| 1 | **Order-Safety Substrate** | ✅ implemented | A strategy places orders vs an adversarial fake broker; **zero duplicate orders provable** across the fault matrix (incl. SIGKILL-between-fsync-and-send). |
+| 2 | **Live Kite Trading** | ✅ implemented | Validated, risk-checked orders on real Kite (paper / dry-run / live-min-qty); safe-start blocks until session + reference data are fresh. |
+| 3 | **Resilience** | ✅ implemented | Reconciles, recovers after a crash, degrades safely under each failure; the operator can kill it (soft → panic). |
+| 4 | **Operator Visibility** | ✅ implemented | A silent breach pushes to the operator's phone; EOD signed report; `kill` / `status` / `reconcile` from the CLI; tamper-evident ledger. |
+| 5 | **Option-Selling Safety** | ✅ implemented | A hedged NIFTY/BANKNIFTY basket as one logical trade — hedge-first, sliced over freeze, blocked if a vol-shock projection crosses the auto-square-off threshold. |
+| 6 | **Breadth — Kotak + Multi-Account** | ✅ implemented | The same unchanged strategy runs on Kotak Neo; isolated multi-strategy / multi-account with bounded kill blast radius. |
+
+> **“Implemented” means the stories are built and their tests pass — not that the epic is proven in production.** Nothing here has traded real money. Defects found since are tracked as [open issues](https://github.com/abhijeetsri13/fitbro/issues).
 
 ## MVP (Day One)
 

@@ -1,6 +1,6 @@
 # Documentation
 
-Documentation for the **Broker-Neutral Trading Execution Library** (C++20). The library is in the **design/planning** phase — these documents are the contract implementation derives from.
+Documentation for the **Broker-Neutral Trading Execution Library** (C++20). All six epics are **implemented** — the design documents below are the contract the code was built against, and remain the reference for what each guarantee is supposed to mean. The code has not yet been proven against a live broker account.
 
 ## Start here
 - [Project README](../README.md) — what it is, the core promise, the stack.
