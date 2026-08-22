@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -26,11 +27,19 @@ namespace {
   if (value.is_string()) {
     return value.get<std::string>();
   }
-  if (value.is_number_integer()) {
-    return std::to_string(value.get<long long>());
-  }
+  // Unsigned is checked FIRST, exactly as the sibling `json_str` in
+  // kotak_broker_adapter.cpp does: nlohmann's is_number_integer() is true for
+  // unsigned values too (it is `number_integer || number_unsigned`), so testing
+  // it first made this branch DEAD for every unsigned value and read the uint64
+  // storage through a signed get<> — a silent, unchecked narrowing. Every
+  // positive JSON integer literal parses as number_unsigned, so a fault code
+  // above INT64_MAX rendered as "-1" and was stamped onto `broker_code` as if it
+  // were the broker's own answer.
   if (value.is_number_unsigned()) {
-    return std::to_string(value.get<unsigned long long>());
+    return std::to_string(value.get<std::uint64_t>());
+  }
+  if (value.is_number_integer()) {
+    return std::to_string(value.get<std::int64_t>());
   }
   if (value.is_boolean()) {
     return value.get<bool>() ? "true" : "false";
