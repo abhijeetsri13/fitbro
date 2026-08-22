@@ -66,7 +66,12 @@ enum class GateOutcome { Allow, AllowWithSlicing };
 // predicates / config for each check. Every injected input defaults to "pass"
 // where sensible so a minimal context evaluates a clean entry.
 struct GateContext {
-  // The order under test and its already-resolved reference data.
+  // The order under test and its already-resolved reference data. `instrument`
+  // must carry a REAL per-exchange freeze ceiling: a 0 / negative `freeze_qty` is
+  // REFUSED by the freeze check, never read as "no ceiling". An unknown ceiling
+  // cannot tell an over-freeze order from a safe one, and treating it as absent
+  // silently skips the check, discards the `slice_mode` posture below, and leaves
+  // AllowWithSlicing unreachable.
   const domain::OrderIntent& intent;
   domain::Instrument instrument;
 

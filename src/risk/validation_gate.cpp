@@ -251,7 +251,25 @@ Result<GateOutcome> ValidationGate::validate(const GateContext& ctx) const {
   // checks (time-window / funds / risk / hedge) so a later failure still wins.
   bool needs_slicing = false;
   const std::int64_t freeze = ctx.instrument.freeze_qty.value();
-  if (freeze > 0 && qty > freeze) {
+  // AN ABSENT (0) OR CORRUPT (NEGATIVE) CEILING IS NOT "NO CEILING". Reading it
+  // as one skipped this check entirely, and the skip is invisible: the order was
+  // dispatched WHOLE, the exchange refused it on ITS freeze limit
+  // (brokerreason::RejectReason::FreezeQuantity), and a protective leg never
+  // reached the book during the move it existed to escape. The same skip
+  // silently overrode the operator's slice_mode=false reject posture and left
+  // GateOutcome::AllowWithSlicing with no producer at all. Unusable reference
+  // data is refused here exactly as checks 4/6/8 above refuse an empty exchange,
+  // a non-positive lot and a non-positive tick, and exactly as the sibling that
+  // consumes this same field refuses it (slicing/freeze_slicer.cpp, freeze <= 0).
+  // NOT exit-exempt, for the reason check 7 states: an order whose over-freeze
+  // status cannot be established is a broker rejection at the worst possible
+  // moment, not protection.
+  if (freeze <= 0) {
+    return fail(gate_error(
+        ErrorCategory::Validation, "freeze",
+        "instrument freeze ceiling " + std::to_string(freeze) + " is unknown or invalid"));
+  }
+  if (qty > freeze) {
     if (ctx.slice_mode) {
       needs_slicing = true;
     } else {

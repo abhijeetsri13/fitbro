@@ -627,3 +627,79 @@ TEST_CASE("an instrument with no exchange is rejected, naming the exchange check
   CHECK(r.error().category == ErrorCategory::Validation);
   CHECK(names(r.error(), "exchange"));
 }
+
+// The Kite instrument master hands out freeze_qty 0 for EVERY contract (freeze is
+// not in the CSV), so this is the production-shaped instrument — the one every
+// other case in this file avoids by hand-building a freeze of 1800.
+TEST_CASE("freeze: an unknown (0) or negative ceiling is refused, never read as no ceiling",
+          "[risk][gate][AC1]") {
+  const ValidationGate gate;
+
+  SECTION("freeze_qty 0 refuses the order instead of skipping the check") {
+    Instrument instrument = make_instrument();
+    instrument.freeze_qty = Quantity::of(0);
+    const OrderIntent intent = make_entry_intent();  // qty 50, under any real ceiling
+    GateContext ctx = base_entry(intent, instrument);
+
+    const Result<GateOutcome> r = gate.validate(ctx);
+    REQUIRE_FALSE(r.has_value());  // was Allow: `freeze > 0` short-circuited the check
+    CHECK(r.error().category == ErrorCategory::Validation);
+    CHECK(names(r.error(), "freeze"));
+  }
+
+  SECTION("a NEGATIVE ceiling is refused too") {
+    Instrument instrument = make_instrument();
+    instrument.freeze_qty = Quantity::of(-1800);
+    const OrderIntent intent = make_entry_intent();
+    GateContext ctx = base_entry(intent, instrument);
+
+    const Result<GateOutcome> r = gate.validate(ctx);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(names(r.error(), "freeze"));
+  }
+
+  SECTION("reject-mode: the operator's slice_mode=false posture is no longer lost") {
+    // An over-freeze qty with an unknown ceiling used to return Allow, so the one
+    // posture whose entire purpose is refusing over-freeze orders never fired.
+    Instrument instrument = make_instrument();
+    instrument.freeze_qty = Quantity::of(0);
+    OrderIntent intent = make_entry_intent();
+    intent.quantity = Quantity::of(2000);  // lot-aligned, over the real NSE ceiling
+    GateContext ctx = base_entry(intent, instrument);
+    ctx.slice_mode = false;
+
+    const Result<GateOutcome> r = gate.validate(ctx);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(names(r.error(), "freeze"));
+  }
+
+  SECTION("slice-mode: an over-freeze order is NOT silently allowed whole") {
+    Instrument instrument = make_instrument();
+    instrument.freeze_qty = Quantity::of(0);
+    OrderIntent intent = make_entry_intent();
+    intent.quantity = Quantity::of(2000);
+    GateContext ctx = base_entry(intent, instrument);  // slice_mode default true
+
+    const Result<GateOutcome> r = gate.validate(ctx);
+    REQUIRE_FALSE(r.has_value());  // was Allow, and AllowWithSlicing had no producer
+    CHECK(names(r.error(), "freeze"));
+  }
+
+  SECTION("a risk-reducing EXIT is refused as well: reference data is not exit-exempt") {
+    // The failure this pins: preflight_exit resolves the instrument from the Kite
+    // master, so the protective leg carried freeze 0, went out whole, and came back
+    // exchange-rejected on the freeze limit. Refusing here matches checks 4/6/8,
+    // which already refuse an exit on an empty exchange / bad lot / bad tick.
+    Instrument instrument = make_instrument();
+    instrument.freeze_qty = Quantity::of(0);
+    OrderIntent intent = make_entry_intent();
+    intent.side = Side::Sell;
+    intent.quantity = Quantity::of(3600);
+    GateContext ctx = base_entry(intent, instrument);
+    ctx.is_risk_reducing = true;
+
+    const Result<GateOutcome> r = gate.validate(ctx);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(names(r.error(), "freeze"));
+  }
+}
