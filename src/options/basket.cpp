@@ -19,6 +19,40 @@ namespace {
   return std::string(errors::to_string(err.category));
 }
 
+// Is this Error AMBIGUOUS about whether the order reached the exchange?
+//
+// THE DEFECT THIS EXISTS FOR: every `place_leg` Error used to be recorded as
+// `Failed` — a definitive "the order does not exist" verdict — and the
+// UnwindExecuted policy then cancelled the legs that DID execute. On a Timeout
+// (ports/broker_port.hpp: "a Timeout may mean the order reached the exchange")
+// that cancelled the PROTECTIVE leg while the naked-risk leg sat possibly LIVE at
+// the broker: this library MANUFACTURED the naked short it exists to prevent, and
+// reported it as "executed legs unwound per policy".
+//
+// The predicate is deliberately the SAME rule as `Dispatcher::is_reconcile_first`
+// (src/runtime/dispatcher.cpp): a ReconcileFirst action, or a Timeout / Network /
+// Unknown category, means "the order MAY be live — reconcile, never guess". It is
+// duplicated rather than called because `options` depends inward on `ports` +
+// `errors` only and must never link `runtime` (the boundary that
+// cmake/HexagonalBoundary.cmake enforces) — the same reason `error_tag` is
+// re-declared per TU in this module. KEEP THE TWO IN SYNC: a category that becomes
+// reconcile-first in the dispatcher must become ambiguous here too.
+//
+// ON ITS BREADTH: `default_action_for` also gives BrokerRejected, RiskRejected,
+// DuplicateOrder and OrderNotFound the ReconcileFirst action, so those suppress
+// the unwind as well — only a DoNotRetry / BlockStrategy / RetrySafe /
+// ReEstablishSession / RaiseAlert error still unwinds. That asymmetry is the
+// point: over-classifying costs one manual reconciliation of a SAFE lone
+// protective long, under-classifying costs a LIVE naked short.
+[[nodiscard]] bool is_ambiguous(const errors::Error& err) noexcept {
+  if (err.action == errors::SuggestedAction::ReconcileFirst) {
+    return true;
+  }
+  return err.category == errors::ErrorCategory::Timeout ||
+         err.category == errors::ErrorCategory::Network ||
+         err.category == errors::ErrorCategory::Unknown;
+}
+
 // Deterministic basket-id fallback used when config.basket_id is empty (AC-3):
 // stable, no clock / no random, so the same basket shape always yields the same
 // handle. The leg count keeps it human-recognizable without echoing any secret.
@@ -101,6 +135,8 @@ std::string_view to_string(LegStatus status) noexcept {
       return "SkippedUnmetDependency";
     case LegStatus::Unwound:
       return "Unwound";
+    case LegStatus::AmbiguousMayBeLive:
+      return "AmbiguousMayBeLive";
   }
   return "Unknown";
 }
@@ -115,6 +151,8 @@ std::string_view to_string(BasketOutcome outcome) noexcept {
       return "PartiallyExecutedLeft";
     case BasketOutcome::Blocked:
       return "Blocked";
+    case BasketOutcome::ReconcileRequired:
+      return "ReconcileRequired";
   }
   return "Unknown";
 }
@@ -161,10 +199,11 @@ BasketResult execute_basket(const std::vector<BasketLeg>& legs, const BasketConf
   std::vector<std::string> detail(n);
 
   // ── Step 2: EXECUTE in topological order ──────────────────────────────────
-  // A leg is placed ONLY if EVERY prerequisite ended Executed. A failed/skipped
-  // prerequisite makes this leg SkippedUnmetDependency WITHOUT calling place_leg
-  // (the never-orphan invariant), and the skip propagates to its dependents
-  // because they, in turn, see a non-Executed prerequisite.
+  // A leg is placed ONLY if EVERY prerequisite ended Executed — a prerequisite
+  // that failed, was skipped or ended AMBIGUOUS blocks it. Such a leg becomes
+  // SkippedUnmetDependency WITHOUT calling place_leg (the never-orphan invariant),
+  // and the skip propagates to its dependents because they, in turn, see a
+  // non-Executed prerequisite.
   for (const std::size_t i : order) {
     bool prerequisites_met = true;
     for (const std::string& dep : legs[i].depends_on) {
@@ -181,8 +220,24 @@ BasketResult execute_basket(const std::vector<BasketLeg>& legs, const BasketConf
 
     auto ack = seams.place_leg(legs[i]);
     if (!ack) {
-      status[i] = LegStatus::Failed;
-      detail[i] = "leg placement failed: " + error_tag(ack.error());
+      // AMBIGUOUS IS NOT REJECTED. Recording EVERY Error as `Failed` told step 3
+      // that this order does not exist, and the rollback then cancelled the legs
+      // that DID execute — the protective ones included — while a timed-out
+      // risk leg sat LIVE at the exchange. Only a definitive broker verdict may be
+      // `Failed`; anything that may have reached the exchange is
+      // `AmbiguousMayBeLive` and VETOES the rollback. No order_id is recorded on
+      // either branch: the ack never arrived, so an ambiguous leg cannot be
+      // cancelled by this library at all — only reconciled against broker truth.
+      if (is_ambiguous(ack.error())) {
+        status[i] = LegStatus::AmbiguousMayBeLive;
+        detail[i] =
+            "leg placement AMBIGUOUS, order MAY be LIVE (no order_id): " + error_tag(ack.error()) +
+            "; reconcile before any unwind";
+      } else {
+        status[i] = LegStatus::Failed;
+        detail[i] =
+            "leg placement rejected (definitive, order not placed): " + error_tag(ack.error());
+      }
       continue;
     }
     status[i] = LegStatus::Executed;
@@ -190,16 +245,60 @@ BasketResult execute_basket(const std::vector<BasketLeg>& legs, const BasketConf
     detail[i] = "leg executed";
   }
 
-  // ── Step 3: PARTIAL DETECTION + POLICY (AC-2) ─────────────────────────────
+  // ── Step 3: TERMINAL CLASSIFICATION + POLICY (AC-2) ───────────────────────
+  // Ambiguity is counted SEPARATELY from failure because it is neither success nor
+  // failure: an ambiguous leg must never let the basket read `Complete`, and it
+  // VETOES the unwind a plain partial would trigger. Both flags are needed, so the
+  // scan runs to the end rather than breaking on the first hit.
+  bool any_ambiguous = false;
   bool any_failed_or_skipped = false;
   for (std::size_t i = 0; i < n; ++i) {
-    if (status[i] == LegStatus::Failed || status[i] == LegStatus::SkippedUnmetDependency) {
+    if (status[i] == LegStatus::AmbiguousMayBeLive) {
+      any_ambiguous = true;
+    } else if (status[i] == LegStatus::Failed || status[i] == LegStatus::SkippedUnmetDependency) {
       any_failed_or_skipped = true;
-      break;
     }
   }
 
-  if (!any_failed_or_skipped) {
+  if (any_ambiguous) {
+    // ── AMBIGUOUS: RECONCILE, NEVER UNWIND ──────────────────────────────────
+    // A leg whose placement outcome is unknown MAY be live at the exchange, and we
+    // hold NO order_id for it, so it cannot be cancelled from here. Running the
+    // rollback anyway would cancel the legs that DID execute — the protective ones
+    // included — and leave the unproven risk leg alone at the broker: the exact
+    // live naked short this module exists to prevent, produced by the DEFAULT
+    // policy. So the unwind is suppressed under BOTH policies and the basket
+    // terminates as ReconcileRequired for a reconciler/operator to settle.
+    std::string ambiguous_legs;  // leg_ids whose existence at the broker is UNPROVEN
+    for (std::size_t i = 0; i < n; ++i) {
+      if (status[i] == LegStatus::AmbiguousMayBeLive) {
+        if (!ambiguous_legs.empty()) {
+          ambiguous_legs += ",";
+        }
+        ambiguous_legs += legs[i].leg_id;
+      } else if (status[i] == LegStatus::Executed) {
+        // Make the SUPPRESSION visible per leg: this leg is deliberately still
+        // LIVE, the opposite of what UnwindExecuted asked for. Saying nothing here
+        // would read as "the policy ran and found nothing to do".
+        detail[i] = "leg LEFT LIVE: unwind SUPPRESSED while an ambiguous leg may be live";
+      }
+    }
+    result.outcome = BasketOutcome::ReconcileRequired;
+    result.detail =
+        "basket RECONCILE REQUIRED: ambiguous leg(s) may be LIVE at the broker: " + ambiguous_legs +
+        "; NO leg was unwound";
+    // Best-effort Critical alert, same discipline as the unwind path below. It
+    // NAMES the ambiguous leg_ids (non-secret) because an operator or reconciler
+    // told only "basket partial" has no way to learn that an order may be live —
+    // that omission is what let the old behaviour pass for a clean rollback.
+    const std::string alert_msg =
+        "BASKET RECONCILE REQUIRED: leg placement was AMBIGUOUS and MAY be LIVE at the broker: " +
+        ambiguous_legs + "; NO leg was unwound - reconcile before cancelling anything";
+    try {
+      (void)alerts.send(ports::AlertLevel::Critical, alert_msg);
+    } catch (...) {  // NOLINT(bugprone-empty-catch): alerting is strictly best-effort
+    }
+  } else if (!any_failed_or_skipped) {
     // Every leg Executed: the basket is whole. NO alert, NO unwind.
     result.outcome = BasketOutcome::Complete;
     result.detail = "basket complete: all legs executed";

@@ -60,8 +60,18 @@ class SpyAlertSink final : public ports::AlertSink {
 [[nodiscard]] Result<ports::BrokerAck> ok_ack(std::string id) {
   return ports::BrokerAck{std::move(id), "client-ref"};
 }
-[[nodiscard]] Result<ports::BrokerAck> ack_error() {
-  return broker_exec::fail(errors::make_error(errors::ErrorCategory::Network, "place failed"));
+// A DEFINITIVE broker rejection: Validation carries SuggestedAction::DoNotRetry,
+// so the broker gave a verdict and the order does NOT exist. KEEP IT DEFINITIVE —
+// Network/Timeout/Unknown are reconcile-first categories, and putting one back
+// here would silently retarget the "lone hedge is SAFE" test onto the ambiguous
+// path, where that safety claim is exactly what must NOT be made.
+[[nodiscard]] Result<ports::BrokerAck> ack_rejected() {
+  return broker_exec::fail(errors::make_error(errors::ErrorCategory::Validation, "rejected"));
+}
+// An AMBIGUOUS placement outcome: the order MAY have reached the exchange, so no
+// order id ever came back and nothing about it may be assumed.
+[[nodiscard]] Result<ports::BrokerAck> ack_ambiguous(errors::ErrorCategory category) {
+  return broker_exec::fail(errors::make_error(category, "placement outcome unknown"));
 }
 [[nodiscard]] Result<bool> bool_error() {
   return broker_exec::fail(errors::make_error(errors::ErrorCategory::Timeout, "check failed"));
@@ -120,7 +130,7 @@ TEST_CASE("AC-2 hedge placement fails: Error => HedgePlacementFailed, short NEVE
   HedgeFirstSeams seams;
   seams.place_hedge = [&]() -> Result<ports::BrokerAck> {
     calls.push_back("hedge");
-    return ack_error();
+    return ack_rejected();
   };
   seams.confirm_hedge = [&](const std::string&) -> Result<bool> {
     calls.push_back("confirm");
@@ -229,7 +239,7 @@ TEST_CASE("AC-2 null confirm seam: fail-closed => HedgeUnconfirmed, short NEVER 
 }
 
 TEST_CASE(
-    "short fails: confirmed hedge, place_short Error => ShortPlacementFailed, SAFE (no alert, no "
+    "short DEFINITIVELY rejected: confirmed hedge => ShortPlacementFailed, SAFE (no alert, no "
     "emergency)") {
   std::vector<std::string> calls;
   SpyAlertSink alerts;
@@ -245,7 +255,7 @@ TEST_CASE(
   };
   seams.place_short = [&]() -> Result<ports::BrokerAck> {
     calls.push_back("short");
-    return ack_error();
+    return ack_rejected();
   };
   seams.recheck_hedge_live = [&](const std::string&) -> Result<bool> {
     calls.push_back("recheck");
@@ -409,6 +419,78 @@ TEST_CASE("to_string: stable outcome names") {
         "ShortPlacementFailed");
   CHECK(broker_exec::options::to_string(HedgeFirstOutcome::NakedShortRemediated) ==
         "NakedShortRemediated");
+  CHECK(broker_exec::options::to_string(HedgeFirstOutcome::ShortAmbiguousReconcileRequired) ==
+        "ShortAmbiguousReconcileRequired");
+}
+
+// ── Ambiguous short: the safety claim must be earned ────────────────────────
+
+// THE DEFECT THIS PINS: every place_short Error used to become
+// ShortPlacementFailed, documented as "SAFE — a lone long hedge is not naked ... the
+// caller can keep/close it". On a Timeout the short may ALREADY be live, and a
+// caller acting on that claim closes the hedge over it. Against the old code the
+// case below returned ShortPlacementFailed and sent NO alert at all.
+
+TEST_CASE("short placement AMBIGUOUS: hedge LEFT alone, Critical alert, NO emergency square-off") {
+  std::vector<std::string> calls;
+  SpyAlertSink alerts;
+
+  HedgeFirstSeams seams;
+  seams.place_hedge = [&]() -> Result<ports::BrokerAck> {
+    calls.push_back("hedge");
+    return ok_ack("HEDGE-1");
+  };
+  seams.confirm_hedge = [&](const std::string&) -> Result<bool> {
+    calls.push_back("confirm");
+    return true;
+  };
+  seams.place_short = [&]() -> Result<ports::BrokerAck> {
+    calls.push_back("short");
+    return ack_ambiguous(errors::ErrorCategory::Timeout);
+  };
+  seams.recheck_hedge_live = [&](const std::string&) -> Result<bool> {
+    calls.push_back("recheck");
+    return true;
+  };
+  seams.emergency_action = [&]() -> Result<ports::Ok> {
+    calls.push_back("emergency");
+    return ports::ok();
+  };
+
+  const HedgeFirstResult result = execute_hedge_first(seams, alerts);
+
+  // NOT ShortPlacementFailed: that outcome tells the caller the hedge is safe to
+  // close, and closing it over a possibly-live short is the naked position.
+  CHECK(result.outcome == HedgeFirstOutcome::ShortAmbiguousReconcileRequired);
+  CHECK(result.hedge_order_id == "HEDGE-1");  // hedge untouched, still live
+  CHECK(result.short_order_id.empty());       // no ack ever arrived for the short
+  // The emergency square-off would REMOVE the hedge: never on an unproven short.
+  CHECK(count_of(calls, "emergency") == 0);
+  CHECK_FALSE(result.emergency_action_ran);
+  // The operator must hear about it — the old path was silent.
+  CHECK(alerts.count() == 1);
+  CHECK(alerts.last_level() == AlertLevel::Critical);
+  CHECK(alerts.last_message().find("LIVE") != std::string::npos);
+  CHECK(result.detail.find("AMBIGUOUS") != std::string::npos);
+}
+
+TEST_CASE("ambiguous short: every reconcile-first error earns the reconcile outcome") {
+  const std::vector<errors::ErrorCategory> ambiguous = {errors::ErrorCategory::Timeout,
+                                                        errors::ErrorCategory::Network,
+                                                        errors::ErrorCategory::Unknown};
+  for (const errors::ErrorCategory category : ambiguous) {
+    INFO("category: " << errors::to_string(category));
+    SpyAlertSink alerts;
+    HedgeFirstSeams seams;
+    seams.place_hedge = [&]() -> Result<ports::BrokerAck> { return ok_ack("HEDGE-1"); };
+    seams.confirm_hedge = [&](const std::string&) -> Result<bool> { return true; };
+    seams.place_short = [&]() -> Result<ports::BrokerAck> { return ack_ambiguous(category); };
+
+    const HedgeFirstResult result = execute_hedge_first(seams, alerts);
+
+    CHECK(result.outcome == HedgeFirstOutcome::ShortAmbiguousReconcileRequired);
+    CHECK(alerts.count() == 1);
+  }
 }
 
 // ── Review-added coverage (Story 5.1 adversarial review) ────────────────────
