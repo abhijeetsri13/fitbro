@@ -22,9 +22,12 @@
 // the common path durable anyway).
 //
 // CROSS-PLATFORM: SQLite C API + C++20 stdlib only. Paths flow through
-// std::filesystem::path; the on-disk filename is taken as UTF-8 via
-// path.string(). No OS APIs, no `#ifdef`. ":memory:" is supported for fast
-// in-process tests (it skips WAL, which an in-memory db does not support).
+// std::filesystem::path; the on-disk filename is handed to SQLite as UTF-8 via
+// path.u8string(), which is the API's documented encoding on every platform —
+// path.string() is the implementation's NATIVE NARROW encoding (the CRT code
+// page on MSVC) and would name a different file under a non-ASCII data root.
+// No OS APIs, no `#ifdef`. ":memory:" is supported for fast in-process tests
+// (it skips WAL, which an in-memory db does not support).
 
 #include <cstdint>
 #include <filesystem>
@@ -114,6 +117,13 @@ class Store {
   // needs_rebuild=true so the caller re-applies the intent log. A NEWER/unknown
   // schema_version is still a hard refuse-to-start Error (that is an operator/
   // deployment fault, not corruption — see NFR-4).
+  //
+  // "Corruption" means a VERDICT the probes reached — quick_check said not-ok, a
+  // promised table is missing, or the read failed with SQLITE_CORRUPT/NOTADB —
+  // NEVER merely "a read failed". SQLITE_BUSY, SQLITE_IOERR, SQLITE_NOMEM and
+  // SQLITE_INTERRUPT return an Error instead: the rebuild DROPs all six tables,
+  // and `audit`/`risk_events` have no second source, so a transient fault must
+  // not be allowed to destroy the FR-27 trail.
   //
   // OpenOutcome is declared here and DEFINED out-of-line below the class: it has
   // a by-value `Store store` member, which requires the (enclosing) Store type to

@@ -30,6 +30,17 @@ namespace {
       "store: database schema is newer than this build supports — refusing to start");
 }
 
+// The same refusal for a stamp that is not a version at all. `user_version` is a
+// raw 4-byte field at offset 60 of the file header; nothing in this build ever
+// writes it negative, so a negative value means the header is damaged or was
+// hand-edited. Refusing (rather than rebuilding) is deliberate: an
+// uninterpretable stamp is doubt, and reset() would DROP all six tables —
+// `audit` and `risk_events` cannot be replayed from the intent log.
+[[nodiscard]] errors::Error schema_out_of_range_error() {
+  return errors::make_error(errors::ErrorCategory::Internal, errors::SuggestedAction::DoNotRetry,
+                            "store: on-disk schema version is out of range — refusing to start");
+}
+
 using detail::exec;
 using detail::is_constraint;
 using detail::prepare;
@@ -124,6 +135,14 @@ ALTER TABLE orders ADD COLUMN trigger_price_paise INTEGER;
 // migration's SQL — append a new one.
 constexpr std::array<std::string_view, kCurrentSchemaVersion> kMigrations = {kMigration1,
                                                                              kMigration2};
+
+// apply_migrations() indexes kMigrations with the loop variable and bounds the
+// loop by kCurrentSchemaVersion, so the two MUST stay equal: std::array's
+// operator[] is unchecked, and one migration appended without bumping the
+// constant would read a std::string_view off the end of the array and hand its
+// wild pointer to sqlite3_exec as SQL. Enforced at compile time, not assumed.
+static_assert(kMigrations.size() == static_cast<std::size_t>(kCurrentSchemaVersion),
+              "kMigrations must hold exactly one migration per schema version");
 
 // Every table the schema owns, for reset()/rebuild (drop in any order — no FKs).
 constexpr std::array<std::string_view, 6> kTableNames = {"orders", "trades",      "positions",
@@ -229,7 +248,21 @@ domain::OrderState decode_state(std::string_view text) noexcept {
   if (rc != SQLITE_ROW) {
     return fail(detail::sqlite_error(rc, "read schema_version"));
   }
-  return static_cast<int>(stmt.value().column_int64(0));
+  const int version = static_cast<int>(stmt.value().column_int64(0));
+  // Bound-check the LOW end here, once, so no caller can forward a negative
+  // stamp into apply_migrations(): `kMigrations[static_cast<std::size_t>(-1)]`
+  // is kMigrations[SIZE_MAX] on a 2-element array — an unchecked read of a
+  // std::string_view from wild memory, whose garbage pointer/length is then
+  // copied into a std::string and executed as SQL. A single flipped bit in the
+  // header field is enough to get there, and PRAGMA quick_check will not catch
+  // it (it validates b-tree pages, not this application-defined field), so this
+  // is the only place the value can be rejected. The HIGH end stays at the call
+  // sites: a stamp above kCurrentSchemaVersion is a real version from a future
+  // build, a distinct condition with its own message.
+  if (version < 0) {
+    return fail(schema_out_of_range_error());
+  }
+  return version;
 }
 
 [[nodiscard]] Result<Ok> write_user_version(sqlite3* db, int version) {
@@ -243,6 +276,14 @@ domain::OrderState decode_state(std::string_view text) noexcept {
 // inside BEGIN/COMMIT together with its user_version bump, so a crash mid-apply
 // leaves the database at a clean prior version (no half-migration on disk).
 [[nodiscard]] Result<Ok> apply_migrations(sqlite3* db, int from) {
+  // This is the function that turns an int into a raw kMigrations index, so it
+  // enforces the range itself rather than trusting each caller to have done it.
+  // read_user_version() already refuses a negative stamp; reset() passes a
+  // literal 0. Neither guarantee survives the next caller, and the cost of
+  // getting it wrong is not a failed migration but a wild read.
+  if (from < 0 || from > kCurrentSchemaVersion) {
+    return fail(schema_out_of_range_error());
+  }
   for (int v = from; v < kCurrentSchemaVersion; ++v) {
     if (auto begun = exec(db, "BEGIN IMMEDIATE;", "begin migration"); !begun) {
       return begun;
@@ -265,17 +306,34 @@ domain::OrderState decode_state(std::string_view text) noexcept {
   return Ok{};
 }
 
+// What a projection health probe concluded.
+//
+// `Damaged` is a VALUE, not an error: it is the recoverable verdict that
+// open_or_rebuild exists to act on. The Result's ERROR channel is reserved for
+// failures that are NOT corruption-shaped — SQLITE_BUSY, SQLITE_IOERR,
+// SQLITE_NOMEM, SQLITE_INTERRUPT — which must refuse to start rather than
+// licence a rebuild. Keeping the two apart in the TYPE is the point: the old
+// `Result<bool>` shape let every caller quietly read "the read failed" as
+// "the file is broken", and the recovery it triggered DROPs six tables.
+enum class Health { Sound, Damaged };
+
 // A half-migrated projection is one whose user_version claims a version but
 // whose tables do not match it. We detect this cheaply: at the current version
 // every expected table must exist. (A clean fresh db has version 0 and no
 // tables, which is NOT half-migrated — apply_migrations builds it.)
-[[nodiscard]] Result<bool> tables_consistent(sqlite3* db, int version) {
+[[nodiscard]] Result<Health> check_tables(sqlite3* db, int version) {
   if (version == 0) {
-    return true;  // unmigrated; apply_migrations will build the schema.
+    return Health::Sound;  // unmigrated; apply_migrations will build the schema.
   }
   for (const std::string_view name : kTableNames) {
-    auto stmt = prepare(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1;");
+    int code = SQLITE_OK;
+    auto stmt = prepare(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1;", &code);
     if (!stmt) {
+      // Reading sqlite_master can itself hit real damage; anything else (a lock,
+      // an EIO) is a transient failure and gets the error channel.
+      if (detail::is_corruption(code)) {
+        return Health::Damaged;
+      }
       return fail(stmt.error());
     }
     if (const int rc = stmt.value().bind_text(1, name); rc != SQLITE_OK) {
@@ -283,20 +341,39 @@ domain::OrderState decode_state(std::string_view text) noexcept {
     }
     const int rc = sqlite3_step(stmt.value().get());
     if (rc == SQLITE_DONE) {
-      return false;  // a table the version promises is missing -> half-migrated.
+      return Health::Damaged;  // a table the version promises is missing -> half-migrated.
     }
     if (rc != SQLITE_ROW) {
+      if (detail::is_corruption(rc)) {
+        return Health::Damaged;
+      }
       return fail(detail::sqlite_error(rc, "check table"));
     }
   }
-  return true;
+  return Health::Sound;
 }
+
+// How long any store call waits for a lock another connection holds before it
+// gives up with SQLITE_BUSY. See configure_connection() for why it is neither
+// zero (the default) nor unbounded.
+constexpr int kBusyTimeoutMs = 2000;
 
 // Set the connection-level PRAGMAs the projection requires. WAL + FULL sync give
 // crash safety; foreign_keys is on for correctness if relations are added later.
 // An in-memory database silently ignores WAL (it has no journal file), which is
 // fine — :memory: is a test-only fast path.
 [[nodiscard]] Result<Ok> configure_connection(sqlite3* db) {
+  // Wait a bounded time for a lock another connection holds instead of failing
+  // on the first conflict. With no busy handler at all SQLite returns
+  // SQLITE_BUSY immediately, and at boot that is indistinguishable from damage
+  // (an operator's `sqlite3` shell, a backup, or WAL recovery after a crash is
+  // enough) while mid-run it turns a checkpoint into a failed projection write.
+  // Bounded on purpose: the dispatch loop is single-threaded, so an unbounded
+  // wait would stall order flow rather than surface the problem. Set BEFORE the
+  // PRAGMAs below so the journal-mode conversion itself gets the same patience.
+  if (const int rc = sqlite3_busy_timeout(db, kBusyTimeoutMs); rc != SQLITE_OK) {
+    return fail(detail::sqlite_error(rc, "set busy timeout"));
+  }
   if (auto r = exec(db, "PRAGMA journal_mode = WAL;", "set WAL"); !r) {
     return r;
   }
@@ -312,17 +389,32 @@ domain::OrderState decode_state(std::string_view text) noexcept {
 // A corruption probe that forces SQLite to actually read pages: a fresh open of
 // a corrupt file does not fail until a page is touched. `PRAGMA quick_check`
 // returns the single row "ok" on a healthy database.
-[[nodiscard]] Result<bool> integrity_ok(sqlite3* db) {
-  auto stmt = prepare(db, "PRAGMA quick_check;");
+//
+// The classification lives HERE because this is the only place the raw SQLite
+// code is still visible — the typed Error keeps it as text in `broker_code`, and
+// a caller that had to parse that back would inevitably not bother (which is
+// exactly how a transient SQLITE_BUSY came to mean "drop all six tables").
+[[nodiscard]] Result<Health> check_integrity(sqlite3* db) {
+  int code = SQLITE_OK;
+  auto stmt = prepare(db, "PRAGMA quick_check;", &code);
   if (!stmt) {
-    // A prepare/read failure that is corruption-shaped counts as not-ok.
+    // A badly damaged file fails as early as preparing the pragma (the schema
+    // has to be read first), so a corruption-shaped code here is a verdict, not
+    // an error. Every other code is a failure to READ, which says nothing about
+    // the file's contents.
+    if (detail::is_corruption(code)) {
+      return Health::Damaged;
+    }
     return fail(stmt.error());
   }
   const int rc = sqlite3_step(stmt.value().get());
   if (rc != SQLITE_ROW) {
+    if (detail::is_corruption(rc)) {
+      return Health::Damaged;
+    }
     return fail(detail::sqlite_error(rc, "integrity check"));
   }
-  return stmt.value().column_text(0) == "ok";
+  return stmt.value().column_text(0) == "ok" ? Health::Sound : Health::Damaged;
 }
 
 }  // namespace
@@ -349,10 +441,22 @@ int Store::schema_version() const noexcept {
 // it may name the private Store::Connection type.
 Result<Store::Connection> Store::open_connection(const std::filesystem::path& path) {
   sqlite3* raw = nullptr;
-  // path.string() yields the UTF-8 (or active-codepage) filename; ":memory:" and
-  // ordinary paths both flow through unchanged. SQLITE_OPEN_CREATE makes a fresh
-  // file when absent (the cold-start case).
-  const std::string filename = path.string();
+  // sqlite3_open_v2()'s filename is contractually UTF-8 on EVERY platform, while
+  // path::string() yields the implementation's NATIVE NARROW encoding — on MSVC
+  // the CRT locale code page (the ACP by default), not UTF-8. Under a non-ASCII
+  // data root (`C:\Users\Ünïcödé\...`, and the conventions forbid assuming
+  // anything about %APPDATA%) those ACP bytes are not the name SQLite decodes
+  // them as: it feeds them to MultiByteToWideChar(CP_UTF8, ...) with no
+  // MB_ERR_INVALID_CHARS, so ill-formed sequences become U+FFFD and we ask the
+  // OS for a *different* file than the one the intent log and ledger just
+  // resolved through the CRT. u8string() is UTF-8 on every platform, so both
+  // sides of that round trip agree; ":memory:" and ASCII paths are unchanged
+  // byte-for-byte. SQLITE_OPEN_CREATE makes a fresh file when absent (cold
+  // start) — which is precisely why a mangled name must never reach it.
+  const std::u8string utf8 = path.u8string();
+  // NOLINTNEXTLINE(*-reinterpret-cast)
+  const char* utf8_bytes = reinterpret_cast<const char*>(utf8.data());
+  const std::string filename(utf8_bytes, utf8.size());
   const int rc =
       sqlite3_open_v2(filename.c_str(), &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
   Store::Connection db(raw);  // owns `raw` even on failure (sqlite3_open_v2 contract)
@@ -375,11 +479,11 @@ Result<Store> Store::open(std::filesystem::path path) {
   // Corruption is a hard error on the strict open() path (the caller has not
   // asked us to rebuild). open_or_rebuild() turns the same condition into a
   // recoverable signal instead.
-  auto healthy = integrity_ok(handle);
+  auto healthy = check_integrity(handle);
   if (!healthy) {
     return fail(healthy.error());
   }
-  if (!healthy.value()) {
+  if (healthy.value() == Health::Damaged) {
     return fail(errors::make_error(errors::ErrorCategory::Internal,
                                    "store: projection failed integrity check"));
   }
@@ -394,11 +498,11 @@ Result<Store> Store::open(std::filesystem::path path) {
     return fail(schema_too_new_error());
   }
 
-  auto consistent = tables_consistent(handle, version.value());
+  auto consistent = check_tables(handle, version.value());
   if (!consistent) {
     return fail(consistent.error());
   }
-  if (!consistent.value()) {
+  if (consistent.value() == Health::Damaged) {
     // Half-migrated on the strict path: hard error (use open_or_rebuild to recover).
     return fail(
         errors::make_error(errors::ErrorCategory::Internal, "store: projection is half-migrated"));
@@ -420,17 +524,24 @@ Result<Store::OpenOutcome> Store::open_or_rebuild(std::filesystem::path path) {
 
   bool needs_rebuild = false;
 
-  // 1) Physical integrity. A corruption-shaped failure (or a "not ok" verdict)
-  //    is recoverable: we will drop+recreate and signal a rebuild.
-  auto healthy = integrity_ok(handle);
-  bool corrupt = false;
+  // 1) Physical integrity. A `Damaged` VERDICT — quick_check said not-ok, or the
+  //    read failed with SQLITE_CORRUPT/SQLITE_NOTADB — is recoverable: we will
+  //    drop+recreate and signal a rebuild.
+  //
+  //    Anything else on the error channel is a failure to READ, not evidence
+  //    about the file: SQLITE_BUSY while an operator's shell or a backup holds a
+  //    transaction, a one-off SQLITE_IOERR from the data mount, SQLITE_NOMEM,
+  //    SQLITE_INTERRUPT. Refuse to start. The rebuild below is reset(), i.e.
+  //    DROP TABLE on all six tables, and `audit`/`risk_events` cannot be
+  //    replayed from the intent log (it records intents, not audit records) — so
+  //    the old collapse of every error into `corrupt = true` destroyed the FR-27
+  //    trail permanently the moment a read hiccuped. Fail closed: a projection
+  //    we could not read is a projection we must not delete.
+  auto healthy = check_integrity(handle);
   if (!healthy) {
-    // integrity_ok failed to even read — treat a corruption-shaped error as
-    // recoverable; anything else is a genuine failure.
-    corrupt = true;  // a failed quick_check read is corruption-shaped by nature
-  } else {
-    corrupt = !healthy.value();
+    return fail(healthy.error());
   }
+  bool corrupt = healthy.value() == Health::Damaged;
 
   // 2) Schema version. NEWER is still a hard refuse-to-start (not corruption).
   if (!corrupt) {
@@ -442,13 +553,15 @@ Result<Store::OpenOutcome> Store::open_or_rebuild(std::filesystem::path path) {
       return fail(schema_too_new_error());
     }
 
-    // 3) Half-migration is recoverable (rebuild from the intent log).
-    auto consistent = tables_consistent(handle, version.value());
+    // 3) Half-migration is recoverable (rebuild from the intent log). Same rule
+    //    as step 1: only a verdict rebuilds; a read that failed for any other
+    //    reason refuses rather than dropping tables it could not even inspect.
+    auto consistent = check_tables(handle, version.value());
     if (!consistent) {
-      // a read failure here is corruption-shaped -> recover
-      corrupt = true;
-    } else if (!consistent.value()) {
-      needs_rebuild = true;  // half-migrated: rebuild
+      return fail(consistent.error());
+    }
+    if (consistent.value() == Health::Damaged) {
+      needs_rebuild = true;  // half-migrated (or damaged sqlite_master): rebuild
     } else if (auto migrated = apply_migrations(handle, version.value()); !migrated) {
       // a migration that fails to apply on a structurally-sound db is a real error
       return fail(migrated.error());

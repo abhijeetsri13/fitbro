@@ -2,14 +2,18 @@
 
 #include <sqlite3.h>
 
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <filesystem>
 #include <string>
+#include <thread>
 
 #include "broker_exec/domain/enums.hpp"
 #include "broker_exec/domain/money.hpp"
 #include "broker_exec/domain/types.hpp"
 #include "broker_exec/errors/error.hpp"
+#include "sqlite_util.hpp"
 
 namespace fs = std::filesystem;
 using broker_exec::store::AuditRecord;
@@ -45,6 +49,35 @@ class TempDb {
     fs::remove(fs::path(path_).concat("-shm"), ec);
   }
 
+  static inline int counter_ = 0;
+  fs::path path_;
+};
+
+// A unique temp DIRECTORY, removed by RAII. Distinct from TempDb because the
+// non-ASCII path test needs the non-ASCII bytes in a directory COMPONENT: it is
+// the PARENT lookup that fails when SQLite decodes a name differently from the
+// filesystem call that created it (SQLITE_OPEN_CREATE creates the file, never
+// the directory above it).
+class TempDir {
+ public:
+  explicit TempDir(const fs::path& prefix) {
+    path_ = fs::temp_directory_path() / prefix;
+    path_ += std::to_string(counter_++);
+    std::error_code ec;
+    fs::remove_all(path_, ec);
+    fs::create_directories(path_, ec);
+  }
+  ~TempDir() {
+    std::error_code ec;
+    fs::remove_all(path_, ec);
+  }
+
+  TempDir(const TempDir&) = delete;
+  TempDir& operator=(const TempDir&) = delete;
+
+  [[nodiscard]] const fs::path& path() const noexcept { return path_; }
+
+ private:
   static inline int counter_ = 0;
   fs::path path_;
 };
@@ -138,6 +171,47 @@ TEST_CASE("a future schema_version refuses to start", "[store]") {
   auto rebuild = Store::open_or_rebuild(tmp.path());
   REQUIRE_FALSE(rebuild.has_value());
   REQUIRE(rebuild.error().category == ErrorCategory::Internal);
+}
+
+TEST_CASE("a NEGATIVE schema_version refuses to start on both open paths", "[store]") {
+  TempDb tmp("negver");
+  {
+    auto opened = Store::open(tmp.path());  // create at the current version
+    REQUIRE(opened.has_value());
+    REQUIRE(opened.value().insert_order(sample_order("S-1")).has_value());
+  }
+  // One flipped bit in the 4-byte user_version field at offset 60 of the file
+  // header turns 2 into a negative number — exactly the damage this store exists
+  // to survive. PRAGMA quick_check still reports "ok" (it validates b-tree pages,
+  // not this application-defined field) and all six tables are present, so
+  // nothing upstream stops the value: apply_migrations() used to begin its loop
+  // at v = -1 and evaluate kMigrations[static_cast<std::size_t>(-1)] — i.e.
+  // kMigrations[SIZE_MAX] on a 2-element array — then copy that wild
+  // string_view into a std::string and hand it to sqlite3_exec as SQL.
+  set_user_version(tmp.path(), -1);
+
+  auto strict = Store::open(tmp.path());
+  REQUIRE_FALSE(strict.has_value());
+  REQUIRE(strict.error().category == ErrorCategory::Internal);
+  // DoNotRetry, NOT Internal's default of RaiseAlert: the same typed refusal a
+  // too-new schema gets. Anything that escaped the old out-of-bounds loop came
+  // from sqlite_error(), which carries the category default instead — so this
+  // line is what separates "refused the stamp" from "tripped over it".
+  REQUIRE(strict.error().action == broker_exec::errors::SuggestedAction::DoNotRetry);
+
+  // open_or_rebuild must ALSO refuse. An uninterpretable stamp is doubt, and the
+  // recovery path's answer to doubt is reset() — DROP TABLE on all six tables.
+  auto rebuild = Store::open_or_rebuild(tmp.path());
+  REQUIRE_FALSE(rebuild.has_value());
+  REQUIRE(rebuild.error().action == broker_exec::errors::SuggestedAction::DoNotRetry);
+
+  // Nothing was dropped on the way out: restore a sane stamp, the row is there.
+  set_user_version(tmp.path(), 2);
+  auto reopened = Store::open(tmp.path());
+  REQUIRE(reopened.has_value());
+  auto found = reopened.value().find_order("S-1");
+  REQUIRE(found.has_value());
+  REQUIRE(found.value().has_value());
 }
 
 TEST_CASE("insert_order enforces UNIQUE(client_ref); upsert updates; find round-trips", "[store]") {
@@ -357,4 +431,109 @@ TEST_CASE("open_or_rebuild on a clean fresh db does not request a rebuild", "[st
   REQUIRE(outcome.has_value());
   REQUIRE_FALSE(outcome.value().needs_rebuild);
   REQUIRE(outcome.value().store.schema_version() == 2);
+}
+
+// ── Only real damage may licence the destructive rebuild ───────────────────
+
+TEST_CASE("is_corruption admits file damage only, never a transient failure", "[store]") {
+  using broker_exec::store::detail::is_corruption;
+
+  // The two codes that actually say "this file's contents are wrong".
+  CHECK(is_corruption(SQLITE_CORRUPT));
+  CHECK(is_corruption(SQLITE_NOTADB));
+  // Extended codes carry the primary code in the low byte. Missing them would
+  // make open_or_rebuild refuse to start on a genuinely corrupt projection —
+  // the opposite failure, and just as wrong.
+  CHECK(is_corruption(SQLITE_CORRUPT_VTAB));
+
+  // Everything below is transient or environmental and says NOTHING about the
+  // file's contents. Each of these used to arrive at open_or_rebuild as
+  // `corrupt = true`, which runs reset(): DROP TABLE on orders, trades,
+  // positions, funds, risk_events and audit. The first four can be replayed from
+  // the intent log; `audit` and `risk_events` cannot — the log records intents,
+  // not audit records — so one momentary lock at boot destroyed the FR-27 trail
+  // for good. SQLITE_BUSY_RECOVERY is the concrete one: restarting after a
+  // SIGKILL while another process still holds the db yields exactly that.
+  CHECK_FALSE(is_corruption(SQLITE_BUSY));
+  CHECK_FALSE(is_corruption(SQLITE_BUSY_RECOVERY));
+  CHECK_FALSE(is_corruption(SQLITE_LOCKED));
+  CHECK_FALSE(is_corruption(SQLITE_IOERR));
+  CHECK_FALSE(is_corruption(SQLITE_IOERR_READ));
+  CHECK_FALSE(is_corruption(SQLITE_NOMEM));
+  CHECK_FALSE(is_corruption(SQLITE_INTERRUPT));
+  CHECK_FALSE(is_corruption(SQLITE_CANTOPEN));
+  CHECK_FALSE(is_corruption(SQLITE_READONLY));
+  CHECK_FALSE(is_corruption(SQLITE_ERROR));
+}
+
+TEST_CASE("a store write waits out another connection's write lock", "[store]") {
+  TempDb tmp("busy");
+  auto opened = Store::open(tmp.path());
+  REQUIRE(opened.has_value());
+  Store& store = opened.value();
+
+  // A second connection holds the write lock for a moment — an operator's
+  // `sqlite3` shell, a backup, a checkpointer. Nothing called
+  // sqlite3_busy_timeout() before this fix, so SQLite's default handler gave up
+  // on the FIRST conflict and this insert came straight back SQLITE_BUSY.
+  // Catch2's assertion macros are not thread-safe, so the holder only records
+  // into atomics and the main thread asserts after the join.
+  std::atomic<bool> lock_held{false};
+  std::atomic<bool> lock_taken_ok{false};
+  std::thread holder([&] {
+    sqlite3* db = nullptr;
+    const bool opened_ok = sqlite3_open(tmp.path().string().c_str(), &db) == SQLITE_OK;
+    const bool begun_ok =
+        opened_ok && sqlite3_exec(db, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) == SQLITE_OK;
+    lock_taken_ok.store(begun_ok);
+    lock_held.store(true);
+    if (begun_ok) {
+      // Well inside the store's patience, so the wait always resolves; the test
+      // never depends on an upper bound, only on the store not giving up at once.
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      (void)sqlite3_exec(db, "COMMIT;", nullptr, nullptr, nullptr);
+    }
+    sqlite3_close(db);
+  });
+
+  while (!lock_held.load()) {
+    std::this_thread::yield();
+  }
+  auto inserted = store.insert_order(sample_order("BUSY-1"));
+  holder.join();
+
+  REQUIRE(lock_taken_ok.load());  // the lock really was held; else this proves nothing
+  REQUIRE(inserted.has_value());
+  REQUIRE(store.all_orders().value().size() == 1);
+}
+
+TEST_CASE("the projection opens under a non-ASCII data root", "[store]") {
+  // sqlite3_open_v2()'s filename is contractually UTF-8 on every platform, while
+  // path::string() is the implementation's NATIVE NARROW encoding — on MSVC the
+  // CRT code page. Under a non-ASCII root the two are different byte strings, so
+  // the store asked the OS for a file whose name SQLite had mis-decoded: it
+  // failed to open at boot, or (where the mangled parent happens to exist)
+  // CREATEd a second, empty projection beside the populated intent log.
+  //
+  // The name is spelled with universal-character-names inside a u8"" literal, so
+  // the bytes are UTF-8 whatever encoding the compiler reads this file in, and
+  // fs::path treats a char8_t source as UTF-8 on every platform — the directory
+  // really is created under this name and not an ACP transliteration of it.
+  TempDir dir(fs::path(u8"broker_exec_store_\u00fcn\u00efc\u00f6d\u00e9_"));
+  REQUIRE(fs::is_directory(dir.path()));
+  const fs::path db_path = dir.path() / fs::path(u8"st\u00f6re.db");
+
+  {
+    auto opened = Store::open(db_path);
+    REQUIRE(opened.has_value());
+    REQUIRE(opened.value().insert_order(sample_order("U-1")).has_value());
+  }
+  // The bytes SQLite was handed named THIS file, not a transliteration of it.
+  REQUIRE(fs::exists(db_path));
+
+  auto reopened = Store::open(db_path);
+  REQUIRE(reopened.has_value());
+  auto found = reopened.value().find_order("U-1");
+  REQUIRE(found.has_value());
+  REQUIRE(found.value().has_value());
 }
