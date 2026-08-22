@@ -64,6 +64,34 @@ std::int64_t expected_wall_ns(std::int64_t ticks) {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(sc::duration(ticks)).count();
 }
 
+// Raw byte access to the log file. The torn-tail tests below are about BYTES —
+// a record whose line has no terminator is a byte condition the public API
+// cannot produce — so they build and inspect the exact on-disk image.
+std::string read_raw(const fs::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+void write_raw(const fs::path& path, const std::string& bytes) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+// Two complete, fsync'd, newline-terminated records at `path`; returns the exact
+// bytes on disk. This is the intact prefix a crash leaves behind — the part that
+// names orders that may already be live at the exchange.
+std::string seed_two_records(const fs::path& path) {
+  TestClock clock = clock_at_ticks(500);
+  auto opened = IntentLog::open(path, clock);
+  REQUIRE(opened.has_value());
+  {
+    IntentLog log = std::move(opened.value());
+    REQUIRE(log.append(IntentOp::PlaceOrder, "ref-one", R"({"qty":1})").has_value());
+    REQUIRE(log.append(IntentOp::PlaceOrder, "ref-two", R"({"qty":2})").has_value());
+  }
+  return read_raw(path);
+}
+
 }  // namespace
 
 TEST_CASE("append N records, then replay rebuilds index and enumerates them",
@@ -602,4 +630,199 @@ TEST_CASE("IntentOp wire names round-trip", "[intentlog][op]") {
     REQUIRE(back.value() == op);
   }
   REQUIRE_FALSE(intent_op_from_string("bogus").has_value());
+}
+
+// ── IMP-13: A TORN TAIL IS CRASH RESIDUE, NOT TAMPERING ─────────────────────
+//
+// THE DEFECT: replay() split the file on '\n' and fed the final UNTERMINATED
+// fragment to json::parse like any other record. A partial line — the normal,
+// expected residue of a power loss between fwrite/fflush and durable_sync — came
+// back discarded and replay() returned an Error for the WHOLE log. Because
+// Result<std::vector<IntentRecord>> is all-or-nothing, records 1..N-1 (intact,
+// fsync'd, hash-chain-verifiable, and naming every order that IS live at the
+// exchange) became unreachable; IdempotencyIndex::rebuild_from_log never ran; and
+// the log then bricked every subsequent boot identically. The operator's only way
+// forward was to move the log aside — which is exactly the state in which every
+// re-submitted signal is placed a SECOND time.
+//
+// Discarding the fragment is provably safe: append() had not returned, so
+// dispatch() never reached run_pre_send_barrier() or the broker socket, and no
+// order can correspond to it. The sibling hash chain (ledger::Ledger::load) has
+// tolerated precisely this since AC-1; the intent log had not.
+
+TEST_CASE("IMP-13: a torn trailing fragment yields the verified prefix and is truncated away",
+          "[intentlog][replay][torn]") {
+  TempLog tmp("torn_tail");
+  const std::vector<std::string> refs = {"strat-aaaa-0001", "strat-bbbb-0002", "strat-cccc-0003"};
+
+  {
+    TestClock clock = clock_at_ticks(1'000);
+    auto opened = IntentLog::open(tmp.path, clock);
+    REQUIRE(opened.has_value());
+    IntentLog log = std::move(opened.value());
+    for (const std::string& ref : refs) {
+      REQUIRE(log.append(IntentOp::PlaceOrder, ref, R"({"qty":1})").has_value());
+    }
+  }
+  const std::string prefix = read_raw(tmp.path);
+  REQUIRE(!prefix.empty());
+  REQUIRE(prefix.back() == '\n');
+
+  // Record 4's line reaches the disk only partially: no closing brace and — the
+  // part that makes it diagnosable — no terminating newline.
+  const std::string fragment = R"({"client_ref":"strat-dddd-0004","hash":"deadbe)";
+  write_raw(tmp.path, prefix + fragment);
+
+  TestClock clock = clock_at_ticks(2'000);
+  auto opened = IntentLog::open(tmp.path, clock);
+  REQUIRE(opened.has_value());
+  IntentLog log = std::move(opened.value());
+
+  // THE ASSERTION THE OLD CODE FAILS: it returned Error("malformed JSON at record
+  // index 3") here and surrendered all three verified records with it.
+  auto replayed = log.replay();
+  REQUIRE(replayed.has_value());
+  REQUIRE(replayed.value().size() == 3);
+  for (std::size_t i = 0; i < refs.size(); ++i) {
+    CHECK(replayed.value()[i].seq == static_cast<std::int64_t>(i + 1));
+    CHECK(log.last_for(refs[i]).has_value());
+  }
+  CHECK(log.next_seq() == 4);
+
+  // The repair is REPORTED, never silent: boot degrades readiness off this and the
+  // runbook gets the offset it needs to reconcile.
+  CHECK(log.torn_tail().repaired);
+  CHECK(log.torn_tail().discarded_bytes == fragment.size());
+  CHECK(log.torn_tail().truncated_to == prefix.size());
+  CHECK(log.torn_tail().records_kept == 3);
+
+  // The file is back on a record boundary. Without this the next append() would be
+  // glued onto the fragment and the log would be unreplayable for good.
+  REQUIRE(read_raw(tmp.path) == prefix);
+
+  // The append cursor followed the truncation: record 4 gets seq 4 and chains to
+  // record 3, and a FRESH log reads all four back clean.
+  auto four = log.append(IntentOp::PlaceOrder, "strat-dddd-0004", R"({"qty":7})");
+  REQUIRE(four.has_value());
+  CHECK(four.value().seq == 4);
+  CHECK(four.value().prev_hash == replayed.value()[2].hash);
+
+  TestClock clock2 = clock_at_ticks(3'000);
+  auto reopened = IntentLog::open(tmp.path, clock2);
+  REQUIRE(reopened.has_value());
+  IntentLog fresh = std::move(reopened.value());
+  auto again = fresh.replay();
+  REQUIRE(again.has_value());
+  CHECK(again.value().size() == 4);
+  CHECK_FALSE(fresh.torn_tail().repaired);  // nothing left to repair
+}
+
+TEST_CASE("IMP-13: the SAME garbage is recovered unterminated and FATAL newline-terminated",
+          "[intentlog][replay][torn]") {
+  // Identical bytes in all three placements. Only the terminator (and what
+  // follows) separates "a write that never finished" from "a line that was
+  // written whole and then damaged" — so only the terminator may separate the
+  // recovery from the refusal. This is the guard that the leniency above cannot
+  // grow into a tolerance for tampering.
+  const std::string garbage = R"({"client_ref":"strat-xxxx-9999","hash":"dead)";
+
+  // (a) UNTERMINATED, at the end ⇒ a half-written record ⇒ recovered.
+  {
+    TempLog tmp("garbage_unterminated");
+    const std::string prefix = seed_two_records(tmp.path);
+    write_raw(tmp.path, prefix + garbage);
+
+    TestClock clock = clock_at_ticks(600);
+    auto opened = IntentLog::open(tmp.path, clock);
+    REQUIRE(opened.has_value());
+    IntentLog log = std::move(opened.value());
+    auto replayed = log.replay();
+    REQUIRE(replayed.has_value());
+    CHECK(replayed.value().size() == 2);
+    CHECK(log.torn_tail().repaired);
+    CHECK(read_raw(tmp.path) == prefix);
+  }
+
+  // (b) The SAME bytes, newline-terminated as the LAST line ⇒ the write completed
+  //     and something else damaged it ⇒ FATAL, and the evidence is left untouched.
+  {
+    TempLog tmp("garbage_terminated");
+    const std::string prefix = seed_two_records(tmp.path);
+    const std::string image = prefix + garbage + "\n";
+    write_raw(tmp.path, image);
+
+    TestClock clock = clock_at_ticks(601);
+    auto opened = IntentLog::open(tmp.path, clock);
+    REQUIRE(opened.has_value());
+    IntentLog log = std::move(opened.value());
+    auto replayed = log.replay();
+    REQUIRE_FALSE(replayed.has_value());
+    CHECK(replayed.error().category == broker_exec::errors::ErrorCategory::Internal);
+    CHECK(replayed.error().message.find("malformed JSON") != std::string::npos);
+    CHECK_FALSE(log.torn_tail().repaired);
+    // A refusal must never quietly rewrite the operator's evidence.
+    CHECK(read_raw(tmp.path) == image);
+  }
+
+  // (c) The SAME bytes MID-FILE, with a good record after them ⇒ FATAL. Data
+  //     following a fragment proves the write that produced it completed.
+  {
+    TempLog tmp("garbage_midfile");
+    const std::string prefix = seed_two_records(tmp.path);
+    const std::size_t first_eol = prefix.find('\n');
+    REQUIRE(first_eol != std::string::npos);
+    const std::string image =
+        prefix.substr(0, first_eol + 1) + garbage + "\n" + prefix.substr(first_eol + 1);
+    write_raw(tmp.path, image);
+
+    TestClock clock = clock_at_ticks(602);
+    auto opened = IntentLog::open(tmp.path, clock);
+    REQUIRE(opened.has_value());
+    IntentLog log = std::move(opened.value());
+    auto replayed = log.replay();
+    REQUIRE_FALSE(replayed.has_value());
+    CHECK(replayed.error().message.find("malformed JSON") != std::string::npos);
+    CHECK(read_raw(tmp.path) == image);
+  }
+}
+
+TEST_CASE("IMP-13: a final record that lost only its newline is KEPT and the separator restored",
+          "[intentlog][replay][torn]") {
+  TempLog tmp("lost_newline");
+  const std::string prefix = seed_two_records(tmp.path);
+  REQUIRE(prefix.back() == '\n');
+
+  // The write stopped exactly ONE byte short: the record is complete and
+  // hash-verifiable, only the separator is gone. Left unrepaired, the next
+  // append() is concatenated onto that line and the log becomes permanently
+  // unreplayable — a recoverable crash escalated into a bricked log.
+  write_raw(tmp.path, prefix.substr(0, prefix.size() - 1));
+
+  TestClock clock = clock_at_ticks(700);
+  auto opened = IntentLog::open(tmp.path, clock);
+  REQUIRE(opened.has_value());
+  IntentLog log = std::move(opened.value());
+
+  auto replayed = log.replay();
+  REQUIRE(replayed.has_value());
+  REQUIRE(replayed.value().size() == 2);  // a VERIFIED record is never discarded
+  CHECK(log.torn_tail().repaired);
+  CHECK(log.torn_tail().discarded_bytes == 0);  // nothing was thrown away
+  CHECK(read_raw(tmp.path) == prefix);          // the separator is back on disk
+
+  REQUIRE(log.append(IntentOp::CancelOrder, "ref-three", "{}").has_value());
+
+  // THE ASSERTION THE OLD CODE FAILS: with no separator restored, records 2 and 3
+  // share one (newline-terminated, therefore FATAL) line, and this replay returns
+  // an Error that loses the whole log.
+  TestClock clock2 = clock_at_ticks(800);
+  auto reopened = IntentLog::open(tmp.path, clock2);
+  REQUIRE(reopened.has_value());
+  IntentLog fresh = std::move(reopened.value());
+  auto again = fresh.replay();
+  REQUIRE(again.has_value());
+  REQUIRE(again.value().size() == 3);
+  CHECK(again.value()[2].seq == 3);
+  CHECK(again.value()[2].client_ref == "ref-three");
+  CHECK_FALSE(fresh.torn_tail().repaired);
 }
