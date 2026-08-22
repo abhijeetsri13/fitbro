@@ -37,11 +37,10 @@
 // SINGLE WRITER (NFR-2): applied only on the main loop, like the Dispatcher and
 // the LifecycleEngine. Not thread-safe by design.
 //
-// CROSS-PLATFORM: C++20 standard library only (<chrono>, <optional>, <vector>).
+// CROSS-PLATFORM: C++20 standard library only (<optional>, <vector>).
 // No OS APIs, no `#ifdef`, no floating point — money/price stay exact integer
 // paise via the domain types, and time flows through the injected ClockPort.
 
-#include <chrono>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -84,21 +83,40 @@ struct UnknownResolution {
 // rest of the codebase). Not thread-safe by design — main loop only (NFR-2).
 class UnknownResolver {
  public:
-  // Attribute-corroboration tuning. `attr_window` bounds how recent a broker
-  // order must be (relative to the resolve call) to be eligible for the WEAKEST,
-  // attribute-only rung — a safe-by-default guard against stale collisions.
-  struct Config {
-    std::chrono::seconds attr_window{5};
-  };
-
+  // ── RUNG 3 IS NOT TIME-BOUNDED. IT USED TO SAY IT WAS. ────────────────────
+  //
+  // This class carried a `Config { std::chrono::seconds attr_window{5}; }` and a
+  // stored `ClockPort&`, and the comments here said the attribute rung was
+  // "gated by the time window" — "a safe-by-default guard against stale
+  // collisions". None of it was ever enforced. `within_attr_window()` returned
+  // `true` unconditionally and did `(void)config_;`, because `domain::Order`
+  // carries no placement time to compare `clock_.now()` against; no caller ever
+  // set the window; and nothing read it. A knob that silently does nothing is
+  // worse than no knob, because it invites an operator to tighten the window and
+  // believe they have. All three are gone rather than silenced.
+  //
+  // WHAT THAT MEANS NOW, STATED PLAINLY: attribute corroboration admits a broker
+  // row of matching attributes however old it is. That is tolerable here for two
+  // specific reasons, and only these two:
+  //   * it is the LAST rung, reached only when the broker order id AND the
+  //     correlation token both failed to match, and
+  //   * this resolver is READ-ONLY — it never sends. The worst case is adopting
+  //     a collided identical lot, not firing a second order.
+  // It is still weaker than the header used to claim. To bound it for real,
+  // `domain::Order` needs a broker placement timestamp, populated by both
+  // adapters; the clock parameter below is retained for that day.
+  //
   // Collaborators (all by reference, must outlive this object):
   //   broker — read-only here: ONLY fetch_orders() is called (no second fire).
   //   store  — the projection; a resolved order is upsert'd back as broker truth.
   //   fsm    — the lifecycle engine; adopts the broker-truth state via apply().
   //   alerts — the operator escalation path; a NoMatch raises a Critical alert.
-  //   clock  — the injected time source (the attribute window is measured on it).
+  //   clock  — CURRENTLY UNUSED. Kept so the signature does not churn twice: it
+  //            is what a real attribute window will be measured on once an order
+  //            carries a broker placement time. Do not read it as evidence that
+  //            time is considered today; it is not.
   UnknownResolver(ports::BrokerPort& broker, store::Store& store, lifecycle::LifecycleEngine& fsm,
-                  ports::AlertSink& alerts, ports::ClockPort& clock, Config config = {});
+                  ports::AlertSink& alerts, ports::ClockPort& clock);
 
   UnknownResolver(const UnknownResolver&) = delete;
   UnknownResolver& operator=(const UnknownResolver&) = delete;
@@ -137,18 +155,10 @@ class UnknownResolver {
   [[nodiscard]] Result<domain::Order> adopt(const domain::Order& unknown_order,
                                             const domain::Order& broker_truth);
 
-  // True iff `broker_order` is within the attribute-corroboration time window
-  // relative to now. The fake/real broker order carries no timestamp of its own,
-  // so the window is enforced conservatively: corroboration is admitted only when
-  // the order has no broker timestamp to contradict it (documented in the .cpp).
-  [[nodiscard]] bool within_attr_window(const domain::Order& broker_order) const noexcept;
-
   ports::BrokerPort& broker_;
   store::Store& store_;
   lifecycle::LifecycleEngine& fsm_;
   ports::AlertSink& alerts_;
-  ports::ClockPort& clock_;
-  Config config_;
 };
 
 }  // namespace broker_exec::runtime
