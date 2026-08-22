@@ -88,6 +88,77 @@ using domain::OrderState;
   return false;
 }
 
+// ── Canonicalizing an adapter's "still working at the broker" view ──────────
+//
+// `Sent` means one thing in THIS machine — "we sent it; no acknowledgement has
+// been processed yet" — and something else in an adapter. The Kite adapter maps
+// EVERY working broker status (OPEN, TRIGGER PENDING, OPEN PENDING, MODIFY
+// PENDING, ...) onto OrderState::Sent and publishes it carrying the row's
+// filled_quantity. Read literally, that view is a BACKWARD jump out of
+// Acknowledged / PartiallyFilled / Unknown / Reconciled: the table refuses it and
+// apply() returns before writing anything, so for the whole working life of every
+// Kite order the fill, the average price and the broker order id the view carried
+// were discarded in silence. That is broker truth — which this library declares
+// the source of truth — thrown away on the primary live broker's normal path, and
+// a locally-frozen filled_qty==0 then walks straight past modifyguard's
+// shrink-below-filled check and cancels the working remainder of a real position.
+//
+// So an observed `Sent` arriving at an order that has ALREADY reached the broker
+// is not a state transition at all: it says "still working", and the only new
+// fact in it is the fill count. Canonicalize it exactly the way
+// fillnorm::normalize_fill does for a working row — which is exactly how the
+// Kotak adapter already publishes one, and why Kotak never had this defect:
+//   filled > 0 -> PartiallyFilled, otherwise Acknowledged.
+// Both are legal successors of every from-state below, so the transition table is
+// left untouched: no backward edge is punched through the forward-progressing
+// invariant, and the order never lands in `Sent` — a state that boot's
+// require_no_unreconciled_orders reads as "send result never confirmed" and that
+// modifyguard reads as "never modifiable", neither of which is true of an order
+// the broker has just confirmed working.
+//
+// NEVER Filled: the broker is saying the order is still WORKING. Concluding a
+// terminal, absorbing sink from our own arithmetic is the one mistake here that
+// cannot be walked back.
+//
+// From which states does an observed `Sent` mean "still working" rather than a
+// forward step? Exactly those in which the order is known to have reached the
+// broker — or, for Unknown, in which a broker snapshot listing it as working is
+// itself the proof that it did. The exclusions are as deliberate as the
+// inclusions: from PendingSend and earlier, `Sent` is a genuine FORWARD edge on
+// the documented happy path (PendingSend -> Sent) and must keep meaning that;
+// ManualInterventionRequired is a near-sink only a human clears, so laundering it
+// into Acknowledged would be fail-OPEN; PartiallyPlaced is a parent fold with no
+// broker order of its own. Terminal states never reach here (apply() drops them
+// first). The switch is TOTAL for the same reason table_allows' is.
+[[nodiscard]] bool sent_means_still_working(OrderState from) noexcept {
+  switch (from) {
+    case OrderState::Sent:
+    case OrderState::Acknowledged:
+    case OrderState::PartiallyFilled:
+    case OrderState::Unknown:
+    case OrderState::Reconciled:
+      return true;
+    case OrderState::Created:
+    case OrderState::Validated:
+    case OrderState::PendingSend:
+    case OrderState::Filled:
+    case OrderState::Rejected:
+    case OrderState::Cancelled:
+    case OrderState::PartiallyPlaced:
+    case OrderState::ManualInterventionRequired:
+      return false;
+  }
+  return false;
+}
+
+// The observed state the transition table should actually be asked about.
+[[nodiscard]] OrderState canonical_observed(OrderState from, const BrokerView& view) noexcept {
+  if (view.observed_state != OrderState::Sent || !sent_means_still_working(from)) {
+    return view.observed_state;
+  }
+  return view.filled_qty.value() > 0 ? OrderState::PartiallyFilled : OrderState::Acknowledged;
+}
+
 // Fold a child_ref -> state map into the parent state (collects the values and
 // defers to fold_parent_state). A free helper so apply_child() and
 // parent_state() share one definition of "the parent is the fold of its kids".
@@ -223,11 +294,27 @@ ApplyOutcome LifecycleEngine::apply(domain::Order& order, const BrokerView& view
     }
   }
 
-  // Rule 3: legal transitions only. An illegal jump is refused (the order is
-  // left untouched). We still record the key as seen so the next equal/higher
-  // key is treated consistently.
-  if (!is_valid_transition(order.state, view.observed_state)) {
-    last_key_[view.client_ref] = view.ordering_key;
+  // The observed state, CANONICALIZED first: an adapter's "still working at the
+  // broker" spelling of `Sent` is resolved against the fill count the same view
+  // carries before the table is asked to judge it (see canonical_observed).
+  // Everything below uses this value and never view.observed_state directly, or
+  // the order would be written with a state the table was never asked about.
+  const OrderState observed = canonical_observed(order.state, view);
+
+  // Rule 3: legal transitions only. An illegal jump is REFUSED — the order is
+  // left untouched AND the ordering key is deliberately NOT advanced. The key is
+  // the high-water mark of what was APPLIED, not of what was seen: raising it on
+  // a view the machine never believed would make a later, lower-keyed view that
+  // IS legal — and that carries real fill data — get dropped as stale, so one
+  // refusal would silently cost us the next good observation as well.
+  //
+  // KNOWN GAP (deliberate, not an oversight): this returns the same NoChange a
+  // benign unchanged view returns, so a caller cannot distinguish "nothing to do"
+  // from "the broker is telling us something this machine refuses to believe" —
+  // a first-class divergence that should count as a mismatch and block new
+  // entries. Separating them needs a new ApplyOutcome value, which every switch
+  // over the enum must then handle; see the note on ApplyOutcome in the header.
+  if (!is_valid_transition(order.state, observed)) {
     return ApplyOutcome::NoChange;
   }
 
@@ -237,7 +324,7 @@ ApplyOutcome LifecycleEngine::apply(domain::Order& order, const BrokerView& view
   // mutating fields when the state actually advances, to keep "NoChange"
   // honest about the state field. Fill progress within the same state IS
   // applied (it is real new information) and reported as Applied.
-  const bool state_changes = order.state != view.observed_state;
+  const bool state_changes = order.state != observed;
   const bool fill_advances =
       view.filled_qty != order.filled_qty || view.avg_price != order.avg_price ||
       (!view.broker_order_id.empty() && view.broker_order_id != order.broker_order_id);
@@ -248,7 +335,7 @@ ApplyOutcome LifecycleEngine::apply(domain::Order& order, const BrokerView& view
     return ApplyOutcome::NoChange;
   }
 
-  order.state = view.observed_state;
+  order.state = observed;
   order.filled_qty = view.filled_qty;
   order.avg_price = view.avg_price;
   if (!view.broker_order_id.empty()) {
