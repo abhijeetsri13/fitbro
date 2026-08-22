@@ -42,7 +42,9 @@
 //          This closes the window in which a third process could occupy the name
 //          while we were still deciding. If the create says "exists", someone
 //          beat us to the free name: we ABORT, drop the file we claimed, and
-//          NEVER restore it (restoring would overwrite the new owner's lock).
+//          NEVER restore it (restoring would overwrite the new owner's lock). A
+//          create that merely FAILED proves nothing about who holds the name, so
+//          that case drops NOTHING — the claimed file stays, named in the error.
 //       c. ONLY NOW re-check the age of the file we claimed. If it turns out to
 //          have been FRESH (a legitimate holder acquired it between our staleness
 //          observation and step (a)), we UNDO: remove our own lock (nonce-checked,
@@ -50,6 +52,18 @@
 //          back. The restore's error_code is INSPECTED — a failed restore is
 //          reported as a typed Internal Error naming the residue, never silently
 //          swallowed.
+//
+//          THE UNDO'S OWN OUTCOME — not the mere existence of a file at the lock
+//          path — decides whether the restore happens. Only a PROVEN stranger
+//          suppresses it: the file carries a nonce that is not ours, or our file
+//          is provably gone and something new has appeared in its place. A removal
+//          that merely FAILED (Windows refuses to delete a file any sibling has
+//          open, and siblings read this path routinely) must never be read as "a
+//          third party took the name" — that inference deletes the displaced
+//          holder's real lock AND strands ours at the lock path, released by
+//          nobody, blocking every sibling for a full staleness window. Under any
+//          doubt we RESTORE (rename replaces, so it also clears an orphan of our
+//          own) and we NEVER delete the file we claimed.
 //
 //     Doing (b) before (c) is the load-bearing detail. The earlier
 //     check-then-restore ordering left the lock path UNOCCUPIED while the mtime
