@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -257,6 +258,80 @@ class Pkey {
   return dump_compact(out);
 }
 
+// ── IMP-36: NEVER SPLICE A RECORD ONTO BYTES WE DID NOT ACCOUNT FOR ──────────
+//
+// append() writes ONE newline-terminated JSON line onto a handle opened "ab", so
+// every record's readability rests on the file already ending EXACTLY on a record
+// boundary. stdio can flush PART of its buffer before failing (a short write
+// inside fflush on ENOSPC/EIO, or a line longer than BUFSIZ that fwrite flushes
+// mid-way), which leaves a terminator-less fragment at EOF. A later append then
+// concatenates a complete record onto that fragment, getline() reads the two as
+// ONE unparseable line, and load()'s torn-write leniency forgives it only while it
+// is still the LAST content line — so one more entry buries it mid-file and load()
+// fails FATALLY AND FOREVER. That bricks the one artifact a human must never
+// hand-edit: the tamper-evident audit trail. These two helpers are the whole
+// defence — measure the boundary, and restore it.
+
+// True iff `path` ends ON a record boundary (its last byte is '\n').
+//
+// AN UNREADABLE TAIL RETURNS false DELIBERATELY. Bytes we know are torn and bytes
+// we cannot inspect carry the identical risk — a splice onto an unknown offset —
+// so both must stop the append. Only ever called on a file already measured as
+// non-empty, so seeking one byte back from the end is in range.
+[[nodiscard]] bool ends_on_record_boundary(const fs::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return false;
+  }
+  in.seekg(-1, std::ios::end);
+  if (!in) {
+    return false;
+  }
+  char last = '\0';
+  return static_cast<bool>(in.get(last)) && last == '\n';
+}
+
+// Restore `path` to exactly `target_size` bytes and make that truncation DURABLE.
+// true means the file is PROVEN back at its pre-append size; false means it is
+// NOT, which is the only condition that may seal the Ledger.
+//
+// TRUNCATING HERE IS NOT A TAMPER, and the reason is the caller's contract, not
+// this function's: `target_size` is an offset the SAME call measured moments ago,
+// and the only bytes past it are the ones that call just tried and FAILED to
+// write — a record no caller was ever told was durable, and exactly the record
+// load() would skip as a torn trailing write anyway. Nothing acknowledged is lost.
+// THE HANDLE MUST ALREADY BE CLOSED when this runs, or stdio could flush the rest
+// of its buffer back over the hole we just made.
+[[nodiscard]] bool restore_to_size(const fs::path& path, std::uintmax_t target_size) {
+  std::error_code ec;
+  const std::uintmax_t now = fs::file_size(path, ec);
+  if (ec) {
+    return false;  // cannot even measure it -> the tail is unknown -> seal.
+  }
+  if (now == target_size) {
+    return true;  // stdio buffered it all; not one byte reached the disk.
+  }
+  if (now < target_size) {
+    // The file SHRANK under an append-only write, so something outside this
+    // process is rewriting it. resize_file would zero-EXTEND it, INVENTING bytes
+    // in an audit file. Refuse and let the caller seal.
+    return false;
+  }
+  fs::resize_file(path, target_size, ec);
+  if (ec) {
+    return false;
+  }
+  // fsync the truncation itself: an un-synced shrink can be lost to a crash, which
+  // would hand the next boot the very fragment this call exists to remove.
+  std::FILE* fp = std::fopen(path.string().c_str(), "ab");
+  if (fp == nullptr) {
+    return false;
+  }
+  const bool synced = platform::durable_sync(platform::portable_fileno(fp));
+  const bool closed = std::fclose(fp) == 0;
+  return synced && closed;
+}
+
 }  // namespace
 
 Ledger::Ledger(const ports::ClockPort& clock, std::filesystem::path path) noexcept
@@ -270,6 +345,22 @@ Result<LedgerEntry> Ledger::append(std::string payload) {
 }
 
 Result<LedgerEntry> Ledger::append(std::string payload, const ProvenanceContext& provenance) {
+  // ── SEALED? THEN WRITE NOTHING (IMP-36) ────────────────────────────────────
+  // Latched by an earlier append that could not prove the file back at its
+  // pre-append size, or that found the file already ending mid-record. Bytes of
+  // unknown length are then sitting at EOF and a complete record written on top of
+  // them merges into one unparseable line — the corruption this latch exists to
+  // stop. Reported as Validation and NOT Internal on purpose: Internal reads as "a
+  // glitch, retry me", and this must never be retried. Recovery is deliberately
+  // OUT-OF-PROCESS — repair the file, then build a fresh Ledger and load() —
+  // because a successful load() does NOT prove the tail is clean (it SKIPS a torn
+  // last line), so nothing this object can observe is allowed to clear the latch.
+  if (poisoned_) {
+    return fail(make_error(ErrorCategory::Validation,
+                           "ledger: sealed by an earlier failed append; refusing to write onto "
+                           "unaccounted bytes"));
+  }
+
   // SCRUB FIRST (SEC-3): the persisted payload and the hash preimage must carry
   // no token-shaped secret. Everything downstream sees only the scrubbed text.
   // The scrub call and its argument are UNCHANGED from before IMP-16 — free-form
@@ -355,6 +446,42 @@ Result<LedgerEntry> Ledger::append(std::string payload, const ProvenanceContext&
 
   const std::string line = entry_to_line(entry) + '\n';
 
+  // ── THE PRE-APPEND HIGH-WATER MARK (IMP-36) ────────────────────────────────
+  // Measured BEFORE the handle exists, because ftell() on a stream opened "ab" is
+  // implementation-defined until the first write. Every failure path below
+  // restores the file to EXACTLY this offset, which is what makes an append
+  // ALL-OR-NOTHING: either the record is on disk AND in entries_, or the file is
+  // byte-identical to what it was on entry. If we cannot measure it we cannot
+  // promise that, so we refuse here rather than write a record we could not take
+  // back.
+  std::error_code ec;
+  std::uintmax_t before = 0;
+  if (fs::exists(path_, ec)) {
+    before = fs::file_size(path_, ec);
+  }
+  if (ec) {
+    return fail(
+        make_error(ErrorCategory::Internal, "ledger: failed to measure ledger file before append"));
+  }
+
+  // ── AND REFUSE TO SPLICE (IMP-36) ──────────────────────────────────────────
+  // A non-empty file that does NOT end on a record boundary carries a
+  // terminator-less fragment — a torn write from a process that died before it
+  // could roll itself back, or a hand-stripped final newline. THIS IS THE CASE THE
+  // ROLLBACK BELOW CANNOT COVER, because the process that tore it is gone. Writing
+  // here would merge our record into that fragment; load() would then forgive the
+  // merged line exactly ONCE (it is still the last content line — silently
+  // DROPPING the record we just reported as written), and the entry after that
+  // would bury it mid-file, where the leniency does not apply and load() fails
+  // permanently. Stop at the FIRST append instead, while the file is still
+  // loadable and mechanically repairable.
+  if (before > 0 && !ends_on_record_boundary(path_)) {
+    poisoned_ = true;
+    return fail(make_error(ErrorCategory::Validation,
+                           "ledger: refusing to append onto a torn ledger file (the last record "
+                           "has no line terminator)"));
+  }
+
   // Append one JSON line and fsync through the platform durability seam, so a
   // crash after return cannot lose a record that we reported as written.
   std::FILE* fp = std::fopen(path_.string().c_str(), "ab");
@@ -363,13 +490,29 @@ Result<LedgerEntry> Ledger::append(std::string payload, const ProvenanceContext&
         make_error(ErrorCategory::Internal, "ledger: failed to open ledger file for append"));
   }
   const std::size_t written = std::fwrite(line.data(), 1, line.size(), fp);
-  if (written != line.size() || std::fflush(fp) != 0) {
-    std::fclose(fp);
-    return fail(make_error(ErrorCategory::Internal, "ledger: failed to write ledger entry"));
-  }
-  const bool synced = platform::durable_sync(platform::portable_fileno(fp));
-  if (std::fclose(fp) != 0 || !synced) {
-    return fail(make_error(ErrorCategory::Internal, "ledger: failed to durably sync ledger entry"));
+  const bool flushed = written == line.size() && std::fflush(fp) == 0;
+  // durable_sync needs a LIVE fd, so it runs before fclose; fclose then runs
+  // UNCONDITIONALLY (it closes the stream even when it reports an error), which is
+  // what makes the restore below safe — no buffered byte can land after it.
+  const bool synced = flushed && platform::durable_sync(platform::portable_fileno(fp));
+  const bool closed = std::fclose(fp) == 0;
+  if (!flushed || !synced || !closed) {
+    // ROLL THE FILE BACK, THEN report. BOTH failure kinds need this, not just the
+    // torn one: when fflush SUCCEEDED and only the fsync/fclose failed, a COMPLETE
+    // record is on disk while the entries_.push_back below is skipped — so the next
+    // append would reuse seq N and verify_chain() would report "chain broken at seq
+    // N+1" on every boot thereafter, with no torn byte anywhere. Restoring the size
+    // is what keeps the file and the in-memory chain the same length on EVERY
+    // failure path.
+    if (!restore_to_size(path_, before)) {
+      poisoned_ = true;
+      return fail(make_error(ErrorCategory::Validation,
+                             "ledger: failed to write ledger entry AND could not restore the file "
+                             "to its pre-append size; ledger sealed"));
+    }
+    return fail(
+        make_error(ErrorCategory::Internal, flushed ? "ledger: failed to durably sync ledger entry"
+                                                    : "ledger: failed to write ledger entry"));
   }
 
   entries_.push_back(entry);

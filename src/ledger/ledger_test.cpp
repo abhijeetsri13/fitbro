@@ -1287,3 +1287,103 @@ TEST_CASE("IMP-17/B2: the checkpoint's head_hash IS the bytes sign_head signed",
   CHECK(on_disk.at("head_hash").get<std::string>() == head);
   CHECK(ledger.verify_against_checkpoint(kp.value().public_key).has_value());
 }
+
+TEST_CASE("IMP-36: a torn trailing record is never spliced onto — append refuses and seals",
+          "[ledger][durability]") {
+  // THE BRICKING SEQUENCE THIS CLOSES. A partial fwrite/fflush (ENOSPC mid-flush)
+  // leaves a terminator-less fragment at EOF. Before the fix, append() opened the
+  // file "ab" and wrote a COMPLETE record straight onto that fragment: getline()
+  // then read the two as ONE unparseable line, load() forgave it exactly once (it
+  // was still the LAST content line — silently DROPPING the record we had just
+  // reported as written), and ONE MORE entry buried the corrupt line mid-file,
+  // where the torn-write leniency does not apply. From then on load() fails
+  // "malformed entry on line N" on EVERY boot, and boot.cpp classifies that
+  // OpenLedger failure as FailClosedNeedsHuman — a permanent refusal to start
+  // until somebody HAND-EDITS the tamper-evident audit file, which is precisely
+  // the artifact that must never be hand-edited.
+  const TempDir dir("torn_append");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+
+  {
+    Ledger ledger(clock, file);
+    append_all(ledger, {"payload-alpha", "payload-bravo"});
+  }
+  const std::string good = read_file(file);  // two complete, newline-terminated lines
+
+  // The partial flush: a fragment of a third record, with no terminator. This is
+  // byte-for-byte the state the existing torn-trailing-line test already pins as
+  // LOADABLE — the damage below is done entirely by the NEXT append.
+  {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out << good << R"({"seq":2,"prev_ha)";
+  }
+  const std::string torn = read_file(file);
+
+  Ledger fresh(clock, file);
+  REQUIRE(fresh.load().has_value());  // load()'s torn-tail leniency is unchanged
+  REQUIRE(fresh.size() == 2);
+
+  // THE FIX: the append is REFUSED, and not one byte is written.
+  const auto refused = fresh.append("payload-charlie");
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error().category == ErrorCategory::Validation);
+  CHECK(refused.error().message.find("torn") != std::string::npos);
+  CHECK(read_file(file) == torn);
+
+  // AND THE LEDGER IS SEALED: the second append — the one that used to bury the
+  // corrupt line mid-file and make the damage PERMANENT — never reaches the file.
+  const auto sealed = fresh.append("payload-delta");
+  REQUIRE_FALSE(sealed.has_value());
+  CHECK(sealed.error().category == ErrorCategory::Validation);
+  CHECK(sealed.error().message.find("sealed") != std::string::npos);
+  CHECK(read_file(file) == torn);
+  CHECK(fresh.size() == 2);  // the in-memory chain never grew either
+
+  // THE PAYOFF: the file is still LOADABLE. Both real records survive and the
+  // chain still verifies, so recovery is mechanical (drop the fragment) instead of
+  // a hand-edit of a tamper-evident file on every future boot.
+  Ledger reboot(clock, file);
+  REQUIRE(reboot.load().has_value());
+  CHECK(reboot.size() == 2);
+  CHECK(reboot.verify_chain().has_value());
+}
+
+TEST_CASE("IMP-36: a COMPLETE last record with no terminator is not spliced onto either",
+          "[ledger][durability]") {
+  // THE QUIETER HALF OF THE SAME DEFECT — this one LOSES DATA rather than bricking.
+  // The file's last line is a perfectly valid record that merely lacks its '\n'.
+  // load() parses it fine (getline() does not need a terminator), so the chain
+  // reports size 2 and verifies. Before the fix the next append wrote onto those
+  // bytes and MERGED the two records into one garbage line; the reload then
+  // silently dropped BOTH — size 1, no error anywhere. A silently SHORTER audit
+  // trail is worse than a loud failure, so this must fail closed too.
+  const TempDir dir("unterminated_append");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+
+  {
+    Ledger ledger(clock, file);
+    append_all(ledger, {"payload-alpha", "payload-bravo"});
+  }
+  std::string content = read_file(file);
+  REQUIRE_FALSE(content.empty());
+  REQUIRE(content.back() == '\n');
+  content.pop_back();  // strip ONLY the final terminator; both records stay whole
+  write_file(file, content);
+
+  Ledger fresh(clock, file);
+  REQUIRE(fresh.load().has_value());
+  REQUIRE(fresh.size() == 2);  // the unterminated last line IS a real record
+
+  const auto refused = fresh.append("payload-charlie");
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error().category == ErrorCategory::Validation);
+  CHECK(read_file(file) == content);  // byte-identical: nothing was spliced on
+
+  // Both records are still there on reload — the pre-fix path lost them both.
+  Ledger reboot(clock, file);
+  REQUIRE(reboot.load().has_value());
+  CHECK(reboot.size() == 2);
+  CHECK(reboot.verify_chain().has_value());
+}
