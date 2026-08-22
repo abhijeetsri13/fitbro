@@ -112,6 +112,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Sources are all tracked / add_subdirectory resolves
+        run: bash scripts/check-sources-tracked.sh
+
       - name: clang-format check
         run: |
           mapfile -t files < <(find include src tests -type f \( -name '*.cpp' -o -name '*.hpp' \) 2>/dev/null)
