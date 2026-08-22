@@ -391,11 +391,27 @@ inline constexpr std::size_t kHashedTagLength = 18;
 // guess are byte-identical to params built from the master, so an operator cannot
 // tell them apart after the fact. `has_exchange_resolver()` is how a composition
 // root asserts, at start-up, that the guess is not in force.
+//
+// THE TOKEN MUST TERMINATE THE SYMBOL, AND AN EXPIRY MUST BE PRESENT (IMP-26).
+// This was a SUBSTRING match, and a substring match mis-routes a whole class of
+// real NSE cash equities: CESC, CEATLTD, PETRONET, PERSISTENT, PEL, CENTRALBK,
+// CENTURYTEX and FORCEMOT all contain "CE" or "PE" and were all sent to NFO,
+// where the symbol does not exist — and where the CNC product a Delivery intent
+// maps to is not even valid. Kite answers InputException, which is
+// Validation/DoNotRetry, so the entry was dropped PERMANENTLY on every attempt
+// and the typed error blamed the strategy's input for the adapter's guess.
+//
+// A Kite NFO contract's symbol always ENDS in its instrument token and always
+// carries its expiry as digits (NIFTY24JUN24000CE, BANKNIFTY24JUNFUT,
+// USDINR24JUNFUT); a cash symbol satisfies at most one of those two conditions.
+// Requiring BOTH keeps every derivative on NFO and takes the equities off it.
+// It is still a GUESS — which is why a wired resolver overrides it outright, and
+// why the KNOWN LIMITATIONS block in the header still says to wire one.
 [[nodiscard]] const char* infer_exchange(const std::string& symbol) noexcept {
-  const bool looks_derivative = symbol.find("FUT") != std::string::npos ||
-                                symbol.find("CE") != std::string::npos ||
-                                symbol.find("PE") != std::string::npos;
-  return looks_derivative ? "NFO" : "NSE";
+  const bool derivative_suffix =
+      symbol.ends_with("FUT") || symbol.ends_with("CE") || symbol.ends_with("PE");
+  const bool carries_expiry_digits = symbol.find_first_of("0123456789") != std::string::npos;
+  return derivative_suffix && carries_expiry_digits ? "NFO" : "NSE";
 }
 
 // Map a Kite order `status` string onto the lifecycle OrderState. An unmapped /
@@ -1076,7 +1092,18 @@ Result<std::vector<domain::Order>> KiteBrokerAdapter::fetch_orders() {
 
   std::vector<domain::Order> out;
   if (!data.value().is_array()) {
-    return out;
+    // THE BROKER ANSWERED AND WE COULD NOT READ ITS ANSWER — NOT "NO ORDERS"
+    // (IMP-24). Returning an EMPTY vector as a SUCCESS made "the orderbook is a
+    // shape we do not understand" indistinguishable from "this account has no
+    // orders", in a file whose every other guard is fail-closed. Nothing upstream
+    // covers it: `request_json` constrains only the ENVELOPE (2xx, an object,
+    // status != "error", a `data` key present), so `data: {}` / `null` / a
+    // reshaped payload all arrive here as a success. The reconciler then publishes
+    // an empty book as broker TRUTH and an order that is live at the broker simply
+    // is not in it. `square_off` has always refused this exact payload
+    // (KITE-SQUAREOFF-BOOKSHAPE); the idempotent reads now agree with it.
+    return fail(unreadable_payload_error("kite: the orderbook payload was not an array",
+                                         "KITE-ORDERS-SHAPE"));
   }
   out.reserve(data.value().size());
   for (const json& ko : data.value()) {
@@ -1161,7 +1188,14 @@ Result<std::vector<domain::Trade>> KiteBrokerAdapter::fetch_trades() {
 
   std::vector<domain::Trade> out;
   if (!data.value().is_array()) {
-    return out;
+    // The same fail-closed rule as fetch_orders, and it bites harder here: an
+    // unreadable tradebook reported as an empty one hides EXECUTIONS — the one
+    // thing this adapter never hides. The malformed-row branch below goes to
+    // considerable trouble to REPORT a fill it cannot fully parse and drop only
+    // its attribution; silently returning zero rows for a payload we could not
+    // read undoes that at the envelope.
+    return fail(unreadable_payload_error("kite: the tradebook payload was not an array",
+                                         "KITE-TRADES-SHAPE"));
   }
   out.reserve(data.value().size());
   for (const json& kt : data.value()) {
@@ -1201,12 +1235,31 @@ Result<std::vector<domain::Position>> KiteBrokerAdapter::fetch_positions() {
 
   std::vector<domain::Position> out;
   // Kite returns `{ "net": [...], "day": [...] }`; the net book is broker truth.
+  //
+  // AN UNREADABLE POSITIONS PAYLOAD IS NOT A FLAT BOOK (IMP-24), AND THIS IS THE
+  // WORST OF THE THREE READS TO GET WRONG. Reported as an empty SUCCESS, a
+  // reshaped `data` (no `net` key, or a `net` that is not an array) says "you hold
+  // nothing" while a real long is on, and every consumer believes it:
+  // `derive_state` sees no non-zero net_qty and drops the reconcile loop from the
+  // tight cadence to the loose one — we stop watching closely at the exact moment
+  // we have lost sight of the position; `broker_net_for` encodes "absent == flat"
+  // and returns 0 for every symbol, so the manual-intervention detector fires a
+  // FALSE PositionClosedManually warning and `reconcile_positions` writes the
+  // local net_qty to zero, erasing a live position from the bot's book so
+  // `needs_exit()` is never true again. Twenty lines below, an unreadable NUMBER
+  // in this same payload already fails the whole snapshot closed; the ENVELOPE was
+  // the one door left open, and it is the door that loses the whole book rather
+  // than one field.
   if (!data.value().is_object()) {
-    return out;
+    return fail(unreadable_payload_error(
+        "kite: the positions payload was not the expected {net:[...]} shape",
+        "KITE-POSITIONS-SHAPE"));
   }
   const auto net = data.value().find("net");
   if (net == data.value().end() || !net->is_array()) {
-    return out;
+    return fail(unreadable_payload_error(
+        "kite: the positions payload was not the expected {net:[...]} shape",
+        "KITE-POSITIONS-SHAPE"));
   }
   // A position quantity is what an exit is sized off. A WRONG net (an unparseable
   // leg silently read as zero, or a "1,450" read as 1) under-reports a live short,
@@ -1241,7 +1294,15 @@ Result<ports::FundsSnapshot> KiteBrokerAdapter::fetch_funds() {
 
   ports::FundsSnapshot funds;
   if (!data.value().is_object()) {
-    return funds;
+    // THE SAME ENVELOPE HOLE, ON THE ONE READ THAT SIZES RISK (IMP-24). A
+    // default-constructed FundsSnapshot is not "no funds information", it is a
+    // stated available_margin of ZERO and — far worse — a stated used_margin of
+    // ZERO, which frees headroom that does not exist. That is exactly the
+    // direction the `debits` comment below refuses to guess in, so the envelope
+    // must not guess in it either. An unparseable AMOUNT already fails this read
+    // closed (KITE-FUNDS-MALFORMED); an unreadable payload now does too.
+    return fail(unreadable_payload_error("kite: the margins payload was not an object",
+                                         "KITE-FUNDS-SHAPE"));
   }
   const json& seg = data.value();
   // Kite margins: `{ "available": { "live_balance": .. }, "utilised": { "debits": .. }, "net": ..

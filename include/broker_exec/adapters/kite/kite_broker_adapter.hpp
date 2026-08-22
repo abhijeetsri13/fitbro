@@ -85,15 +85,33 @@ using ExchangeResolver = std::function<Result<std::string>(const std::string& tr
 //     reconcile-first posture holds the order under an operator alert — but it is
 //     also why square_off's duplicate guard does NOT rely on these maps (below).
 //
-//   * The exchange heuristic is still the FALLBACK when no ExchangeResolver is
-//     wired: a substring match on "FUT"/"CE"/"PE" routes to NFO, else NSE. It can
-//     MIS-ROUTE a cash equity whose symbol merely contains those letters (e.g.
-//     "PETRONET" matches "PE" -> wrongly NFO). Production MUST wire the resolver
-//     (built from `refdata::InstrumentMaster::resolve`); the heuristic exists so an
-//     un-wired test/dev assembly still functions, and NOTHING marks the wire when
-//     it is used — the params a guess produces are byte-identical to the params a
-//     resolved exchange produces, so a live account cannot be audited after the
-//     fact for which one was in force. Wire the resolver.
+//   * THE EXCHANGE SEAM IS UNWIRED ON THE ONLY PRODUCTION ASSEMBLY, so the
+//     heuristic below is UNCONDITIONALLY IN FORCE on the live path. This is the
+//     open half of the gap, and it cannot be closed from inside this adapter:
+//     `composition::make_broker` builds its Kite broker with the ONE-ARGUMENT
+//     constructor, `set_exchange_resolver` and the two-argument constructor have no
+//     production caller, and `has_exchange_resolver()` — named below as the way a
+//     composition root asserts the guess is not in force — has no production caller
+//     either, because the owning type is file-local and `BrokerAssembly::broker()`
+//     hands back a `ports::BrokerPort&`, which has no such method. TO CLOSE IT:
+//     build an ExchangeResolver from `refdata::InstrumentMaster::resolve` in the
+//     broker factory, pass it to the two-argument constructor, and make safe-start
+//     refuse to run LIVE while `has_exchange_resolver()` is false. Note the
+//     exchange is already known one layer up — the entry context carries a resolved
+//     `domain::Instrument` whose `exchange` the validation gate checks — and is
+//     then dropped, because `OrderIntent` has no exchange field; the gate cannot
+//     catch a mis-route because it validates the TRUE exchange, never the guess.
+//
+//   * The heuristic itself (the fallback) routes to NFO only when the symbol ENDS
+//     in "FUT"/"CE"/"PE" AND carries digits, else NSE. It was a SUBSTRING match
+//     until IMP-26, which mis-routed every cash equity whose name merely contains
+//     those letters — CESC, CEATLTD, PETRONET, PERSISTENT, PEL, CENTRALBK — into a
+//     permanent Validation/DoNotRetry rejection at the broker. The narrowed form
+//     keeps every real derivative on NFO and takes the equities off it, but it is
+//     STILL A GUESS: NOTHING marks the wire when it is used — the params a guess
+//     produces are byte-identical to the params a resolved exchange produces, so a
+//     live account cannot be audited after the fact for which one was in force.
+//     Wire the resolver.
 //
 // RESOLVED (IMP-13): square_off is a REAL FLATTEN — it no longer cancels and
 // reports success against a filled position (which told the caller "you are flat"
