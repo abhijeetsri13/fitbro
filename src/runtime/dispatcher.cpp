@@ -163,20 +163,44 @@ Result<Order> Dispatcher::place(std::string_view strategy, const OrderIntent& in
   const idempotency::Reservation& reservation = reserved.value();
 
   if (!reservation.is_new) {
-    // Already submitted. Return the stored Order if the projection has it; else
-    // synthesize a minimal Unknown order carrying the prior ref (it was reserved
-    // but not yet projected — the safe, reconcile-able posture). NO send.
+    // Already reserved for this signal. If the projection has the row, that IS
+    // the order — return it. NO send.
     if (reservation.existing.has_value()) {
       return reservation.existing.value();
     }
-    OrderIntent prior = intent;
-    prior.client_ref = reservation.client_ref;
-    return make_order(prior, OrderState::Unknown);
+    // Reserved, with NO row in the projection. TWO OPPOSITE SITUATIONS wear this
+    // same shape, and reserve() cannot tell them apart — it registers
+    // signature -> ref before this function has recorded anything:
+    //   (a) the PlaceOrder intent IS durable, so the send may have happened and
+    //       the order may be live at the exchange (a failure or crash between the
+    //       fsync and the store write). UNKNOWN is exactly right: the log record
+    //       makes the order enumerable and the reconciler resolves it.
+    //   (b) the PlaceOrder append FAILED here, so nothing was written and
+    //       broker_.place() was provably never reached. Answering UNKNOWN for
+    //       THAT is a lie with teeth: the synthesized order is backed by no store
+    //       row, so UnknownResolver::resolve_all() — which enumerates store rows —
+    //       can never see or clear it, the signal is un-placeable for the life of
+    //       the process, and the strategy is simultaneously blocked from trading
+    //       and told it may hold a position it never opened.
+    // unsent_refs_ is exactly the set of (b) refs (see the append failure below).
+    if (unsent_refs_.find(reservation.client_ref) == unsent_refs_.end()) {
+      OrderIntent prior = intent;
+      prior.client_ref = reservation.client_ref;
+      return make_order(prior, OrderState::Unknown);
+    }
+    // (b): fall through and RESUME the reserved ref down the normal
+    // record -> barrier -> send path. Sending is safe here precisely because
+    // nothing was recorded and nothing was sent for this ref: dispatch is
+    // single-threaded and synchronous, so no send can have slipped in between the
+    // failed append and this line.
   }
 
-  // A fresh order. Stamp the reserved client_ref onto our intent copy so the
-  // intent-log payload, the broker call, and the persisted Order all agree (this
-  // is what idempotency::intent_payload_json keys restart-dedup on).
+  // A fresh (or resumed) reservation. Stamp the reserved client_ref onto our
+  // intent copy so the intent-log payload, the broker call, and the persisted
+  // Order all agree (this is what idempotency::intent_payload_json keys
+  // restart-dedup on). A resume REUSES the reserved ref instead of minting a new
+  // one, so the log, the store and an index rebuilt from the log cannot end up
+  // naming two different refs for one signal.
   OrderIntent placed = intent;
   placed.client_ref = reservation.client_ref;
 
@@ -185,8 +209,19 @@ Result<Order> Dispatcher::place(std::string_view strategy, const OrderIntent& in
   auto recorded = log_.append(intentlog::IntentOp::PlaceOrder, placed.client_ref,
                               idempotency::intent_payload_json(placed));
   if (!recorded) {
+    // NOT durable => nothing was sent, and nothing may be. reserve() has already
+    // bound this signal to `placed.client_ref` in an index with no unregister, so
+    // record here that the ref was reserved and never recorded. Without this the
+    // next attempt at the same signal takes the branch above and is answered
+    // forever with a synthesized UNKNOWN for an order that exists nowhere.
+    unsent_refs_.insert(placed.client_ref);
     return fail(recorded.error());
   }
+  // Durable. From this line a crash leaves an ENUMERABLE order, so the ref stops
+  // being "reserved but never recorded" and a later duplicate signal must get the
+  // conservative UNKNOWN answer, never a second send. Erased BEFORE the send —
+  // the set must never name a ref that could be live.
+  unsent_refs_.erase(placed.client_ref);
 
   // (3) barrier (fsync'd intent is now durable) -> send. SINGLE-THREADED: no
   //     hand-off between the fsync above and the send below.
