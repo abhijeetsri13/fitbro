@@ -303,6 +303,25 @@ inline int count_broker_orders_for(ports::BrokerPort& broker, const std::string&
 // A scenario that satisfies all three increments scenarios_passed; any miss adds
 // a human-readable line to `failures`. The temp data dir is removed after each
 // scenario.
+// Fold the kit's per-scenario failure lines into ONE scoped message.
+//
+// This used to be a loop of UNSCOPED_INFO. Catch2 clears unscoped messages after
+// the NEXT assertion whether it passes or fails, and two passing CHECKs sat
+// between the loop and the assertion that actually fires — so a real conformance
+// regression printed `5 == 7` and not one word about which scenario or which
+// property. INFO is scoped to the enclosing block and survives every assertion
+// in it, so the reason is attached to whichever CHECK fails.
+[[nodiscard]] inline std::string failure_digest(const std::vector<std::string>& failures) {
+  if (failures.empty()) {
+    return "(no per-scenario failures recorded)";
+  }
+  std::string out;
+  for (const std::string& f : failures) {
+    out += "\n  - " + f;
+  }
+  return out;
+}
+
 [[nodiscard]] inline ConformanceReport run_conformance(const BrokerFactory& make_broker) {
   namespace fs = std::filesystem;
   ConformanceReport report;

@@ -64,10 +64,9 @@ TEST_CASE("conformance: the Kite adapter passes the full fault matrix with zero 
           "[conformance][kite]") {
   const conf::ConformanceReport report = conf::run_conformance(kite_factory());
 
-  // Surface every failure line so a regression names the exact scenario+property.
-  for (const std::string& f : report.failures) {
-    UNSCOPED_INFO("kite conformance failure: " << f);
-  }
+  // Scoped, so the reason survives to whichever assertion below actually fires.
+  INFO("kite conformance failures:" << conf::failure_digest(report.failures));
+  CHECK(report.failures.empty());
 
   // The whole matrix ran, the headline zero-duplicate invariant held, and every
   // scenario passed all three properties (no-blind-retry, UNKNOWN handling, zero

@@ -131,10 +131,9 @@ TEST_CASE("conformance: the Kotak adapter passes the full fault matrix with zero
   ConformanceTally tally;
   const conf::ConformanceReport report = conf::run_conformance(kotak_factory(&tally));
 
-  // Surface every failure line so a regression names the exact scenario+property.
-  for (const std::string& f : report.failures) {
-    UNSCOPED_INFO("kotak conformance failure: " << f);
-  }
+  // Scoped, so the reason survives to whichever assertion below actually fires.
+  INFO("kotak conformance failures:" << conf::failure_digest(report.failures));
+  CHECK(report.failures.empty());
 
   CHECK(report.scenarios_run > 0);
   CHECK(report.duplicate_orders == 0);
@@ -152,8 +151,10 @@ TEST_CASE("conformance: the Kotak adapter passes the full fault matrix with zero
 
   std::size_t total_places = 0;
   for (std::size_t i = 0; i < tally.book_sizes.size(); ++i) {
-    UNSCOPED_INFO("scenario #" << i << ": wire places=" << tally.place_counts[i]
-                               << " broker book=" << tally.book_sizes[i]);
+    // INFO, not UNSCOPED_INFO: two CHECKs follow inside this iteration, and the
+    // first would clear an unscoped message before the second could print it.
+    INFO("scenario #" << i << ": wire places=" << tally.place_counts[i]
+                      << " broker book=" << tally.book_sizes[i]);
     // ZERO DUPLICATES, measured from broker truth: at most ONE order exists at the
     // broker per scenario, whatever the caller managed (or failed) to correlate.
     CHECK(tally.book_sizes[i] <= 1);

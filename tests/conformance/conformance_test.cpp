@@ -39,10 +39,12 @@ TEST_CASE("conformance: the full fault matrix produces zero duplicate orders",
           "[conformance][fault-matrix][zero-duplicate]") {
   const conf::ConformanceReport report = conf::run_conformance(fake_factory());
 
-  // Surface every failure line so a regression names the exact scenario+property.
-  for (const std::string& f : report.failures) {
-    UNSCOPED_INFO("conformance failure: " << f);
-  }
+  // Scoped, so the reason survives to whichever assertion below actually fires.
+  INFO("conformance failures:" << conf::failure_digest(report.failures));
+
+  // Named first: it is the most specific statement of what went wrong, so it is
+  // the assertion a reader sees before the arithmetic ones.
+  CHECK(report.failures.empty());
 
   // Every scenario in the matrix ran.
   CHECK(report.scenarios_run > 0);
