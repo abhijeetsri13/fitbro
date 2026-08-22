@@ -3,6 +3,7 @@
 #if defined(_WIN32)
 #include <io.h>
 #else
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -16,6 +17,27 @@ int portable_fileno(std::FILE* stream) noexcept {
   return ::_fileno(stream);
 #else
   return ::fileno(stream);
+#endif
+}
+
+bool durable_sync_directory(const std::filesystem::path& dir) noexcept {
+#if defined(_WIN32)
+  // Win32 has no directory handle that can be flushed the way fsync(2) flushes
+  // a POSIX directory fd. MoveFileEx already orders the rename's metadata write
+  // on NTFS, so there is nothing left for this seam to do. Reported as success
+  // because the operation is inapplicable, not because it was performed.
+  (void)dir;
+  return true;
+#else
+  // O_RDONLY is the portable way to obtain a directory fd; fsync(2) on it
+  // commits the directory entry that a preceding rename() created.
+  const int fd = ::open(dir.c_str(), O_RDONLY);
+  if (fd < 0) {
+    return false;
+  }
+  const bool synced = ::fsync(fd) == 0;
+  ::close(fd);
+  return synced;
 #endif
 }
 

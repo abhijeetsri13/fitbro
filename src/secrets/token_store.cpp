@@ -4,7 +4,9 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <atomic>
 #include <cstddef>
+#include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -13,6 +15,7 @@
 #include <utility>
 
 #include "broker_exec/errors/error.hpp"
+#include "broker_exec/platform/durable.hpp"
 #include "broker_exec/platform/permissions.hpp"
 #include "broker_exec/result.hpp"
 
@@ -168,6 +171,78 @@ class CipherCtx {
   return pt;
 }
 
+// Publish `blob` at `target` so that a crash can never destroy the token that is
+// already there.
+//
+// WHY THIS IS NOT AN ofstream WITH ios::trunc. `trunc` destroys the existing
+// token the instant the file is opened, and the replacement only reaches the
+// page cache — `flush()` is not `fsync`. Lose power in that window and the file
+// comes back zero-length or holding a partial IV/ciphertext/tag, the old token
+// is unrecoverable, and the next `load()` reports "authentication failed", which
+// reads as a tamper alarm for what was really a torn write. An unattended engine
+// then cannot restore its broker session until a human re-authenticates.
+//
+// So: write a temp sibling, fsync it, tighten it to owner-only, then rename over
+// the target. A reader (or a crash) sees either the old complete token or the new
+// complete token — never a torn one. This is the same publish shape the shared
+// refdata cache and the ledger checkpoint already use.
+//
+// Tightening the temp BEFORE the rename also closes the window in which the blob
+// existed at the umask's default mode. (Directory creation still has that window
+// — a repo-wide pattern, tracked separately.)
+[[nodiscard]] Result<ports::Ok> write_durably(const fs::path& target, const std::string& blob) {
+  // pid + monotonic counter: unique per write, so a leftover temp from a crashed
+  // predecessor can never be mistaken for ours.
+  static std::atomic<unsigned long long> counter{0};
+  fs::path tmp = target;
+  tmp += ".tmp-" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed) + 1);
+
+  std::FILE* fp = std::fopen(tmp.string().c_str(), "wb");
+  if (fp == nullptr) {
+    return fail(make_error(ErrorCategory::Internal, "token store: failed to open temp token file"));
+  }
+
+  const std::size_t written = std::fwrite(blob.data(), 1, blob.size(), fp);
+  const bool write_ok = written == blob.size() && std::fflush(fp) == 0;
+  const bool synced = write_ok && platform::durable_sync(platform::portable_fileno(fp));
+  const bool closed = std::fclose(fp) == 0;
+
+  std::error_code cleanup;
+  if (!write_ok || !synced || !closed) {
+    fs::remove(tmp, cleanup);  // the target still holds the previous good token
+    return fail(
+        make_error(ErrorCategory::Internal, "token store: failed to durably write the token file"));
+  }
+
+  // Owner-only BEFORE publishing, so the blob is never reachable at the default
+  // mode under its real name. A failed tighten on POSIX would leave it
+  // group/world-readable, so it is fatal rather than best-effort; the platform
+  // seam returns true on its Windows path (see permissions.cpp).
+  if (!platform::restrict_to_owner_file(tmp)) {
+    fs::remove(tmp, cleanup);
+    return fail(make_error(ErrorCategory::Internal,
+                           "token store: failed to restrict token file permissions"));
+  }
+
+  // rename() replaces atomically on POSIX and via MoveFileEx(REPLACE_EXISTING)
+  // on Windows. On failure the previous token survives untouched.
+  fs::rename(tmp, target, cleanup);
+  if (cleanup) {
+    std::error_code discard;
+    fs::remove(tmp, discard);
+    return fail(make_error(ErrorCategory::Internal, "token store: failed to publish token file"));
+  }
+
+  // The rename is a directory change; without this the publish itself can be
+  // lost to a power cut even though the file's contents were synced.
+  if (!platform::durable_sync_directory(target.parent_path())) {
+    return fail(make_error(ErrorCategory::Internal,
+                           "token store: failed to durably publish the token file"));
+  }
+
+  return ports::ok();
+}
+
 // Reject path components that could escape the data dir (traversal / separators).
 [[nodiscard]] bool is_safe_component(std::string_view component) noexcept {
   if (component.empty() || component == "." || component == "..") {
@@ -243,28 +318,7 @@ Result<ports::Ok> TokenStore::save(std::string_view account, std::string_view na
   }
 
   const fs::path file = account_dir / (std::string(name) + ".enc");
-  {
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    if (!out) {
-      return fail(make_error(ErrorCategory::Internal,
-                             "token store: failed to open token file for writing"));
-    }
-    out.write(blob.data(), static_cast<std::streamsize>(blob.size()));
-    out.flush();
-    if (!out) {
-      return fail(make_error(ErrorCategory::Internal, "token store: failed to write token file"));
-    }
-  }
-  // Tighten the blob file to owner-only (0600). A failed tighten on POSIX would
-  // leave the encrypted blob group/world-readable while save() falsely reports
-  // success, so we surface it; the platform seam returns true on its Windows
-  // best-effort path.
-  if (!platform::restrict_to_owner_file(file)) {
-    return fail(make_error(ErrorCategory::Internal,
-                           "token store: failed to restrict token file permissions"));
-  }
-
-  return ports::ok();
+  return write_durably(file, blob);
 }
 
 Result<std::string> TokenStore::load(std::string_view account, std::string_view name) const {

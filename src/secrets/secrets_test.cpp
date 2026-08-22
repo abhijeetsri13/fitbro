@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <string>
@@ -180,3 +181,146 @@ TEST_CASE("TokenStore persists the blob as 0600 in a 0700 dir (AC-1)", "[secrets
   SUCCEED();
 #endif
 }
+
+// ── Atomic, durable publish (issue #6) ──────────────────────────────────────
+//
+// `save()` used to open the live token file with `ios::trunc` and only
+// `flush()` it. That destroyed the existing token before the replacement was on
+// disk, so a power loss in that window left a zero-length or partial blob and no
+// way back to the token that had been working. The implementation now writes a
+// temp sibling, fsyncs it, tightens it, renames over the target and fsyncs the
+// directory.
+//
+// What follows pins the observable consequences of that shape. The crash window
+// itself is not reproducible in-process — the SIGKILL harness in tests/sigkill
+// is where a real kill is applied — so these assert the properties that remain
+// checkable: the target is replaced whole, nothing is left behind, and debris
+// from a crashed predecessor is inert.
+
+// Count the `.tmp-*` siblings a write may have left behind.
+[[nodiscard]] int temp_residue(const fs::path& dir) {
+  int n = 0;
+  for (const auto& entry : fs::directory_iterator(dir)) {
+    if (entry.path().filename().string().find(".tmp-") != std::string::npos) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+TEST_CASE("TokenStore leaves no temp file behind on a successful save", "[secrets]") {
+  const TempDir dir("no-residue");
+  const FakeKeySource keys;
+  const TokenStore store(keys, dir.path);
+
+  REQUIRE(store.save("acct-1", "access_token", "first").has_value());
+  REQUIRE(store.save("acct-1", "access_token", "second").has_value());
+
+  const fs::path account_dir = dir.path / "acct-1";
+  CHECK(temp_residue(account_dir) == 0);
+  // Exactly the published blob, nothing else.
+  CHECK(std::distance(fs::directory_iterator(account_dir), fs::directory_iterator{}) == 1);
+}
+
+TEST_CASE("TokenStore replaces a token wholesale rather than growing it in place", "[secrets]") {
+  const TempDir dir("replace");
+  const FakeKeySource keys;
+  const TokenStore store(keys, dir.path);
+
+  const std::string long_token(512, 'A');
+  const std::string short_token = "B";
+  REQUIRE(store.save("acct-1", "access_token", long_token).has_value());
+  REQUIRE(store.save("acct-1", "access_token", short_token).has_value());
+
+  const auto loaded = store.load("acct-1", "access_token");
+  REQUIRE(loaded.has_value());
+  CHECK(loaded.value() == short_token);
+
+  // A shorter token must leave no tail of the longer one: an in-place write
+  // without truncation would, and an authenticated blob of the wrong length
+  // would fail the GCM tag rather than round-trip.
+  const fs::path blob_file = dir.path / "acct-1" / "access_token.enc";
+  CHECK(fs::file_size(blob_file) == 12 + short_token.size() + 16);
+}
+
+TEST_CASE("TokenStore ignores temp debris left by a crashed predecessor", "[secrets]") {
+  const TempDir dir("stale-temp");
+  const FakeKeySource keys;
+  const TokenStore store(keys, dir.path);
+
+  REQUIRE(store.save("acct-1", "access_token", "good-token").has_value());
+
+  // A predecessor died between writing its temp and renaming it. The debris is
+  // not a valid blob, and it is not the published name.
+  const fs::path debris = dir.path / "acct-1" / "access_token.enc.tmp-99999";
+  {
+    std::ofstream out(debris, std::ios::binary);
+    out << "torn-and-meaningless";
+  }
+
+  // The good token is still what loads — the temp name is never read.
+  auto loaded = store.load("acct-1", "access_token");
+  REQUIRE(loaded.has_value());
+  CHECK(loaded.value() == "good-token");
+
+  // And a later save still publishes, rather than colliding with the debris.
+  REQUIRE(store.save("acct-1", "access_token", "newer-token").has_value());
+  loaded = store.load("acct-1", "access_token");
+  REQUIRE(loaded.has_value());
+  CHECK(loaded.value() == "newer-token");
+  CHECK(fs::exists(debris));  // untouched: cleaning up others' debris is not save()'s job
+}
+
+#ifndef _WIN32
+TEST_CASE("TokenStore publishes by replacing the file, never by rewriting it in place",
+          "[secrets]") {
+  // THIS is the test that separates the two implementations. Everything else
+  // about a save looks identical from the outside; the inode does not.
+  //
+  //   ios::trunc  -> the same inode is emptied and refilled. A crash mid-write
+  //                  leaves that inode - the live token - torn.
+  //   temp+rename -> a NEW inode is written and fsynced, then linked over the
+  //                  name. The old inode stays whole until the instant it is
+  //                  replaced, so a crash leaves either token, never a hybrid.
+  //
+  // POSIX-only: st_ino is the portable way to ask "is this the same file?", and
+  // Windows has no equivalent reachable without a Win32 handle call, which does
+  // not belong outside src/platform (see docs/conventions.md).
+  const TempDir dir("atomic-publish");
+  const FakeKeySource keys;
+  const TokenStore store(keys, dir.path);
+
+  REQUIRE(store.save("acct-1", "access_token", "first").has_value());
+  const fs::path blob_file = dir.path / "acct-1" / "access_token.enc";
+
+  struct stat before {};
+  REQUIRE(::stat(blob_file.c_str(), &before) == 0);
+
+  REQUIRE(store.save("acct-1", "access_token", "second").has_value());
+
+  struct stat after {};
+  REQUIRE(::stat(blob_file.c_str(), &after) == 0);
+
+  CHECK(before.st_ino != after.st_ino);
+
+  const auto loaded = store.load("acct-1", "access_token");
+  REQUIRE(loaded.has_value());
+  CHECK(loaded.value() == "second");
+}
+
+TEST_CASE("TokenStore publishes the blob already at 0600, never at the umask default",
+          "[secrets]") {
+  const TempDir dir("publish-mode");
+  const FakeKeySource keys;
+  const TokenStore store(keys, dir.path);
+
+  REQUIRE(store.save("acct-1", "access_token", "session-secret-payload").has_value());
+
+  // Tightening happens on the temp BEFORE the rename, so the blob has never been
+  // reachable at its published name in a wider mode.
+  const fs::path blob_file = dir.path / "acct-1" / "access_token.enc";
+  struct stat st {};
+  REQUIRE(::stat(blob_file.c_str(), &st) == 0);
+  CHECK((st.st_mode & 0777) == 0600);
+}
+#endif
