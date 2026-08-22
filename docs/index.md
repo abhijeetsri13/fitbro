@@ -1,6 +1,6 @@
 # Documentation
 
-Documentation for the **Broker-Neutral Trading Execution Library** (C++20). All six epics are **implemented** — the design documents below are the contract the code was built against, and remain the reference for what each guarantee is supposed to mean. The code has not yet been proven against a live broker account.
+Documentation for the **Broker-Neutral Trading Execution Library** (C++20). All six epics' modules are **implemented and tested**; the synchronous trading loop that would drive them is **not written** — `broker-exec run` boots, proves the world is safe, and then refuses to trade (`boot::unimplemented_run_phase()`). The design documents below are the contract the code was built against, and remain the reference for what each guarantee is supposed to mean.
 
 ## Start here
 - [Project README](../README.md) — what it is, the core promise, the stack.

@@ -13,7 +13,13 @@ Six epics decomposed into 49 implementable stories. The full breakdown with acce
 | 5 | **Option-Selling Safety** | ✅ implemented | A hedged NIFTY/BANKNIFTY basket as one logical trade — hedge-first, sliced over freeze, blocked if a vol-shock projection crosses the auto-square-off threshold. |
 | 6 | **Breadth — Kotak + Multi-Account** | ✅ implemented | The same unchanged strategy runs on Kotak Neo; isolated multi-strategy / multi-account with bounded kill blast radius. |
 
-> **“Implemented” means the stories are built and their tests pass — not that the epic is proven in production.** Nothing here has traded real money. Defects found since are tracked as [open issues](https://github.com/abhijeetsri13/fitbro/issues).
+> **“Implemented” means the epic's modules are built and their tests pass — not that the epic runs.**
+> The synchronous trading main loop is not written: `broker-exec run` completes the whole cold-boot
+> sequence and then exits 70 via `boot::unimplemented_run_phase()` rather than pretend to trade, and
+> composition is `EngineMode::ExitOnly` because an entry-capable assembly needs inputs only that loop
+> produces. So several modules below — hedge-first execution, basket unwind, the UNKNOWN-first pause —
+> are exercised only by their tests and have no production call site yet. Nothing here has traded real
+> money. Defects found since are tracked as [open issues](https://github.com/abhijeetsri13/fitbro/issues).
 
 ## MVP (Day One)
 
