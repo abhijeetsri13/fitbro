@@ -201,6 +201,220 @@ TEST_CASE("apply: a terminal local order is not moved by a contradicting view", 
   CHECK(outcome.applied == 1);
   CHECK(outcome.advanced == 0);
   CHECK(local.front().state == OrderState::Filled);  // absorbing sink
+
+  // ...AND THE DISAGREEMENT IS RECORDED. This half is what the test used to
+  // omit, which is how it came to pin the defect: DroppedTerminal shared one
+  // empty `break` with NoChange, so a broker row contradicting a terminal local
+  // order was counted nowhere, alerted nobody and left block_new_orders false.
+  // The order still must not move — only the silence was wrong.
+  CHECK(outcome.mismatches == 1);
+  CHECK(outcome.block_new_orders);
+  CHECK(alerts.count() == 1);
+  CHECK(alerts.last_level() == AlertLevel::Warning);
+}
+
+// ── refused broker truth is a mismatch (the DroppedTerminal / NoChange sink) ──
+
+TEST_CASE("apply: a locally-Cancelled order the broker reports FILLED blocks new orders",
+          "[reconcile]") {
+  life::LifecycleEngine engine;
+  CountingAlertSink alerts;
+  rec::ReconcileApplier applier(engine, alerts);
+
+  // The bot believes it is flat; the broker says the order took 50 lots. Refusing
+  // to move the terminal order is correct (the sink is the safety property), but
+  // dropping the row without a trace let RecoveryCoordinator::recover() — which
+  // gates only on mismatches/block_new_orders — report ResumedSafe over a live
+  // 50-lot position.
+  std::vector<Order> local{local_order("alpha-1", OrderState::Cancelled)};
+  Order filled = broker_order("alpha-1", OrderState::Filled);
+  filled.filled_qty = Quantity::of(50);
+  const auto result = result_with({filled}, 10);
+
+  const rec::ReconcileOutcome outcome = applier.apply(result, local);
+  CHECK(outcome.applied == 1);
+  CHECK(outcome.advanced == 0);
+  CHECK(local.front().state == OrderState::Cancelled);  // the sink still holds
+  CHECK(outcome.mismatches == 1);
+  CHECK(outcome.block_new_orders);
+  CHECK(alerts.count() == 1);
+  CHECK(alerts.last_level() == AlertLevel::Warning);
+  // The two OrderState names are in the BODY on purpose — short all-letter tokens
+  // that scrub()'s >=20-char letters-AND-digits rule cannot touch — so the
+  // operator sees WHICH WAY the sides disagree. The ids still ride in the typed
+  // provenance and never in the body (IMP-16).
+  CHECK(alerts.last_message().find("CANCELLED") != std::string::npos);
+  CHECK(alerts.last_message().find("FILLED") != std::string::npos);
+  CHECK(alerts.last_provenance().client_ref == "alpha-1");
+  CHECK(alerts.last_message().find("alpha-1") == std::string::npos);
+}
+
+TEST_CASE("apply: a locally-Rejected order the broker still lists LIVE is a mismatch",
+          "[reconcile]") {
+  life::LifecycleEngine engine;
+  CountingAlertSink alerts;
+  rec::ReconcileApplier applier(engine, alerts);
+
+  // THE REACHABLE ACK-LOST PATH. Dispatcher::place marks an order Rejected from
+  // LOCAL error classification alone (Validation / InsufficientFunds /
+  // RateLimited / SessionExpired — no broker confirmation that the order does not
+  // exist), while KiteBrokerAdapter::place registers the correlation tag BEFORE
+  // the wire call precisely so fetch_orders() can recover the row if the order did
+  // reach the exchange. Recovering it and then dropping it here defeated that
+  // mechanism outright.
+  std::vector<Order> local{local_order("alpha-1", OrderState::Rejected)};
+  const auto result = result_with({broker_order("alpha-1", OrderState::Acknowledged)}, 10);
+
+  const rec::ReconcileOutcome outcome = applier.apply(result, local);
+  CHECK(outcome.applied == 1);
+  CHECK(local.front().state == OrderState::Rejected);  // never laundered back to live
+  CHECK(outcome.mismatches == 1);
+  CHECK(outcome.block_new_orders);
+  CHECK(alerts.count() == 1);
+  CHECK(alerts.last_provenance().client_ref == "alpha-1");
+}
+
+TEST_CASE("apply: a broker fill correction on a terminal order is not discarded silently",
+          "[reconcile]") {
+  life::LifecycleEngine engine;
+  CountingAlertSink alerts;
+  rec::ReconcileApplier applier(engine, alerts);
+
+  // Both sides agree the order is Filled, but the broker has since amended the
+  // average price (a trade bust / correction). The FSM cannot rewrite a sink, so
+  // the corrected number would be dropped forever and the ledger would keep the
+  // wrong one — a money error that never surfaces. It has to reach a human.
+  Order done = local_order("alpha-1", OrderState::Filled);
+  done.filled_qty = Quantity::of(50);
+  done.avg_price = Price::from_rupees(100);
+  std::vector<Order> local{done};
+
+  Order corrected = broker_order("alpha-1", OrderState::Filled);
+  corrected.filled_qty = Quantity::of(50);
+  corrected.avg_price = Price::from_rupees(101);
+  const auto result = result_with({corrected}, 10);
+
+  const rec::ReconcileOutcome outcome = applier.apply(result, local);
+  CHECK(outcome.mismatches == 1);
+  CHECK(outcome.block_new_orders);
+  CHECK(alerts.count() == 1);
+  CHECK(alerts.last_message().find("fill correction") != std::string::npos);
+  CHECK(local.front().avg_price == Price::from_rupees(100));  // the sink is not rewritten
+}
+
+TEST_CASE("apply: only a DISAGREEING terminal row escalates, never an identical one",
+          "[reconcile]") {
+  life::LifecycleEngine engine;
+  CountingAlertSink alerts;
+  rec::ReconcileApplier applier(engine, alerts);
+
+  // "done-1" is the ROUTINE case the new escalation must stay silent about: the
+  // broker keeps listing a terminal row we already match field for field. Firing
+  // on that would block the bot on every poll after a fill. "alpha-2" is the real
+  // contradiction. Both are in one snapshot so the counts prove the boundary.
+  Order agreed = local_order("done-1", OrderState::Filled);
+  agreed.filled_qty = Quantity::of(50);
+  agreed.avg_price = Price::from_rupees(100);
+  std::vector<Order> local{agreed, local_order("alpha-2", OrderState::Cancelled)};
+
+  Order agreed_row = broker_order("done-1", OrderState::Filled);
+  agreed_row.filled_qty = Quantity::of(50);
+  agreed_row.avg_price = Price::from_rupees(100);
+  const auto result = result_with({agreed_row, broker_order("alpha-2", OrderState::Filled)}, 10);
+
+  const rec::ReconcileOutcome outcome = applier.apply(result, local);
+  CHECK(outcome.applied == 2);
+  CHECK(outcome.mismatches == 1);  // exactly one: the identical row added nothing
+  CHECK(alerts.count() == 1);
+  CHECK(outcome.block_new_orders);
+  CHECK(alerts.last_provenance().client_ref == "alpha-2");
+}
+
+TEST_CASE("apply: an ILLEGAL broker transition is a mismatch, a benign re-observation is not",
+          "[reconcile]") {
+  life::LifecycleEngine engine;
+  CountingAlertSink alerts;
+  rec::ReconcileApplier applier(engine, alerts);
+
+  // PartiallyFilled -> Acknowledged is not in the transition table, so the FSM
+  // refuses the jump and returns NoChange — the SAME NoChange a benign unchanged
+  // view returns, which is why a broker contradicting itself across snapshots was
+  // indistinguishable from "nothing happened". "beta-2" is that benign view
+  // (identical state, fills and broker id) and must stay silent, so the counts
+  // below pin both halves.
+  Order benign = local_order("beta-2", OrderState::Acknowledged);
+  benign.avg_price = Price::from_rupees(100);  // matches the broker row exactly
+  std::vector<Order> local{local_order("alpha-1", OrderState::PartiallyFilled), benign};
+  const auto result = result_with({broker_order("alpha-1", OrderState::Acknowledged),
+                                   broker_order("beta-2", OrderState::Acknowledged)},
+                                  10);
+
+  const rec::ReconcileOutcome outcome = applier.apply(result, local);
+  CHECK(outcome.applied == 2);
+  CHECK(outcome.advanced == 0);
+  CHECK(local.front().state == OrderState::PartiallyFilled);  // the jump was refused
+  CHECK(outcome.mismatches == 1);
+  CHECK(outcome.block_new_orders);
+  CHECK(alerts.count() == 1);
+  CHECK(alerts.last_provenance().client_ref == "alpha-1");
+}
+
+TEST_CASE("apply: a contradiction escalates from a FRESH snapshot and never from a stale one",
+          "[reconcile]") {
+  life::LifecycleEngine engine;
+  CountingAlertSink alerts;
+  rec::ReconcileApplier applier(engine, alerts);
+
+  std::vector<Order> local{local_order("alpha-1", OrderState::Cancelled)};
+
+  const rec::ReconcileOutcome fresh =
+      applier.apply(result_with({broker_order("alpha-1", OrderState::Filled)}, 10), local);
+  CHECK(fresh.mismatches == 1);
+  CHECK(fresh.block_new_orders);
+  CHECK(alerts.count() == 1);
+
+  // The same contradiction re-delivered on an OLDER snapshot is routine
+  // out-of-order delivery: the stale-snapshot guard has to cover the new
+  // escalation exactly as it already covers phantom/vanished.
+  const rec::ReconcileOutcome stale =
+      applier.apply(result_with({broker_order("alpha-1", OrderState::Filled)}, 5), local);
+  CHECK(stale.applied == 1);
+  CHECK(stale.mismatches == 0);
+  CHECK_FALSE(stale.block_new_orders);
+  CHECK(alerts.count() == 1);  // no second alert
+}
+
+TEST_CASE("apply: a per-order OLDER view of a terminal order is not a contradiction",
+          "[reconcile]") {
+  life::LifecycleEngine engine;
+  CountingAlertSink alerts;
+  rec::ReconcileApplier applier(engine, alerts);
+
+  // A push update already advanced "alpha-1" to Filled at ordering key 100. The
+  // snapshot below is fresh AS A SNAPSHOT (none applied yet) but carries an older
+  // observation of that order. The FSM checks terminal (rule 1) BEFORE ordering
+  // (rule 2), so that view returns DroppedTerminal instead of DroppedStale —
+  // escalating it would turn ordinary out-of-order delivery into a false block.
+  // "beta-2" has no per-order key at all and IS a genuine contradiction, so the
+  // counts distinguish "suppressed" from "never fired".
+  Order pushed = local_order("alpha-1", OrderState::Acknowledged);
+  life::BrokerView push;
+  push.client_ref = "alpha-1";
+  push.observed_state = OrderState::Filled;
+  push.ordering_key = 100;
+  REQUIRE(engine.apply(pushed, push) == life::ApplyOutcome::Applied);
+  REQUIRE(pushed.state == OrderState::Filled);
+
+  std::vector<Order> local{pushed, local_order("beta-2", OrderState::Cancelled)};
+  const auto result = result_with({broker_order("alpha-1", OrderState::PartiallyFilled),
+                                   broker_order("beta-2", OrderState::Filled)},
+                                  20);
+
+  const rec::ReconcileOutcome outcome = applier.apply(result, local);
+  CHECK(outcome.applied == 2);
+  CHECK(outcome.mismatches == 1);  // beta-2 only; alpha-1's view was simply older
+  CHECK(alerts.count() == 1);
+  CHECK(alerts.last_provenance().client_ref == "beta-2");
 }
 
 // ── mismatch (AC-3) ──

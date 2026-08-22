@@ -1,5 +1,6 @@
 #include "broker_exec/reconcile/reconciler.hpp"
 
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -43,6 +44,23 @@ namespace {
   // shape rule (uppercase alnum), not the id one.
   ctx.symbol = order.intent.symbol;
   return ctx;
+}
+
+// The alert body for a broker-vs-local STATE contradiction. The two OrderState
+// names ride in the free-form BODY on purpose, and that is not a relapse of the
+// IMP-16 defect: unlike a client_ref or an option symbol they are short,
+// all-letter, fixed-vocabulary tokens ("FILLED", "CANCELLED"), so scrub()'s
+// >=20-char letters-AND-digits rule cannot reach them — while an operator woken
+// at 3am needs to see WHICH WAY the two sides disagree before anything else. The
+// ids and the symbol still travel as typed provenance, never interpolated here.
+[[nodiscard]] std::string contradiction_body(domain::OrderState believed,
+                                             domain::OrderState observed) {
+  std::string body = "reconcile: broker contradicts local order state (local=";
+  body += domain::to_string(believed);
+  body += " broker=";
+  body += domain::to_string(observed);
+  body += ")";
+  return body;
 }
 
 }  // namespace
@@ -134,8 +152,40 @@ ReconcileOutcome ReconcileApplier::apply(const ReconcileResult& result,
     view.avg_price = broker_order.avg_price;
     view.ordering_key = result.ordering_key;
 
+    // What we believed BEFORE the engine looked at the view. The FSM mutates
+    // `*match` only on Applied, but the divergence test below must compare broker
+    // truth against our PRIOR belief, not against a post-apply value.
+    const domain::OrderState believed_state = match->state;
+    const domain::Quantity believed_filled = match->filled_qty;
+    const domain::Price believed_avg = match->avg_price;
+    // The engine's per-order high-water mark, read BEFORE apply (a view the engine
+    // believes records the key, which would erase the answer). Rule 1 (terminal) is
+    // checked BEFORE rule 2 (ordering), so once an order is terminal a genuinely
+    // OLDER observation of it comes back as DroppedTerminal, never DroppedStale —
+    // and without this, routine out-of-order delivery would read as a broker
+    // contradiction. The snapshot-level guard cannot cover it: that one compares
+    // whole snapshots, while a push update can have advanced THIS order past a
+    // snapshot that is newer overall.
+    const auto key_before = engine_.last_key(view.client_ref);
+
     const lifecycle::ApplyOutcome applied = engine_.apply(*match, view);
     ++outcome.applied;
+
+    // DID THE FSM REFUSE BROKER TRUTH, AND DOES THAT REFUSAL HIDE A REAL
+    // DISAGREEMENT?
+    // Two outcomes mean "refused", and they used to share one empty `break` that
+    // recorded NOTHING: not a counter, not an alert, not block_new_orders. So a
+    // broker row reporting an order live or FILLED under a locally
+    // Rejected/Cancelled one was dropped in silence — local state beating broker
+    // truth with no record, the one thing this module's banner forbids — and
+    // RecoveryCoordinator::recover(), which gates only on mismatches/block, then
+    // reported ResumedSafe over an order that may be LIVE at the broker.
+    //
+    // Refusing to MOVE stays right and deliberate: terminal-absorbing and
+    // legal-transitions-only ARE the safety property, and we still never overwrite
+    // the order. Only the SILENCE is fixed: we refuse to trade on, and a human
+    // decides. The two arms need different evidence, so they are separated.
+    bool contradiction = false;
     switch (applied) {
       case lifecycle::ApplyOutcome::Applied:
         ++outcome.advanced;
@@ -144,8 +194,56 @@ ReconcileOutcome ReconcileApplier::apply(const ReconcileResult& result,
         ++outcome.dropped_stale;
         break;
       case lifecycle::ApplyOutcome::DroppedTerminal:
-      case lifecycle::ApplyOutcome::NoChange:
+        // The LOCAL order is already in an absorbing sink, so rule 1 dropped the
+        // view WITHOUT `observed_state` ever being consulted — it fires the same
+        // for a harmless repeat of a terminal row we already agree with as for a
+        // hard contradiction. Comparing the RAW broker row is exactly right here:
+        // canonical_observed() rewrites an adapter's `Sent` spelling only from a
+        // NON-terminal state, so from a sink the engine would have judged the wire
+        // value as-is. STATE divergence is the dangerous shape (Dispatcher::place
+        // marks an order Rejected from LOCAL error classification alone, while the
+        // Kite adapter registers its correlation tag BEFORE the wire call so
+        // fetch_orders() can recover a row that did reach the exchange — recovering
+        // it only to drop it here defeated that ack-lost mechanism outright). FILL
+        // divergence is the quiet one: the FSM cannot rewrite a sink, so a broker
+        // correction to filled_qty/avg_price would be discarded FOREVER and the
+        // ledger would keep the wrong number.
+        contradiction = broker_order.state != believed_state ||
+                        broker_order.filled_qty != believed_filled ||
+                        broker_order.avg_price != believed_avg;
         break;
+      case lifecycle::ApplyOutcome::NoChange: {
+        // NoChange carries two opposite meanings: the benign idempotent
+        // re-observation, and rule 3 REFUSING a transition the machine does not
+        // believe. ASK THE ENGINE which one this was instead of re-deriving it:
+        // the FSM records the view's ordering key only when it believed the view
+        // (rule 3 deliberately does not advance the key on a refusal), so a key
+        // that did not land IS the refusal. Re-deriving it from the raw states
+        // would be wrong as well as duplicative — canonical_observed() normalizes
+        // an adapter's "still working" spelling of `Sent` INSIDE the engine, so a
+        // raw comparison would invent a contradiction the machine never saw.
+        const auto key_after = engine_.last_key(view.client_ref);
+        contradiction = !key_after.has_value() || *key_after != view.ordering_key;
+        break;
+      }
+    }
+
+    // A stale snapshot never escalates (same rule as phantom/vanished above), and
+    // neither does a view the FSM would itself have called stale had rule 1 not
+    // short-circuited it: escalate only what rule 2 would have ADMITTED.
+    const bool view_is_older = key_before.has_value() && view.ordering_key < *key_before;
+    if (contradiction && !stale_snapshot && !view_is_older) {
+      ++outcome.mismatches;
+      outcome.block_new_orders = true;
+      // A refused NoChange always differs in state (a same-state view is a legal
+      // self-transition), so the fill-only wording is reachable from the terminal
+      // arm alone — where it is the accurate description.
+      std::string body = "reconcile: broker fill correction refused by a terminal local order";
+      if (broker_order.state != believed_state) {
+        body = contradiction_body(believed_state, broker_order.state);
+      }
+      (void)alerts_.send_with_context(ports::AlertLevel::Warning, body,
+                                      provenance_of(broker_order));
     }
   }
 

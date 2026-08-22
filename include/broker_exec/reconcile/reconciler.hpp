@@ -80,10 +80,13 @@ class Reconciler {
 
 // What a single apply() produced, for logging / metrics and the new-order gate.
 struct ReconcileOutcome {
-  int applied = 0;                // Broker orders matched to a local order and fed to the FSM.
-  int advanced = 0;               // Of those, how many the FSM advanced (ApplyOutcome::Applied).
-  int dropped_stale = 0;          // Of those, how many were stale/duplicate (DroppedStale).
-  int mismatches = 0;             // Phantom broker orders + vanished local orders.
+  int applied = 0;        // Broker orders matched to a local order and fed to the FSM.
+  int advanced = 0;       // Of those, how many the FSM advanced (ApplyOutcome::Applied).
+  int dropped_stale = 0;  // Of those, how many were stale/duplicate (DroppedStale).
+  // Phantom broker orders + vanished local orders + CONTRADICTIONS: a broker row
+  // the FSM refused (local already terminal, or an illegal transition) whose
+  // state or fills differ from ours. A refusal used to be counted nowhere at all.
+  int mismatches = 0;
   bool block_new_orders = false;  // Set on any mismatch (AC-3).
 };
 
@@ -105,6 +108,19 @@ class ReconcileApplier {
   // Any mismatch -> Warning alert (redaction safe: client_ref only, never a
   // token) + block_new_orders. No throw: a failing alert send still counts the
   // mismatch.
+  //
+  // REFUSED BROKER TRUTH IS A MISMATCH TOO. The FSM refuses a view when the local
+  // order is already terminal (DroppedTerminal, decided from the LOCAL state alone
+  // — it never even reads observed_state) or when the transition is illegal
+  // (NoChange). Refusing to MOVE is correct; refusing SILENTLY was not — a broker
+  // row reporting an order LIVE or FILLED under a locally Rejected/Cancelled one
+  // was dropped with no counter, no alert and no block, so recovery could resume
+  // "safe" over a live broker order. A terminal refusal whose state OR fills
+  // differ from ours, and every illegal-transition refusal, now count as a
+  // mismatch -> alert + block. Silent, as before: a terminal row identical to
+  // ours (the routine repeat after a fill), a benign idempotent re-observation,
+  // a stale snapshot, and a view the FSM's own ordering rule would have dropped.
+  // The order itself is never overwritten — the absorbing sink still holds.
   //
   // STALE-SNAPSHOT GUARD (apply-ordering): a snapshot whose `ordering_key` is not
   // newer than one already applied is stale/out-of-order. Its matched views are
