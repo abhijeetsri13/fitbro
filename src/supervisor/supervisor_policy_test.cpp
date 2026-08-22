@@ -1,7 +1,6 @@
 #include "broker_exec/supervisor/supervisor_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <climits>
 #include <string>
 
@@ -32,11 +31,11 @@ TEST_CASE("exit_reason_from_code maps the canonical codes and fails safe on the 
   CHECK(exit_reason_from_code(70) == ExitReason::FailClosedNeedsHuman);
 
   // Everything else ⇒ Crash (fail-safe: unknown is never clean).
-  CHECK(exit_reason_from_code(1) == ExitReason::Crash);     // generic failure
-  CHECK(exit_reason_from_code(139) == ExitReason::Crash);   // 128 + SIGSEGV
-  CHECK(exit_reason_from_code(137) == ExitReason::Crash);   // 128 + SIGKILL
-  CHECK(exit_reason_from_code(-1) == ExitReason::Crash);    // negative
-  CHECK(exit_reason_from_code(255) == ExitReason::Crash);   // arbitrary nonzero
+  CHECK(exit_reason_from_code(1) == ExitReason::Crash);    // generic failure
+  CHECK(exit_reason_from_code(139) == ExitReason::Crash);  // 128 + SIGSEGV
+  CHECK(exit_reason_from_code(137) == ExitReason::Crash);  // 128 + SIGKILL
+  CHECK(exit_reason_from_code(-1) == ExitReason::Crash);   // negative
+  CHECK(exit_reason_from_code(255) == ExitReason::Crash);  // arbitrary nonzero
 }
 
 TEST_CASE("crash restart-with-backoff: capped exponential schedule (AC-3)", "[supervisor]") {
@@ -65,8 +64,7 @@ TEST_CASE("crash with a large count under a high breaker hits the backoff cap ex
   CHECK_FALSE(d.raise_absence_alarm);
 }
 
-TEST_CASE("fail-closed never restarts and always raises the absence alarm (AC-3)",
-          "[supervisor]") {
+TEST_CASE("fail-closed never restarts and always raises the absence alarm (AC-3)", "[supervisor]") {
   for (const int n : {0, 1, 2, 5, 50, 1000}) {
     const SupervisorDecision d = decide(ExitReason::FailClosedNeedsHuman, n, kDefaultCfg);
     CHECK(d.action == SupervisorAction::NoRestartEscalate);

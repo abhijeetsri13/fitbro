@@ -52,18 +52,18 @@ namespace broker_exec::marketdata {
 // Explicit tradability classification for a symbol's market data. Stable,
 // log-friendly names (see to_string). Only `Live` is tradable (AC-2).
 enum class MarketDataState {
-  Unknown,       // no tick ever seen for this symbol
-  Live,          // fresh and not lagging — tradable
-  Stale,         // we stopped receiving (steady age > staleness_threshold)
-  Delayed,       // feed lags the exchange (wall lag > delay_threshold)
-  Disconnected   // the socket is down
+  Unknown,      // no tick ever seen for this symbol
+  Live,         // fresh and not lagging — tradable
+  Stale,        // we stopped receiving (steady age > staleness_threshold)
+  Delayed,      // feed lags the exchange (wall lag > delay_threshold)
+  Disconnected  // the socket is down
 };
 
 // Outcome of a transport reconnect attempt, fed in by the WS adapter seam.
 enum class ReconnectResult {
-  Reconnected,      // socket back up
-  TransportFailure, // network/socket failure (transport retries with backoff)
-  AuthFailure       // re-auth refused — route to session re-establishment (AC-3)
+  Reconnected,       // socket back up
+  TransportFailure,  // network/socket failure (transport retries with backoff)
+  AuthFailure        // re-auth refused — route to session re-establishment (AC-3)
 };
 
 // A single market-data tick. `exchange_ts` is the exchange's wall-clock stamp
@@ -86,8 +86,7 @@ class MarketDataView {
   // a symbol is Stale; `delay_threshold` bounds the wall lag (now_wall -
   // exchange_ts) before it is Delayed. Both boundaries are strict (`>`): an age
   // exactly equal to the threshold is still Live (not yet Stale/Delayed).
-  MarketDataView(const ports::ClockPort& clock,
-                 std::chrono::milliseconds staleness_threshold,
+  MarketDataView(const ports::ClockPort& clock, std::chrono::milliseconds staleness_threshold,
                  std::chrono::milliseconds delay_threshold)
       : clock_(clock),
         staleness_threshold_(staleness_threshold),

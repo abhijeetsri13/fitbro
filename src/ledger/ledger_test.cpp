@@ -1,7 +1,6 @@
 #include "broker_exec/ledger/ledger.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -42,9 +41,8 @@ struct TempDir {
   fs::path path;
 
   explicit TempDir(const std::string& tag)
-      : path(fs::temp_directory_path() /
-             ("broker_exec_ledger_" + tag + "_" +
-              std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
+      : path(fs::temp_directory_path() / ("broker_exec_ledger_" + tag + "_" +
+                                          std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
     std::error_code ec;
     fs::create_directories(path, ec);
   }
@@ -156,7 +154,8 @@ TEST_CASE("the ledger survives a restart (persist + reload)", "[ledger]") {
   CHECK(fresh.verify_chain().has_value());
 }
 
-TEST_CASE("Ed25519 sign/verify the chain head, fail-closed on wrong key/tampered head", "[ledger]") {
+TEST_CASE("Ed25519 sign/verify the chain head, fail-closed on wrong key/tampered head",
+          "[ledger]") {
   const TempDir dir("ed25519");
   const TestClock clock;
   Ledger ledger(clock, dir.path / "ledger.jsonl");
@@ -179,8 +178,8 @@ TEST_CASE("Ed25519 sign/verify the chain head, fail-closed on wrong key/tampered
   // A DIFFERENT keypair's public key fails closed.
   const auto other = Ledger::generate_keypair();
   REQUIRE(other.has_value());
-  CHECK_FALSE(Ledger::verify_head(ledger.head_hash(), sig.value(), other.value().public_key)
-                  .has_value());
+  CHECK_FALSE(
+      Ledger::verify_head(ledger.head_hash(), sig.value(), other.value().public_key).has_value());
 
   // A tampered head fails closed.
   CHECK_FALSE(Ledger::verify_head("deadbeef", sig.value(), kp.public_key).has_value());
@@ -249,7 +248,7 @@ TEST_CASE("the heartbeat carries ts + exposure and scrubs secrets (AC-2)", "[led
   const std::string json = hb.to_json();
 
   CHECK(json.find("net=+50") != std::string::npos);  // exposure preserved
-  CHECK(json.find(hb.ts) != std::string::npos);       // timestamp present
+  CHECK(json.find(hb.ts) != std::string::npos);      // timestamp present
   // The token is scrubbed before it reaches the operator sink.
   CHECK(hb.exposure.find(kToken) == std::string::npos);
   CHECK(json.find(kToken) == std::string::npos);
@@ -375,7 +374,8 @@ TEST_CASE("an appended secret is scrubbed before hashing/persist (4.2 lesson)", 
   CHECK(ledger.verify_chain().has_value());
 }
 
-TEST_CASE("write_checkpoint then verify_against_checkpoint passes; high-water advances", "[ledger]") {
+TEST_CASE("write_checkpoint then verify_against_checkpoint passes; high-water advances",
+          "[ledger]") {
   const TempDir dir("checkpoint_intact");
   const TestClock clock;
   Ledger ledger(clock, dir.path / "ledger.jsonl");
@@ -450,7 +450,7 @@ TEST_CASE("a chopped tail is detected against the signed checkpoint (truncation)
   CHECK(fresh.size() == 3);
   CHECK(fresh.verify_chain().has_value());  // the surviving 3 are self-consistent
   const auto verified = fresh.verify_against_checkpoint(kp.value().public_key);
-  REQUIRE_FALSE(verified.has_value());      // ...but truncation IS caught
+  REQUIRE_FALSE(verified.has_value());  // ...but truncation IS caught
   CHECK(verified.error().category == ErrorCategory::Validation);
   CHECK(verified.error().message.find("TRUNCATED") != std::string::npos);
 }
@@ -484,7 +484,7 @@ TEST_CASE("a substituted/rolled-back chain is detected against the checkpoint", 
   CHECK(fresh.size() == 5);
   CHECK(fresh.verify_chain().has_value());  // chain B is internally consistent
   const auto verified = fresh.verify_against_checkpoint(kp.value().public_key);
-  REQUIRE_FALSE(verified.has_value());      // ...but it is NOT the signed chain
+  REQUIRE_FALSE(verified.has_value());  // ...but it is NOT the signed chain
   CHECK(verified.error().category == ErrorCategory::Validation);
   CHECK(verified.error().message.find("ROLLED BACK") != std::string::npos);
 }
@@ -547,9 +547,10 @@ TEST_CASE("checkpointing an empty ledger is a defined Error", "[ledger]") {
   CHECK(written.error().message.find("empty") != std::string::npos);
 }
 
-TEST_CASE("KEY-SUBSTITUTION attack is caught by pinning (a self-consistent checkpoint under a "
-          "DIFFERENT key is rejected)",
-          "[ledger]") {
+TEST_CASE(
+    "KEY-SUBSTITUTION attack is caught by pinning (a self-consistent checkpoint under a "
+    "DIFFERENT key is rejected)",
+    "[ledger]") {
   const TempDir dir("checkpoint_substitution");
   const TestClock clock;
   Ledger ledger(clock, dir.path / "ledger.jsonl");
@@ -566,8 +567,8 @@ TEST_CASE("KEY-SUBSTITUTION attack is caught by pinning (a self-consistent check
   // OWN key (signature verifies, size + head match the on-disk chain). Pre-pinning
   // this passed; with key pinning it must be rejected because the embedded key is
   // not the pinned key.
-  REQUIRE(
-      ledger.write_checkpoint(attacker.value().private_key, attacker.value().public_key).has_value());
+  REQUIRE(ledger.write_checkpoint(attacker.value().private_key, attacker.value().public_key)
+              .has_value());
 
   const auto verified = ledger.verify_against_checkpoint(pinned.value().public_key);
   REQUIRE_FALSE(verified.has_value());
@@ -1059,8 +1060,8 @@ TEST_CASE("IMP-17/C2: PositionHeartbeat::to_json normalises BOTH hand-fillable f
   const std::string rendered = hb.to_json();
   const nlohmann::json parsed = nlohmann::json::parse(rendered, nullptr, false);
   REQUIRE_FALSE(parsed.is_discarded());
-  CHECK(parsed.at("ts").get<std::string>() == std::string("2026-08-09T00:00:0") +
-                                                  std::string(kReplacementChar) + "Z");
+  CHECK(parsed.at("ts").get<std::string>() ==
+        std::string("2026-08-09T00:00:0") + std::string(kReplacementChar) + "Z");
   CHECK(parsed.at("exposure").get<std::string>() == kInvalidLeadCanonical);
 
   // A heartbeat built the normal way is untouched by either call (both are no-ops
@@ -1170,9 +1171,12 @@ TEST_CASE("IMP-17: the scrub/normalise ORDER IS OBSERVABLE — the counterexampl
   // normalisation the expansion separates the keyword and it matches. The order is
   // simply OBSERVABLE in both directions, which is precisely why it must be FIXED
   // and stated rather than assumed away.
-  constexpr std::string_view kEmbeddedRaw = "passwordtokentotp\xC0\x80" "12345678";
+  constexpr std::string_view kEmbeddedRaw =
+      "passwordtokentotp\xC0\x80"
+      "12345678";
   constexpr std::string_view kEmbeddedCanonical =
-      "passwordtokentotp\xEF\xBF\xBD\xEF\xBF\xBD" "12345678";
+      "passwordtokentotp\xEF\xBF\xBD\xEF\xBF\xBD"
+      "12345678";
 
   Ledger shipped2(clock, dir.path / "shipped2.jsonl");
   const auto shipped2_entry = shipped2.append(std::string(kEmbeddedRaw));
@@ -1230,7 +1234,9 @@ TEST_CASE("IMP-17/C1: a RAW ill-formed byte in a stored LINE is REJECTED by load
   // Belt and braces: assert the third-party behaviour we are depending on,
   // directly, so a dependency bump that changed it fails HERE with an obvious
   // message rather than in the ledger's error text.
-  const nlohmann::json direct = nlohmann::json::parse(R"({"payload":"alph)" "\x80" R"("})",
+  const nlohmann::json direct = nlohmann::json::parse(R"({"payload":"alph)"
+                                                      "\x80"
+                                                      R"("})",
                                                       nullptr, false);
   CHECK(direct.is_discarded());
 }

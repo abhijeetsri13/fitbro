@@ -1,12 +1,10 @@
 #include "broker_exec/cli/health_snapshot.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <limits>
-#include <string>
-
 #include <nlohmann/json.hpp>
+#include <string>
 
 #include "broker_exec/cli/health_state.hpp"
 #include "broker_exec/domain/redaction.hpp"
@@ -61,7 +59,7 @@ TEST_CASE("is_ready requires full health and is strictly stronger than is_live",
 
   SECTION("a non-Healthy session is live-but-not-ready") {
     const HealthSnapshot needs_reauth(SessionState::NeedsReauth, 100, 50, 0, true, true);
-    CHECK(is_live(needs_reauth, kBudgetMs));     // process responds
+    CHECK(is_live(needs_reauth, kBudgetMs));         // process responds
     CHECK_FALSE(is_ready(needs_reauth, kBudgetMs));  // but not fit to trade
   }
   SECTION("a dirty replay is not ready") {

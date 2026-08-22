@@ -1,5 +1,4 @@
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 
 #include "broker_exec/clock/skew_stall_detector.hpp"
@@ -100,7 +99,7 @@ TEST_CASE("SkewStallDetector flags clock skew past threshold", "[clock]") {
   det.sample(clk);  // baseline
 
   // Advance steady a little, but jump wall far ahead -> divergence > threshold.
-  clk.advance(100ms);          // steady +100ms
+  clk.advance(100ms);                 // steady +100ms
   clk.set_wall(clk.now_wall() + 5s);  // wall +5s (NTP step / manual set)
   REQUIRE(det.sample(clk) == ClockStatus::Skewed);
   REQUIRE(det.status() == ClockStatus::Skewed);
@@ -116,7 +115,7 @@ TEST_CASE("SkewStallDetector tolerates small wall jitter as Healthy", "[clock]")
 
   det.sample(clk);  // baseline
 
-  clk.advance(1000ms);                  // steady +1000ms
+  clk.advance(1000ms);                    // steady +1000ms
   clk.set_wall(clk.now_wall() + 1200ms);  // wall +1200ms -> 200ms divergence < 500ms
   REQUIRE(det.sample(clk) == ClockStatus::Healthy);
 }

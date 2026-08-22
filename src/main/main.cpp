@@ -41,8 +41,8 @@
 // adapter/platform seams. No OS API and no `#ifdef` in this file.
 
 #include <chrono>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -296,8 +296,8 @@ struct Options {
 
   const std::string account_id =
       args.account_id.empty() ? config.engine.account_id : args.account_id;
-  auto account_dir = broker_exec::accounts::AccountDataDir::create(std::move(data_root).value(),
-                                                                   account_id);
+  auto account_dir =
+      broker_exec::accounts::AccountDataDir::create(std::move(data_root).value(), account_id);
   if (!account_dir) {
     return report_error(account_dir.error(), "account layout");
   }
@@ -333,9 +333,8 @@ struct Options {
   // than by coincidence.
   broker_exec::secrets::TokenStore token_store(secret_provider, dir.data_root());
   broker_exec::session::KiteSessionEstablisher establisher(kite_http, secret_provider, token_store,
-                                                           dir.account_id(),
-                                                           "kite.api_key", "kite.api_secret",
-                                                           "token_store");
+                                                           dir.account_id(), "kite.api_key",
+                                                           "kite.api_secret", "token_store");
   broker_exec::adapters::kite::KiteRestClient kite_rest(kite_http, secret_provider, "kite.api_key",
                                                         "kite.access_token");
 
@@ -357,10 +356,10 @@ struct Options {
     };
   } else {
     session_probe = []() -> Result<broker_exec::session::SessionState> {
-      return broker_exec::fail(blocking(
-          ErrorCategory::NotSupported,
-          "boot: no session establishment is wired for the configured broker; only 'kite' "
-          "is composed by this entrypoint today"));
+      return broker_exec::fail(
+          blocking(ErrorCategory::NotSupported,
+                   "boot: no session establishment is wired for the configured broker; only 'kite' "
+                   "is composed by this entrypoint today"));
     };
   }
 
@@ -383,8 +382,8 @@ struct Options {
 
   const auto trading_date = [&system_clock]() { return iso_date_utc(system_clock); };
 
-  broker_exec::accounts::RefdataFetchFn instruments_upstream =
-      [&kite_rest, is_kite]() -> Result<std::string> {
+  broker_exec::accounts::RefdataFetchFn instruments_upstream = [&kite_rest,
+                                                                is_kite]() -> Result<std::string> {
     if (!is_kite) {
       return broker_exec::fail(blocking(ErrorCategory::NotSupported,
                                         "instruments: no instrument-master download is wired for "
@@ -395,12 +394,12 @@ struct Options {
   broker_exec::accounts::RefdataFetchFn calendar_upstream = [&env]() -> Result<std::string> {
     const std::optional<std::string> path = env(kCalendarFileEnv);
     if (!path.has_value() || path->empty()) {
-      return broker_exec::fail(blocking(
-          ErrorCategory::DataStale,
-          std::string("calendar: ") + kCalendarFileEnv +
-              " is not set. There is no broker calendar endpoint in this library, so the "
-              "trading calendar must be provisioned as a JSON document; without it the "
-              "calendar freshness gate blocks the start"));
+      return broker_exec::fail(
+          blocking(ErrorCategory::DataStale,
+                   std::string("calendar: ") + kCalendarFileEnv +
+                       " is not set. There is no broker calendar endpoint in this library, so the "
+                       "trading calendar must be provisioned as a JSON document; without it the "
+                       "calendar freshness gate blocks the start"));
     }
     return read_text_file(fs::path(*path));
   };
@@ -411,14 +410,12 @@ struct Options {
   // would have them write the same `<broker>_<segment>_<date>` filename — one
   // atomically, one not.
   broker_exec::refdata::InstrumentMaster instruments(
-      broker_exec::accounts::shared_instrument_csv_fetcher(shared_cache, config.broker.name, "nfo",
-                                                           trading_date,
-                                                           std::move(instruments_upstream)),
+      broker_exec::accounts::shared_instrument_csv_fetcher(
+          shared_cache, config.broker.name, "nfo", trading_date, std::move(instruments_upstream)),
       system_clock, dir.root(), config.broker.name, "nfo");
   broker_exec::refdata::TradingCalendar calendar(
-      broker_exec::accounts::shared_calendar_json_fetcher(shared_cache, config.broker.name,
-                                                          trading_date,
-                                                          std::move(calendar_upstream)),
+      broker_exec::accounts::shared_calendar_json_fetcher(
+          shared_cache, config.broker.name, trading_date, std::move(calendar_upstream)),
       system_clock, dir.root(), config.broker.name);
 
   // ── The health surface ───────────────────────────────────────────────────
@@ -527,8 +524,7 @@ int main(int argc, char** argv) {
 
     Options options;
     const auto add_common = [&options](CLI::App* sub) {
-      sub->add_option("--account", options.account,
-                      "Account id (the systemd instance name, %i)")
+      sub->add_option("--account", options.account, "Account id (the systemd instance name, %i)")
           ->required();
       sub->add_option("--config", options.config_path,
                       "TOML configuration path (optional; empty = defaults + environment)");
@@ -544,8 +540,8 @@ int main(int argc, char** argv) {
     add_common(run);
     run->callback([&options]() { options.boot_check = false; });
 
-    CLI::App* check =
-        app.add_subcommand("boot-check", "Run the cold-boot sequence and exit (deployment preflight)");
+    CLI::App* check = app.add_subcommand(
+        "boot-check", "Run the cold-boot sequence and exit (deployment preflight)");
     add_common(check);
     check->callback([&options]() { options.boot_check = true; });
 

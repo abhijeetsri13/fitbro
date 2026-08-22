@@ -52,16 +52,18 @@ namespace broker_exec::reconcile {
 struct ManualInterventionEvent {
   enum class Kind {
     PositionClosedManually,   // believed open -> broker flat, unexplained by a bot order.
-    PositionReducedManually,  // believed magnitude > broker magnitude (or sign flipped), unexplained.
-    OrderCancelledManually    // a broker-acked, non-terminal local order absent/cancelled at the broker.
+    PositionReducedManually,  // believed magnitude > broker magnitude (or sign flipped),
+                              // unexplained.
+    OrderCancelledManually    // a broker-acked, non-terminal local order absent/cancelled at the
+                              // broker.
   };
 
   Kind kind{Kind::PositionClosedManually};
-  std::string symbol;       // The instrument symbol (redaction-safe).
-  std::string client_ref;   // For an order cancel: the order's client_ref (redaction-safe).
+  std::string symbol;             // The instrument symbol (redaction-safe).
+  std::string client_ref;         // For an order cancel: the order's client_ref (redaction-safe).
   std::int64_t believed_qty = 0;  // The bot's believed net_qty before the change.
   std::int64_t broker_qty = 0;    // The broker's authoritative net_qty now.
-  std::string detail;       // Free-form, redaction-safe context for logs/audit.
+  std::string detail;             // Free-form, redaction-safe context for logs/audit.
 };
 
 // Stable, log/serialization-friendly name for an event Kind (observability /
@@ -85,8 +87,7 @@ class ManualInterventionDetector {
   // state update.
   [[nodiscard]] std::vector<ManualInterventionEvent> detect(
       const std::vector<domain::Position>& believed_positions,
-      const std::vector<domain::Order>& local_orders,
-      const ReconcileResult& truth) const;
+      const std::vector<domain::Order>& local_orders, const ReconcileResult& truth) const;
 
   // Fold broker truth into the local position book (the AC-1 state update that
   // makes AC-2 structural). Each local position is set to the matching broker

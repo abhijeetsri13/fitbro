@@ -1,7 +1,6 @@
 #include "sha256.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 
 using broker_exec::intentlog::Sha256;
@@ -12,12 +11,10 @@ using broker_exec::intentlog::sha256_hex;
 // and platforms.
 TEST_CASE("sha256 NIST known-answer vectors", "[intentlog][sha256]") {
   // Empty string.
-  REQUIRE(sha256_hex("") ==
-          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  REQUIRE(sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
   // "abc" (FIPS 180-4 example 1).
-  REQUIRE(sha256_hex("abc") ==
-          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  REQUIRE(sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 
   // 448-bit message (FIPS 180-4 example 2).
   REQUIRE(sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") ==

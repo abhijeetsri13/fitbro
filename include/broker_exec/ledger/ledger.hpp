@@ -233,9 +233,9 @@ class Ledger {
 
   // Verify an Ed25519 `signature` over `head_hash` under `public_key`. Returns
   // ok() iff OpenSSL verifies; a wrong key or a tampered head fails CLOSED.
-  [[nodiscard]] static Result<ports::Ok> verify_head(
-      std::string_view head_hash, const std::vector<unsigned char>& signature,
-      const std::vector<unsigned char>& public_key);
+  [[nodiscard]] static Result<ports::Ok> verify_head(std::string_view head_hash,
+                                                     const std::vector<unsigned char>& signature,
+                                                     const std::vector<unsigned char>& public_key);
 
   // Fail-closed key-identity guard (AC-3): ok() iff `expected == actual`, else a
   // safe-start Error. These are PUBLIC keys (not secrets), so a plain compare.

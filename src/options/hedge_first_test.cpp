@@ -1,8 +1,7 @@
 #include "broker_exec/options/hedge_first.hpp"
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <algorithm>
+#include <catch2/catch_test_macros.hpp>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -156,7 +155,8 @@ TEST_CASE("AC-2 null place_hedge seam: fail-closed => HedgePlacementFailed, shor
   CHECK(count_of(calls, "short") == 0);
 }
 
-TEST_CASE("AC-2 hedge unconfirmed: confirm returns false => HedgeUnconfirmed, short NEVER invoked") {
+TEST_CASE(
+    "AC-2 hedge unconfirmed: confirm returns false => HedgeUnconfirmed, short NEVER invoked") {
   std::vector<std::string> calls;
   SpyAlertSink alerts;
 
@@ -182,7 +182,8 @@ TEST_CASE("AC-2 hedge unconfirmed: confirm returns false => HedgeUnconfirmed, sh
   CHECK(alerts.count() == 0);
 }
 
-TEST_CASE("AC-2 confirm returns Error: fail-closed-on-error => HedgeUnconfirmed, short NEVER invoked") {
+TEST_CASE(
+    "AC-2 confirm returns Error: fail-closed-on-error => HedgeUnconfirmed, short NEVER invoked") {
   std::vector<std::string> calls;
   SpyAlertSink alerts;
 
@@ -227,7 +228,9 @@ TEST_CASE("AC-2 null confirm seam: fail-closed => HedgeUnconfirmed, short NEVER 
   CHECK(count_of(calls, "short") == 0);
 }
 
-TEST_CASE("short fails: confirmed hedge, place_short Error => ShortPlacementFailed, SAFE (no alert, no emergency)") {
+TEST_CASE(
+    "short fails: confirmed hedge, place_short Error => ShortPlacementFailed, SAFE (no alert, no "
+    "emergency)") {
   std::vector<std::string> calls;
   SpyAlertSink alerts;
 
@@ -265,7 +268,9 @@ TEST_CASE("short fails: confirmed hedge, place_short Error => ShortPlacementFail
   CHECK(alerts.count() == 0);
 }
 
-TEST_CASE("AC-3 late hedge fail (recheck false): Critical alert + emergency ran => NakedShortRemediated") {
+TEST_CASE(
+    "AC-3 late hedge fail (recheck false): Critical alert + emergency ran => "
+    "NakedShortRemediated") {
   std::vector<std::string> calls;
   SpyAlertSink alerts;
 
@@ -327,7 +332,9 @@ TEST_CASE("AC-3 recheck Error (can't prove live): SAME remediation path (fail-cl
   CHECK(alerts.last_level() == AlertLevel::Critical);
 }
 
-TEST_CASE("AC-3 null recheck seam: fail-closed => Critical alert + emergency ran => NakedShortRemediated") {
+TEST_CASE(
+    "AC-3 null recheck seam: fail-closed => Critical alert + emergency ran => "
+    "NakedShortRemediated") {
   std::vector<std::string> calls;
   SpyAlertSink alerts;
 
@@ -350,7 +357,9 @@ TEST_CASE("AC-3 null recheck seam: fail-closed => Critical alert + emergency ran
   CHECK(alerts.last_level() == AlertLevel::Critical);
 }
 
-TEST_CASE("AC-3 null emergency seam: still Critical-alerts, emergency_action_ran false, NakedShortRemediated") {
+TEST_CASE(
+    "AC-3 null emergency seam: still Critical-alerts, emergency_action_ran false, "
+    "NakedShortRemediated") {
   SpyAlertSink alerts;
 
   HedgeFirstSeams seams;
@@ -385,9 +394,9 @@ TEST_CASE("AC-3 alert send failure does NOT suppress emergency action") {
   const HedgeFirstResult result = execute_hedge_first(seams, alerts);
 
   CHECK(result.outcome == HedgeFirstOutcome::NakedShortRemediated);
-  CHECK(result.emergency_action_ran);          // emergency still ran...
+  CHECK(result.emergency_action_ran);  // emergency still ran...
   CHECK(count_of(calls, "emergency") == 1);
-  CHECK(alerts.count() == 1);                   // ...even though the alert send was attempted
+  CHECK(alerts.count() == 1);  // ...even though the alert send was attempted
   CHECK(alerts.last_level() == AlertLevel::Critical);
 }
 
@@ -431,7 +440,9 @@ TEST_CASE("confirmed hedge + null place_short seam: fail-closed => ShortPlacemen
   CHECK(alerts.count() == 0);
 }
 
-TEST_CASE("AC-3 emergency action returns Error: ran-but-failed => emergency_action_ran false, still remediated+alerted") {
+TEST_CASE(
+    "AC-3 emergency action returns Error: ran-but-failed => emergency_action_ran false, still "
+    "remediated+alerted") {
   std::vector<std::string> calls;
   SpyAlertSink alerts;
 
@@ -449,9 +460,9 @@ TEST_CASE("AC-3 emergency action returns Error: ran-but-failed => emergency_acti
   const HedgeFirstResult result = execute_hedge_first(seams, alerts);
 
   CHECK(result.outcome == HedgeFirstOutcome::NakedShortRemediated);
-  CHECK(count_of(calls, "emergency") == 1);     // it DID run
-  CHECK_FALSE(result.emergency_action_ran);     // ...but did not succeed
-  CHECK(alerts.count() == 1);                   // operator still alerted
+  CHECK(count_of(calls, "emergency") == 1);  // it DID run
+  CHECK_FALSE(result.emergency_action_ran);  // ...but did not succeed
+  CHECK(alerts.count() == 1);                // operator still alerted
   CHECK(alerts.last_level() == AlertLevel::Critical);
 }
 

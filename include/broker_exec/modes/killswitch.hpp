@@ -152,8 +152,8 @@ class KillController {
   std::function<bool(std::string_view)> authenticate_;
   std::function<Result<ports::Ok>(const KillCommand&)> persist_;
 
-  mutable std::mutex queue_mutex_;            // guards the handoff queue only
-  std::vector<KillCommand> queue_;            // control thread -> main loop
+  mutable std::mutex queue_mutex_;  // guards the handoff queue only
+  std::vector<KillCommand> queue_;  // control thread -> main loop
 };
 
 }  // namespace broker_exec::modes

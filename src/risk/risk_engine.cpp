@@ -18,8 +18,7 @@ using errors::make_error;
 // "risk[<level>]: <rule>". Built as a fresh RiskRejected Error (SuggestedAction
 // default for the category).
 [[nodiscard]] Error rejected(const char* level, const std::string& rule) {
-  return make_error(ErrorCategory::RiskRejected,
-                    std::string("risk[") + level + "]: " + rule);
+  return make_error(ErrorCategory::RiskRejected, std::string("risk[") + level + "]: " + rule);
 }
 
 }  // namespace
@@ -93,8 +92,7 @@ Result<ports::Ok> RiskEngine::check_instrument(const RiskLimits& limits,
 }
 
 Result<ports::Ok> RiskEngine::check_order(const domain::OrderIntent& intent,
-                                          const RiskLimits& limits,
-                                          const RiskState& state) const {
+                                          const RiskLimits& limits, const RiskState& state) const {
   // ── market-order block: a posture flag, evaluated from the intent only. ────
   if (limits.block_market_orders && intent.order_type == domain::OrderType::Market) {
     return fail(rejected("order", "market orders are blocked"));
@@ -118,8 +116,7 @@ Result<ports::Ok> RiskEngine::check_order(const domain::OrderIntent& intent,
   return ports::ok();
 }
 
-Result<ports::Ok> RiskEngine::check_all(const domain::OrderIntent& intent,
-                                        const RiskLimits& limits,
+Result<ports::Ok> RiskEngine::check_all(const domain::OrderIntent& intent, const RiskLimits& limits,
                                         const RiskState& state) const {
   // Fixed order, fail-closed: account -> strategy -> instrument -> order. The
   // FIRST violation wins and is returned named (AC-1).
@@ -147,8 +144,7 @@ std::function<Result<ports::Ok>()> make_risk_check(const RiskEngine& engine,
   // destroyed first. The engine is stateless, so the closure constructs a fresh
   // one rather than referencing the caller's. Drops into GateContext::risk_check.
   (void)engine;
-  return [intent, limits = std::move(limits),
-          state = std::move(state)]() -> Result<ports::Ok> {
+  return [intent, limits = std::move(limits), state = std::move(state)]() -> Result<ports::Ok> {
     return RiskEngine{}.check_all(intent, limits, state);
   };
 }

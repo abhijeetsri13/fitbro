@@ -201,8 +201,7 @@ class SharedRefdataCache {
   // The protocol described at the top of this header. Returns the artifact's
   // contents (cached or freshly fetched) or a typed Error. Never throws, never
   // returns a payload that failed `validate`, never writes one either.
-  [[nodiscard]] Result<std::string> get_or_fetch(const RefdataKey& key,
-                                                 const RefdataFetchFn& fetch,
+  [[nodiscard]] Result<std::string> get_or_fetch(const RefdataKey& key, const RefdataFetchFn& fetch,
                                                  const RefdataValidateFn& validate) const;
 
   [[nodiscard]] const SharedRefdataCacheConfig& config() const noexcept { return config_; }

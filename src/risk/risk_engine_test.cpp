@@ -1,7 +1,6 @@
 #include "broker_exec/risk/risk_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 
 #include "broker_exec/domain/enums.hpp"
@@ -48,11 +47,11 @@ namespace {
 // the clean state below passes all four levels.
 [[nodiscard]] RiskLimits clean_limits() {
   RiskLimits limits;
-  limits.daily_loss_limit_paise = 1'000'000;        // -10,000 rupees tolerated.
+  limits.daily_loss_limit_paise = 1'000'000;  // -10,000 rupees tolerated.
   limits.max_open_positions = 10;
-  limits.max_account_margin_paise = 10'000'000;     // 100,000 rupees.
-  limits.max_order_value_paise = 5'000'000;         // 50,000 rupees.
-  limits.block_market_orders = true;                // a Limit order is fine.
+  limits.max_account_margin_paise = 10'000'000;  // 100,000 rupees.
+  limits.max_order_value_paise = 5'000'000;      // 50,000 rupees.
+  limits.block_market_orders = true;             // a Limit order is fine.
   limits.max_slippage_bps = 50;
   limits.max_lots_per_strategy = 20;
   limits.max_lots_per_instrument = 20;
@@ -63,7 +62,7 @@ namespace {
 // A "clean" state: comfortably inside every armed limit above.
 [[nodiscard]] RiskState clean_state() {
   RiskState state;
-  state.account_pnl_paise = -100'000;   // small loss, well under the limit.
+  state.account_pnl_paise = -100'000;  // small loss, well under the limit.
   state.open_positions = 2;
   state.used_margin_paise = 1'000'000;
   state.order_value_paise = 500'000;

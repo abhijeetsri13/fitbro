@@ -121,7 +121,9 @@ void CircuitBreaker::record_success() {
   open_until_ = clock_.now_steady();
 }
 
-bool CircuitBreaker::is_open() const { return clock_.now_steady() < open_until_; }
+bool CircuitBreaker::is_open() const {
+  return clock_.now_steady() < open_until_;
+}
 
 // ── EndpointRateLimiter ─────────────────────────────────────────────────────
 
@@ -205,10 +207,16 @@ Result<ports::Ok> EndpointRateLimiter::acquire(EndpointClass ep, bool is_exit) {
   return bucket_for(ep).acquire(is_exit);
 }
 
-void EndpointRateLimiter::record_429(EndpointClass ep) { breaker_for(ep).record_429(); }
+void EndpointRateLimiter::record_429(EndpointClass ep) {
+  breaker_for(ep).record_429();
+}
 
-void EndpointRateLimiter::record_success(EndpointClass ep) { breaker_for(ep).record_success(); }
+void EndpointRateLimiter::record_success(EndpointClass ep) {
+  breaker_for(ep).record_success();
+}
 
-bool EndpointRateLimiter::breaker_open(EndpointClass ep) const { return breaker_for(ep).is_open(); }
+bool EndpointRateLimiter::breaker_open(EndpointClass ep) const {
+  return breaker_for(ep).is_open();
+}
 
 }  // namespace broker_exec::ratelimit

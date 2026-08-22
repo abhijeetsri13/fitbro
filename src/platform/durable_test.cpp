@@ -1,7 +1,6 @@
 #include "broker_exec/platform/durable.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdio>
 #include <filesystem>
 #include <string>

@@ -116,10 +116,9 @@ HedgeFirstResult execute_hedge_first(const HedgeFirstSeams& seams, ports::AlertS
   if (seams.emergency_action) {
     auto emergency = seams.emergency_action();
     result.emergency_action_ran = emergency.has_value();
-    result.detail = emergency.has_value()
-                        ? "naked short remediated: emergency action ran"
-                        : "naked short: emergency action returned error: " +
-                              error_tag(emergency.error());
+    result.detail = emergency.has_value() ? "naked short remediated: emergency action ran"
+                                          : "naked short: emergency action returned error: " +
+                                                error_tag(emergency.error());
   } else {
     result.emergency_action_ran = false;
     result.detail = "naked short: no emergency action configured; operator alerted";

@@ -43,8 +43,7 @@ class FundsView {
   // process clock). `fetch` is invoked to obtain a fresh snapshot; it returns a
   // typed Error on failure (which leaves the view stale). `cadence` is the
   // maximum age (in whole seconds) a snapshot may have and still be used.
-  FundsView(const ports::ClockPort& clock,
-            std::function<Result<ports::FundsSnapshot>()> fetch,
+  FundsView(const ports::ClockPort& clock, std::function<Result<ports::FundsSnapshot>()> fetch,
             std::chrono::seconds cadence)
       : clock_(clock), fetch_(std::move(fetch)), cadence_(cadence) {}
 

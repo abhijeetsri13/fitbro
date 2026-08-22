@@ -1,8 +1,7 @@
 #include "broker_exec/options/basket.hpp"
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <algorithm>
+#include <catch2/catch_test_macros.hpp>
 #include <cstddef>
 #include <set>
 #include <string>
@@ -73,7 +72,9 @@ class SpyAlertSink final : public ports::AlertSink {
 }
 
 // The deterministic broker order id a leg gets when placed.
-[[nodiscard]] std::string order_id_for(const std::string& leg_id) { return "ord-" + leg_id; }
+[[nodiscard]] std::string order_id_for(const std::string& leg_id) {
+  return "ord-" + leg_id;
+}
 
 // Count occurrences of a value in a call/placement log.
 [[nodiscard]] std::size_t count_of(const std::vector<std::string>& log, const std::string& v) {
@@ -94,7 +95,8 @@ class SpyAlertSink final : public ports::AlertSink {
 
 // ── AC-1: dependency honored (the never-orphan invariant) ────────────────────
 
-TEST_CASE("AC-1 dependency honored: prereq fails => dependent SkippedUnmetDependency, NEVER placed") {
+TEST_CASE(
+    "AC-1 dependency honored: prereq fails => dependent SkippedUnmetDependency, NEVER placed") {
   std::vector<std::string> place_log;
   std::vector<std::string> unwind_log;
   std::set<std::string> fail_ids = {"A"};  // root A fails
@@ -114,8 +116,8 @@ TEST_CASE("AC-1 dependency honored: prereq fails => dependent SkippedUnmetDepend
   };
 
   // A (fails) <- B <- C  : transitive skip.
-  const std::vector<BasketLeg> legs = {
-      BasketLeg{"A", {}}, BasketLeg{"B", {"A"}}, BasketLeg{"C", {"B"}}};
+  const std::vector<BasketLeg> legs = {BasketLeg{"A", {}}, BasketLeg{"B", {"A"}},
+                                       BasketLeg{"C", {"B"}}};
 
   const BasketResult result = execute_basket(legs, BasketConfig{}, seams, alerts);
 
@@ -145,8 +147,7 @@ TEST_CASE("AC-1 happy path: 3 independent legs all Executed => Complete, no aler
     return ports::ok();
   };
 
-  const std::vector<BasketLeg> legs = {
-      BasketLeg{"A", {}}, BasketLeg{"B", {}}, BasketLeg{"C", {}}};
+  const std::vector<BasketLeg> legs = {BasketLeg{"A", {}}, BasketLeg{"B", {}}, BasketLeg{"C", {}}};
 
   const BasketResult result = execute_basket(legs, BasketConfig{}, seams, alerts);
 
@@ -155,8 +156,8 @@ TEST_CASE("AC-1 happy path: 3 independent legs all Executed => Complete, no aler
   CHECK(find_leg(result, "B")->status == LegStatus::Executed);
   CHECK(find_leg(result, "C")->status == LegStatus::Executed);
   CHECK(find_leg(result, "A")->order_id == "ord-A");
-  CHECK(alerts.count() == 0);        // no alert on a whole basket
-  CHECK(unwind_log.empty());         // nothing unwound
+  CHECK(alerts.count() == 0);  // no alert on a whole basket
+  CHECK(unwind_log.empty());   // nothing unwound
   CHECK(place_log.size() == 3);
 }
 
@@ -175,8 +176,7 @@ TEST_CASE("AC-1 partial detection: 1 of 3 fails => outcome is a partial (not Com
   };
   seams.unwind_leg = [&](const std::string&) -> Result<ports::Ok> { return ports::ok(); };
 
-  const std::vector<BasketLeg> legs = {
-      BasketLeg{"A", {}}, BasketLeg{"B", {}}, BasketLeg{"C", {}}};
+  const std::vector<BasketLeg> legs = {BasketLeg{"A", {}}, BasketLeg{"B", {}}, BasketLeg{"C", {}}};
 
   const BasketResult result = execute_basket(legs, BasketConfig{}, seams, alerts);
 
@@ -186,7 +186,9 @@ TEST_CASE("AC-1 partial detection: 1 of 3 fails => outcome is a partial (not Com
 
 // ── AC-2: partial policy ─────────────────────────────────────────────────────
 
-TEST_CASE("AC-2 UnwindExecuted: C fails => A,B unwound NEWEST-FIRST, Critical alert, PartiallyExecutedUnwound") {
+TEST_CASE(
+    "AC-2 UnwindExecuted: C fails => A,B unwound NEWEST-FIRST, Critical alert, "
+    "PartiallyExecutedUnwound") {
   std::vector<std::string> place_log;
   std::vector<std::string> unwind_log;
   std::set<std::string> fail_ids = {"C"};
@@ -209,8 +211,7 @@ TEST_CASE("AC-2 UnwindExecuted: C fails => A,B unwound NEWEST-FIRST, Critical al
   config.on_leg_failure = LegFailurePolicy::UnwindExecuted;
 
   // A, B execute in order, then C fails.
-  const std::vector<BasketLeg> legs = {
-      BasketLeg{"A", {}}, BasketLeg{"B", {}}, BasketLeg{"C", {}}};
+  const std::vector<BasketLeg> legs = {BasketLeg{"A", {}}, BasketLeg{"B", {}}, BasketLeg{"C", {}}};
 
   const BasketResult result = execute_basket(legs, config, seams, alerts);
 
@@ -224,7 +225,8 @@ TEST_CASE("AC-2 UnwindExecuted: C fails => A,B unwound NEWEST-FIRST, Critical al
   CHECK(alerts.last_level() == AlertLevel::Critical);
 }
 
-TEST_CASE("AC-2 unwind failure is VISIBLE: failed unwind leaves leg Executed (not Unwound) + escalated") {
+TEST_CASE(
+    "AC-2 unwind failure is VISIBLE: failed unwind leaves leg Executed (not Unwound) + escalated") {
   std::vector<std::string> unwind_log;
   std::set<std::string> place_fail = {"C"};
   std::set<std::string> unwind_fail = {"ord-B"};  // B cannot be unwound
@@ -245,8 +247,7 @@ TEST_CASE("AC-2 unwind failure is VISIBLE: failed unwind leaves leg Executed (no
     return ports::ok();
   };
 
-  const std::vector<BasketLeg> legs = {
-      BasketLeg{"A", {}}, BasketLeg{"B", {}}, BasketLeg{"C", {}}};
+  const std::vector<BasketLeg> legs = {BasketLeg{"A", {}}, BasketLeg{"B", {}}, BasketLeg{"C", {}}};
 
   const BasketResult result = execute_basket(legs, BasketConfig{}, seams, alerts);
 
@@ -267,7 +268,9 @@ TEST_CASE("AC-2 unwind failure is VISIBLE: failed unwind leaves leg Executed (no
   CHECK(alerts.last_message().find("LIVE") != std::string::npos);
 }
 
-TEST_CASE("AC-2 LeaveAndAlert: a leg fails => executed legs NOT unwound, Warning alert, PartiallyExecutedLeft") {
+TEST_CASE(
+    "AC-2 LeaveAndAlert: a leg fails => executed legs NOT unwound, Warning alert, "
+    "PartiallyExecutedLeft") {
   std::vector<std::string> unwind_log;
   std::set<std::string> fail_ids = {"C"};
   SpyAlertSink alerts;
@@ -287,8 +290,7 @@ TEST_CASE("AC-2 LeaveAndAlert: a leg fails => executed legs NOT unwound, Warning
   BasketConfig config;
   config.on_leg_failure = LegFailurePolicy::LeaveAndAlert;
 
-  const std::vector<BasketLeg> legs = {
-      BasketLeg{"A", {}}, BasketLeg{"B", {}}, BasketLeg{"C", {}}};
+  const std::vector<BasketLeg> legs = {BasketLeg{"A", {}}, BasketLeg{"B", {}}, BasketLeg{"C", {}}};
 
   const BasketResult result = execute_basket(legs, config, seams, alerts);
 
@@ -302,7 +304,8 @@ TEST_CASE("AC-2 LeaveAndAlert: a leg fails => executed legs NOT unwound, Warning
 
 // ── AC-3: single-unit tracking ───────────────────────────────────────────────
 
-TEST_CASE("AC-3 single-unit: default true => tracked + basket_id set; explicit false => not tracked") {
+TEST_CASE(
+    "AC-3 single-unit: default true => tracked + basket_id set; explicit false => not tracked") {
   SpyAlertSink alerts;
   BasketSeams seams;
   seams.place_leg = [&](const BasketLeg& leg) -> Result<ports::BrokerAck> {

@@ -140,9 +140,8 @@ using errors::make_error;
 }
 
 [[nodiscard]] errors::Error row_error(std::size_t line_no, std::string_view reason) {
-  return make_error(ErrorCategory::Validation,
-                    "instrument master: row " + std::to_string(line_no) + ": " +
-                        std::string(reason));
+  return make_error(ErrorCategory::Validation, "instrument master: row " + std::to_string(line_no) +
+                                                   ": " + std::string(reason));
 }
 
 }  // namespace
@@ -187,17 +186,16 @@ Result<std::vector<domain::Instrument>> parse_instruments_csv(std::string_view c
   const auto col_tick = column_of("tick_size");
   const auto col_lot = column_of("lot_size");
 
-  for (const auto& [name, col] :
-       {std::pair{std::string_view{"instrument_token"}, col_token},
-        std::pair{std::string_view{"tradingsymbol"}, col_symbol},
-        std::pair{std::string_view{"exchange"}, col_exchange},
-        std::pair{std::string_view{"expiry"}, col_expiry},
-        std::pair{std::string_view{"tick_size"}, col_tick},
-        std::pair{std::string_view{"lot_size"}, col_lot}}) {
+  for (const auto& [name, col] : {std::pair{std::string_view{"instrument_token"}, col_token},
+                                  std::pair{std::string_view{"tradingsymbol"}, col_symbol},
+                                  std::pair{std::string_view{"exchange"}, col_exchange},
+                                  std::pair{std::string_view{"expiry"}, col_expiry},
+                                  std::pair{std::string_view{"tick_size"}, col_tick},
+                                  std::pair{std::string_view{"lot_size"}, col_lot}}) {
     if (!col.has_value()) {
-      return fail(make_error(ErrorCategory::Validation,
-                             "instrument master: missing required column '" + std::string(name) +
-                                 "'"));
+      return fail(
+          make_error(ErrorCategory::Validation,
+                     "instrument master: missing required column '" + std::string(name) + "'"));
     }
   }
 
@@ -225,8 +223,7 @@ Result<std::vector<domain::Instrument>> parse_instruments_csv(std::string_view c
     if (!lot.has_value()) {
       return fail(row_error(line_no, "unparseable lot_size"));
     }
-    const std::optional<std::int64_t> tick_paise =
-        domain::parse_decimal_paise(fields[*col_tick]);
+    const std::optional<std::int64_t> tick_paise = domain::parse_decimal_paise(fields[*col_tick]);
     if (!tick_paise.has_value()) {
       return fail(row_error(line_no, "unparseable tick_size"));
     }
@@ -340,21 +337,19 @@ Result<ports::Ok> InstrumentMaster::refresh() {
   std::error_code ec;
   std::filesystem::create_directories(cache_dir_, ec);
   if (ec) {
-    return fail(make_error(ErrorCategory::Internal,
-                           "instrument master: cannot create cache dir"));
+    return fail(make_error(ErrorCategory::Internal, "instrument master: cannot create cache dir"));
   }
 
   const std::filesystem::path file = cache_file_for(today);
   std::ofstream out(file, std::ios::binary | std::ios::trunc);
   if (!out) {
-    return fail(make_error(ErrorCategory::Internal,
-                           "instrument master: cannot open cache file for write"));
+    return fail(
+        make_error(ErrorCategory::Internal, "instrument master: cannot open cache file for write"));
   }
   out.write(csv.value().data(), static_cast<std::streamsize>(csv.value().size()));
   out.flush();
   if (!out) {
-    return fail(make_error(ErrorCategory::Internal,
-                           "instrument master: cache file write failed"));
+    return fail(make_error(ErrorCategory::Internal, "instrument master: cache file write failed"));
   }
 
   // Commit the "fresh" state atomically only after a fully successful parse AND
@@ -370,8 +365,8 @@ Result<ports::Ok> InstrumentMaster::load_cached_for(const std::string& iso_date)
 
   std::error_code ec;
   if (!std::filesystem::exists(file, ec) || ec) {
-    return fail(make_error(ErrorCategory::DataStale,
-                           "instrument master: no cache for date " + iso_date));
+    return fail(
+        make_error(ErrorCategory::DataStale, "instrument master: no cache for date " + iso_date));
   }
 
   std::ifstream in(file, std::ios::binary);
@@ -413,6 +408,8 @@ Result<ports::Ok> InstrumentMaster::require_fresh() const {
   return ports::ok();
 }
 
-bool InstrumentMaster::is_fresh() const { return require_fresh().has_value(); }
+bool InstrumentMaster::is_fresh() const {
+  return require_fresh().has_value();
+}
 
 }  // namespace broker_exec::refdata

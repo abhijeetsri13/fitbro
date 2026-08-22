@@ -2,13 +2,12 @@
 
 #include <cctype>
 #include <charconv>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/kite/http_client.hpp"
 #include "broker_exec/domain/redaction.hpp"

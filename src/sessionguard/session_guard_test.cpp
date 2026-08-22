@@ -1,7 +1,6 @@
 #include "broker_exec/sessionguard/session_guard.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 
 #include "broker_exec/errors/error.hpp"
@@ -68,8 +67,7 @@ TEST_CASE("require_op_allowed under NeedsReauth: entry blocked, exit/read allowe
   CHECK(entry.error().category == ErrorCategory::SessionExpired);
   CHECK(entry.error().action == SuggestedAction::ReEstablishSession);
   // The Error names the op and points at re-establishing the session.
-  CHECK(entry.error().message.find(std::string(to_string(OpClass::Entry))) !=
-        std::string::npos);
+  CHECK(entry.error().message.find(std::string(to_string(OpClass::Entry))) != std::string::npos);
   CHECK(entry.error().message.find("session") != std::string::npos);
 
   // The load-bearing invariant: exits + reconcile reads are ALWAYS allowed.
@@ -94,7 +92,7 @@ TEST_CASE("current=Failed freezes entries but still permits exits", "[sessiongua
   CHECK_FALSE(is_reauth_needed(p));  // Failed is NOT NeedsReauth
 
   REQUIRE_FALSE(require_op_allowed(p, OpClass::Entry).has_value());
-  CHECK(require_op_allowed(p, OpClass::Exit).has_value());          // exits still ok
+  CHECK(require_op_allowed(p, OpClass::Exit).has_value());  // exits still ok
   CHECK(require_op_allowed(p, OpClass::ReconcileRead).has_value());
 }
 
@@ -130,8 +128,7 @@ TEST_CASE("redaction: a token-shaped broker_error_text never leaks into the deta
   CHECK(p.detail.find("access_token") == std::string::npos);
 }
 
-TEST_CASE("to_string names are the stable observability contract for OpClass",
-          "[sessionguard]") {
+TEST_CASE("to_string names are the stable observability contract for OpClass", "[sessionguard]") {
   CHECK(to_string(OpClass::Entry) == "entry");
   CHECK(to_string(OpClass::Exit) == "exit");
   CHECK(to_string(OpClass::ReconcileRead) == "reconcile_read");

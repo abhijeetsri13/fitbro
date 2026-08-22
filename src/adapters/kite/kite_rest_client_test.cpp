@@ -1,14 +1,12 @@
 #include "broker_exec/adapters/kite/kite_rest_client.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <map>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/kite/http_client.hpp"
 #include "broker_exec/errors/error.hpp"
@@ -68,8 +66,8 @@ class FakeSecretProvider final : public SecretProvider {
   [[nodiscard]] Result<std::string> get(std::string_view key) const override {
     const auto it = values.find(std::string(key));
     if (it == values.end()) {
-      return broker_exec::fail(broker_exec::errors::make_error(ErrorCategory::Auth,
-                                                               "missing secret", "TEST"));
+      return broker_exec::fail(
+          broker_exec::errors::make_error(ErrorCategory::Auth, "missing secret", "TEST"));
     }
     return it->second;
   }
@@ -82,8 +80,8 @@ class FakeSecretProvider final : public SecretProvider {
   return secrets;
 }
 
-[[nodiscard]] HttpResponse json_response(long status, std::string body,
-                                         std::vector<std::pair<std::string, std::string>> headers = {}) {
+[[nodiscard]] HttpResponse json_response(
+    long status, std::string body, std::vector<std::pair<std::string, std::string>> headers = {}) {
   HttpResponse resp;
   resp.status_code = status;
   resp.body = std::move(body);
@@ -132,8 +130,9 @@ TEST_CASE("auth headers carry the Kite token and version", "[kite]") {
 
 TEST_CASE("orders / positions / margins success parse", "[kite]") {
   RecordedHttpClient http;
-  http.on(HttpRequest::Method::Get, "/orders",
-          json_response(200, R"({"status":"success","data":[{"order_id":"a","status":"COMPLETE"}]})"));
+  http.on(
+      HttpRequest::Method::Get, "/orders",
+      json_response(200, R"({"status":"success","data":[{"order_id":"a","status":"COMPLETE"}]})"));
   http.on(HttpRequest::Method::Get, "/portfolio/positions",
           json_response(200, R"({"status":"success","data":{"net":[],"day":[]}})"));
   http.on(HttpRequest::Method::Get, "/user/margins/equity",
@@ -171,9 +170,10 @@ TEST_CASE("instruments returns the raw CSV body", "[kite]") {
 
 TEST_CASE("401 TokenException maps to re-establish-session", "[kite]") {
   RecordedHttpClient http;
-  http.on(HttpRequest::Method::Get, "/orders",
-          json_response(401,
-                        R"({"status":"error","error_type":"TokenException","message":"Invalid session"})"));
+  http.on(
+      HttpRequest::Method::Get, "/orders",
+      json_response(
+          401, R"({"status":"error","error_type":"TokenException","message":"Invalid session"})"));
 
   const auto secrets = make_secrets();
   KiteRestClient client(http, secrets, "kite.api_key", "kite.access_token");
@@ -186,10 +186,11 @@ TEST_CASE("401 TokenException maps to re-establish-session", "[kite]") {
 
 TEST_CASE("429 maps to rate-limited and surfaces Retry-After", "[kite]") {
   RecordedHttpClient http;
-  http.on(HttpRequest::Method::Get, "/orders",
-          json_response(429,
-                        R"({"status":"error","error_type":"TooManyRequests","message":"Too many requests"})",
-                        {{"Retry-After", "2"}, {"X-RateLimit-Remaining", "0"}}));
+  http.on(
+      HttpRequest::Method::Get, "/orders",
+      json_response(
+          429, R"({"status":"error","error_type":"TooManyRequests","message":"Too many requests"})",
+          {{"Retry-After", "2"}, {"X-RateLimit-Remaining", "0"}}));
 
   const auto secrets = make_secrets();
   KiteRestClient client(http, secrets, "kite.api_key", "kite.access_token");
@@ -237,9 +238,10 @@ TEST_CASE("error text never leaks the access_token, even when echoed by the serv
   // The server error echoes the token verbatim in its message; scrub MUST hide
   // it before it reaches Error.message. The Authorization header/token must
   // never appear in any returned error string.
-  const std::string body = std::string(
-                               R"({"status":"error","error_type":"GeneralException","message":"auth failed for token )") +
-                           kAccessToken + R"("})";
+  const std::string body =
+      std::string(
+          R"({"status":"error","error_type":"GeneralException","message":"auth failed for token )") +
+      kAccessToken + R"("})";
 
   RecordedHttpClient http;
   http.on(HttpRequest::Method::Get, "/orders", json_response(400, body));
@@ -254,7 +256,7 @@ TEST_CASE("error text never leaks the access_token, even when echoed by the serv
   CHECK(err.message.find(kAccessToken) == std::string::npos);
   CHECK(err.message.find(kApiKey) == std::string::npos);
   CHECK(err.broker_code.find(kAccessToken) == std::string::npos);
-  CHECK(err.message.find("token") != std::string::npos);  // the word survives...
+  CHECK(err.message.find("token") != std::string::npos);     // the word survives...
   CHECK(err.message.find("REDACTED") != std::string::npos);  // ...the value does not
 }
 
@@ -263,9 +265,11 @@ TEST_CASE("a NetworkException reconciles first — never do-not-retry (the order
   // Kite can surface NetworkException with a 4xx status. The order's fate is
   // uncertain, so the verdict MUST be reconcile-first, not "fix input/do-not-retry".
   RecordedHttpClient http;
-  http.on(HttpRequest::Method::Post, "/orders/regular",
-          json_response(400,
-                        R"({"status":"error","error_type":"NetworkException","message":"order routing failed"})"));
+  http.on(
+      HttpRequest::Method::Post, "/orders/regular",
+      json_response(
+          400,
+          R"({"status":"error","error_type":"NetworkException","message":"order routing failed"})"));
 
   const auto secrets = make_secrets();
   KiteRestClient client(http, secrets, "kite.api_key", "kite.access_token");
@@ -292,9 +296,11 @@ TEST_CASE("a 5xx server error reconciles first", "[kite]") {
 
 TEST_CASE("a MarginException maps to insufficient funds", "[kite]") {
   RecordedHttpClient http;
-  http.on(HttpRequest::Method::Post, "/orders/regular",
-          json_response(400,
-                        R"({"status":"error","error_type":"MarginException","message":"insufficient funds"})"));
+  http.on(
+      HttpRequest::Method::Post, "/orders/regular",
+      json_response(
+          400,
+          R"({"status":"error","error_type":"MarginException","message":"insufficient funds"})"));
 
   const auto secrets = make_secrets();
   KiteRestClient client(http, secrets, "kite.api_key", "kite.access_token");

@@ -1,7 +1,6 @@
 #include "broker_exec/idempotency/idempotency.hpp"
 
 #include <nlohmann/json.hpp>
-
 #include <string>
 #include <string_view>
 #include <utility>
@@ -224,8 +223,7 @@ std::size_t IdempotencyIndex::rebuild_from_log(
   return by_signature_.size();
 }
 
-std::optional<std::string> IdempotencyIndex::existing_ref(
-    const domain::OrderIntent& intent) const {
+std::optional<std::string> IdempotencyIndex::existing_ref(const domain::OrderIntent& intent) const {
   return existing_ref_for_signature(signal_signature(intent));
 }
 

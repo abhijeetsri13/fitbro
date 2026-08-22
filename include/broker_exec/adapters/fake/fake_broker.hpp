@@ -94,8 +94,8 @@ struct FaultConfig {
 // raw-state hooks so a conformance test can assert what the broker "really"
 // holds independent of what the caller observed.
 struct BookEntry {
-  domain::Order order;     // The order as the broker sees it.
-  bool ack_returned;       // Did the caller receive the ack for this entry?
+  domain::Order order;      // The order as the broker sees it.
+  bool ack_returned;        // Did the caller receive the ack for this entry?
   std::int64_t placed_seq;  // Monotonic broker sequence (the ordering key).
 };
 
@@ -155,9 +155,9 @@ class FakeBroker final : public ports::BrokerPort {
   std::vector<BookEntry> book_;
   std::vector<domain::Trade> trades_;
   std::chrono::steady_clock::time_point start_steady_;
-  std::int64_t next_broker_seq_ = 1;   // Monotonic order id / ordering key source.
-  std::int64_t next_trade_seq_ = 1;    // Monotonic trade id source.
-  std::size_t request_count_ = 0;      // Accepted requests (rate-limit denominator).
+  std::int64_t next_broker_seq_ = 1;  // Monotonic order id / ordering key source.
+  std::int64_t next_trade_seq_ = 1;   // Monotonic trade id source.
+  std::size_t request_count_ = 0;     // Accepted requests (rate-limit denominator).
 };
 
 }  // namespace broker_exec::adapters::fake

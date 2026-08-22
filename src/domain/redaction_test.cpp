@@ -1,8 +1,7 @@
 #include "broker_exec/domain/redaction.hpp"
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <array>
+#include <catch2/catch_test_macros.hpp>
 #include <cstddef>
 #include <initializer_list>
 #include <string>
@@ -95,8 +94,9 @@ constexpr std::string_view kDashlessClientRef = "alpha-1a2b3c4d-deadbeefcafebabe
 
 TEST_CASE("a synthetic access_token is scrubbed from a log line, an exception, and a JSON record",
           "[domain][redaction]") {
-  const std::string log_line = "2026-06-27T10:00:00Z level=info event=login access_token=" +
-                               std::string(kFakeToken) + " account=acct-1";
+  const std::string log_line =
+      "2026-06-27T10:00:00Z level=info event=login access_token=" + std::string(kFakeToken) +
+      " account=acct-1";
   const std::string exception_text =
       "OAuth handshake failed: access_token=" + std::string(kFakeToken) + " was rejected";
   const std::string json_record = R"({"client_ref":"abc-123","op":"login","access_token":")" +
@@ -122,7 +122,8 @@ TEST_CASE("scrub is idempotent", "[domain][redaction]") {
   CHECK_FALSE(contains(once, kFakeToken));
 }
 
-TEST_CASE("named-secret key=value, URL params, and MPIN context are redacted", "[domain][redaction]") {
+TEST_CASE("named-secret key=value, URL params, and MPIN context are redacted",
+          "[domain][redaction]") {
   // key: value (log-shaped) and key=value (URL/query) forms.
   CHECK(contains(scrub("password=hunter2 next"), kRedactionMarker));
   CHECK_FALSE(contains(scrub("password=hunter2 next"), "hunter2"));
@@ -169,14 +170,15 @@ TEST_CASE("the ids this library mints and brokers send are id-shaped",
           "[domain][redaction][provenance]") {
   const std::string ref(kClientRef);
 
-  CHECK(is_provenance_id_shape(ref));                     // make_client_ref, canonical uuid
-  CHECK(is_provenance_id_shape(kDashlessClientRef));      // ... and the dashless uuid spelling
-  CHECK(is_provenance_id_shape(ref + "#3"));              // slicer child `<parent>#<k>`
-  CHECK(is_provenance_id_shape(ref + "#X"));              // IMP-13 exit ref `<parent>#X`
-  CHECK(is_provenance_id_shape(ref + "#X" + "#X"));       // an exit of an exit is still an id
-  CHECK(is_provenance_id_shape("alpha-1"));               // a short test-style ref
-  CHECK(is_provenance_id_shape("KOT_123-45"));            // separators may be '_' or '-'
-  CHECK(is_provenance_id_shape("-1a2b3c4d-deadbeef99"));  // an EMPTY strategy still leaves 2 segments
+  CHECK(is_provenance_id_shape(ref));                 // make_client_ref, canonical uuid
+  CHECK(is_provenance_id_shape(kDashlessClientRef));  // ... and the dashless uuid spelling
+  CHECK(is_provenance_id_shape(ref + "#3"));          // slicer child `<parent>#<k>`
+  CHECK(is_provenance_id_shape(ref + "#X"));          // IMP-13 exit ref `<parent>#X`
+  CHECK(is_provenance_id_shape(ref + "#X" + "#X"));   // an exit of an exit is still an id
+  CHECK(is_provenance_id_shape("alpha-1"));           // a short test-style ref
+  CHECK(is_provenance_id_shape("KOT_123-45"));        // separators may be '_' or '-'
+  CHECK(
+      is_provenance_id_shape("-1a2b3c4d-deadbeef99"));  // an EMPTY strategy still leaves 2 segments
 
   // Every one of them survives the column redaction byte for byte.
   CHECK(scrub_provenance_column(ref) == ref);
@@ -250,8 +252,8 @@ TEST_CASE("anything that is not an identifier fails the allowlist and is scrubbe
   CHECK_FALSE(is_provenance_id_shape("access_token=" + std::string(kFakeToken)));
   CHECK_FALSE(is_provenance_id_shape("https://api.kite.example/session?api_key=Ab12Cd34Ef56"));
   CHECK_FALSE(is_provenance_id_shape(R"({"client_ref":"alpha-1"})"));
-  CHECK_FALSE(is_provenance_id_shape("alpha 1a2b3c4d"));  // a space is not an id char
-  CHECK_FALSE(is_provenance_id_shape("kite.order.1"));    // '.' is not an id char
+  CHECK_FALSE(is_provenance_id_shape("alpha 1a2b3c4d"));            // a space is not an id char
+  CHECK_FALSE(is_provenance_id_shape("kite.order.1"));              // '.' is not an id char
   CHECK_FALSE(is_provenance_id_shape(std::string("bad\xff\xfe")));  // invalid UTF-8 bytes
 
   // Bounds: empty is not provenance, and a blob is not an id however it is spelt.
@@ -303,8 +305,9 @@ TEST_CASE("render_provenance_block: a real minted client_ref survives verbatim, 
       {"broker_order_id", "240627000123456"},  // a Kite 15-digit id
       {"strategy", "alpha"},
   });
-  CHECK(block == " [client_ref=alpha-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab"
-                 " broker_order_id=240627000123456 strategy=alpha]");
+  CHECK(block ==
+        " [client_ref=alpha-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab"
+        " broker_order_id=240627000123456 strategy=alpha]");
 
   // ...whereas the same ref inside a free-form body is still redacted. The two
   // paths stay separate; the body's rule is not weakened by the block existing.
@@ -348,10 +351,10 @@ TEST_CASE("render_provenance_block: the block grammar is UNFORGEABLE by a broker
   // Every structural byte is rejected wholesale, including control bytes that
   // would split the block when an operator greps a log line.
   constexpr std::array<std::string_view, 5> structural = {
-      "abc]def",  // would terminate the block early
-      "abc[def",  // would open a second block
-      "abc=def",  // would forge a key boundary
-      "abc def",  // would forge a field boundary
+      "abc]def",   // would terminate the block early
+      "abc[def",   // would open a second block
+      "abc=def",   // would forge a key boundary
+      "abc def",   // would forge a field boundary
       "abc\ndef",  // would split the line entirely
   };
   for (const std::string_view probe : structural) {
@@ -363,8 +366,8 @@ TEST_CASE("render_provenance_block: the block grammar is UNFORGEABLE by a broker
   // those bytes (they are outside the allowlist charset), so the minted ref and
   // the marker itself both pass through untouched.
   CHECK(contains(render_provenance_block({{"client_ref", kClientRef}}), kClientRef));
-  CHECK(contains(render_provenance_block({{"client_ref", kDashlessClientRef}}),
-                 kDashlessClientRef));
+  CHECK(
+      contains(render_provenance_block({{"client_ref", kDashlessClientRef}}), kDashlessClientRef));
 }
 
 // ── The block guard is an ALLOWLIST, not a denylist ──────────────────────────
@@ -398,8 +401,7 @@ TEST_CASE("render_provenance_block: NON-ASCII bytes cannot substitute for the bl
     CHECK(render_provenance_block({{"broker_order_id", probe.bytes}}) ==
           redacted_block("broker_order_id"));
     // ...and not one byte of the probe survives anywhere in the block.
-    CHECK_FALSE(contains(render_provenance_block({{"broker_order_id", probe.bytes}}),
-                         probe.bytes));
+    CHECK_FALSE(contains(render_provenance_block({{"broker_order_id", probe.bytes}}), probe.bytes));
   }
 
   // THE COMPOSED ATTACK, end to end: NBSP for the spaces and U+2028 for the line
@@ -490,10 +492,10 @@ TEST_CASE("scrub() DESTROYS the very option symbols this library trades: the M4 
   // high-entropy rule redacts any >=20-char run mixing letters and digits, and an
   // index-option symbol is exactly that. NIFTY survived only by being 17 chars —
   // pure luck of length, not a property anyone chose.
-  CHECK(scrub("NIFTY24JUN24000CE") == "NIFTY24JUN24000CE");           // 17 — survives
-  CHECK(scrub("FINNIFTY24JUN23000CE") == kRedactionMarker);           // 20 — destroyed
-  CHECK(scrub("BANKNIFTY24JUN52000CE") == kRedactionMarker);          // 21 — destroyed
-  CHECK(scrub("MIDCPNIFTY24JUN12000CE") == kRedactionMarker);         // 22 — destroyed
+  CHECK(scrub("NIFTY24JUN24000CE") == "NIFTY24JUN24000CE");    // 17 — survives
+  CHECK(scrub("FINNIFTY24JUN23000CE") == kRedactionMarker);    // 20 — destroyed
+  CHECK(scrub("BANKNIFTY24JUN52000CE") == kRedactionMarker);   // 21 — destroyed
+  CHECK(scrub("MIDCPNIFTY24JUN12000CE") == kRedactionMarker);  // 22 — destroyed
 
   // ...and the ID rule cannot rescue them: a symbol is ONE heterogeneous segment,
   // so it fails the homogeneity half and falls straight back to scrub().
@@ -504,8 +506,12 @@ TEST_CASE("scrub() DESTROYS the very option symbols this library trades: the M4 
 TEST_CASE("is_instrument_symbol_shape admits real symbols and nothing credential-shaped",
           "[domain][redaction][symbol]") {
   constexpr std::array<std::string_view, 6> symbols = {
-      "NIFTY24JUN24000CE",       "FINNIFTY24JUN23000CE", "BANKNIFTY24JUN52000CE",
-      "MIDCPNIFTY24JUN12000CE",  "INFY",                 "SENSEX24JUN80000PE",
+      "NIFTY24JUN24000CE",
+      "FINNIFTY24JUN23000CE",
+      "BANKNIFTY24JUN52000CE",
+      "MIDCPNIFTY24JUN12000CE",
+      "INFY",
+      "SENSEX24JUN80000PE",
   };
   for (const std::string_view symbol : symbols) {
     INFO(std::string(symbol));

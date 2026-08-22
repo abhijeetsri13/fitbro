@@ -1,5 +1,4 @@
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <string>
 
@@ -170,8 +169,9 @@ TEST_CASE("Aggregate value types compare by value", "[domain][types]") {
                     .price = Price::from_rupees(120, 50)};
   REQUIRE(trade == trade);
 
-  const Position pos{
-      .symbol = "NIFTY24JUN24000CE", .net_qty = Quantity::of(-25), .avg_price = Price::from_rupees(120, 50)};
+  const Position pos{.symbol = "NIFTY24JUN24000CE",
+                     .net_qty = Quantity::of(-25),
+                     .avg_price = Price::from_rupees(120, 50)};
   Position pos2 = pos;
   REQUIRE(pos == pos2);
   pos2.net_qty = Quantity::of(0);
@@ -230,6 +230,7 @@ TEST_CASE("Value types serialize to a stable, non-empty string", "[domain][seria
                     .price = Price::from_rupees(99, 95)};
   REQUIRE(trade.to_string().find("trade_id=T-9") != std::string::npos);
 
-  const Position pos{.symbol = "ACME", .net_qty = Quantity::of(10), .avg_price = Price::from_rupees(99, 95)};
+  const Position pos{
+      .symbol = "ACME", .net_qty = Quantity::of(10), .avg_price = Price::from_rupees(99, 95)};
   REQUIRE(pos.to_string().find("net_qty=10") != std::string::npos);
 }

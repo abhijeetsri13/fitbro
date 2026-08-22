@@ -33,8 +33,8 @@ namespace {
 [[nodiscard]] SessionPosture posture_for(session::SessionState state) {
   SessionPosture p;
   p.state = state;
-  p.allow_exits = true;             // risk-reducing — never withheld
-  p.allow_reconcile_reads = true;   // needed to reconcile — retried post-reauth
+  p.allow_exits = true;            // risk-reducing — never withheld
+  p.allow_reconcile_reads = true;  // needed to reconcile — retried post-reauth
   p.detail = make_detail(state);
   switch (state) {
     case session::SessionState::Healthy:
@@ -70,10 +70,10 @@ namespace {
 // category SessionExpired + action ReEstablishSession — so the runtime gets the
 // SAME typed verdict whether the dead token was caught at start-up or mid-session.
 [[nodiscard]] errors::Error frozen_entry_error(OpClass op) {
-  errors::Error err = errors::make_error(
-      errors::ErrorCategory::SessionExpired,
-      "sessionguard: entries frozen; operator must re-establish session (" +
-          std::string(to_string(op)) + " not allowed)");
+  errors::Error err =
+      errors::make_error(errors::ErrorCategory::SessionExpired,
+                         "sessionguard: entries frozen; operator must re-establish session (" +
+                             std::string(to_string(op)) + " not allowed)");
   err.action = errors::SuggestedAction::ReEstablishSession;
   return err;
 }
@@ -92,8 +92,7 @@ std::string_view to_string(OpClass op) noexcept {
   return "unknown";
 }
 
-SessionPosture assess_session(session::SessionState current,
-                              std::string_view broker_error_text) {
+SessionPosture assess_session(session::SessionState current, std::string_view broker_error_text) {
   // REUSE the single auth-failure signal: a mid-session reject that the versioned
   // classifier maps to SessionExpired means the token is auth-dead and OVERRIDES a
   // caller who still believes it is Healthy. Any other classification (margin,
@@ -101,12 +100,10 @@ SessionPosture assess_session(session::SessionState current,
   // posture reflects the caller's last known `current` state unchanged. We read
   // only the classifier's `reason`; we deliberately never touch broker_error_text
   // again (redaction).
-  const brokerreason::Classification c =
-      brokerreason::classify_rejection(broker_error_text);
-  const session::SessionState effective =
-      (c.reason == brokerreason::RejectReason::SessionExpired)
-          ? session::SessionState::NeedsReauth
-          : current;
+  const brokerreason::Classification c = brokerreason::classify_rejection(broker_error_text);
+  const session::SessionState effective = (c.reason == brokerreason::RejectReason::SessionExpired)
+                                              ? session::SessionState::NeedsReauth
+                                              : current;
   return posture_for(effective);
 }
 

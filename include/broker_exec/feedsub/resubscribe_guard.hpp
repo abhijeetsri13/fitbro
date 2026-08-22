@@ -52,16 +52,16 @@ namespace broker_exec::feedsub {
 // log-friendly names (see to_string) — renaming one is a breaking observability
 // change (NFR-8). Only `Live` is tradable.
 enum class TokenFeedState {
-  Subscribed,            // in the desired set; not currently awaiting a post-(re)connect
-                         // tick. The inert baseline — NOT tradable (it has not proven it
-                         // ticks since the last reconnect), but NOT mute either.
-  AwaitingFirstTick,     // re-subscribed after a (re)connect; no tick seen yet and the
-                         // first-tick deadline has NOT elapsed. NOT tradable (yet).
-  Live,                  // a tick arrived after the resubscribe — healthy. The ONLY
-                         // tradable state.
-  MuteAfterResubscribe   // re-subscribed, the first-tick deadline ELAPSED with no tick:
-                         // the connected-but-mute failure. NOT tradable; the caller
-                         // blocks trading on this token until it ticks again.
+  Subscribed,           // in the desired set; not currently awaiting a post-(re)connect
+                        // tick. The inert baseline — NOT tradable (it has not proven it
+                        // ticks since the last reconnect), but NOT mute either.
+  AwaitingFirstTick,    // re-subscribed after a (re)connect; no tick seen yet and the
+                        // first-tick deadline has NOT elapsed. NOT tradable (yet).
+  Live,                 // a tick arrived after the resubscribe — healthy. The ONLY
+                        // tradable state.
+  MuteAfterResubscribe  // re-subscribed, the first-tick deadline ELAPSED with no tick:
+                        // the connected-but-mute failure. NOT tradable; the caller
+                        // blocks trading on this token until it ticks again.
 };
 
 // Stable, log/serialization-friendly state names (NFR-8 observability contract).

@@ -69,8 +69,7 @@ using errors::make_error;
   }
   for (std::size_t i = 1; i < ext.size(); ++i) {
     const char c = ext[i];
-    const bool allowed =
-        (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    const bool allowed = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
     if (!allowed) {
       return false;
     }
@@ -127,12 +126,9 @@ using errors::make_error;
 // sibling account reading yesterday's artifact at the instant we publish today's
 // is exactly that. It is transient, so a persistent failure is classified
 // Transient (RetrySafe), not Internal: the caller should come back, not alert.
-[[nodiscard]] std::optional<errors::Error> write_atomically(const fs::path& target,
-                                                            const std::string& contents,
-                                                            const std::string& unique_suffix,
-                                                            int publish_attempts,
-                                                            const PublishRenameFn& publish,
-                                                            const LockWaitFn& wait) {
+[[nodiscard]] std::optional<errors::Error> write_atomically(
+    const fs::path& target, const std::string& contents, const std::string& unique_suffix,
+    int publish_attempts, const PublishRenameFn& publish, const LockWaitFn& wait) {
   fs::path tmp = target;
   tmp += ".tmp-" + unique_suffix;
 
@@ -313,9 +309,9 @@ int SharedRefdataCache::sweep_debris() const noexcept {
       return 0;
     }
     const fs::file_time_type now = fs::file_time_type::clock::now();
-    const std::chrono::seconds age =
-        config_.lock_staleness > std::chrono::seconds::zero() ? config_.lock_staleness
-                                                              : std::chrono::seconds{600};
+    const std::chrono::seconds age = config_.lock_staleness > std::chrono::seconds::zero()
+                                         ? config_.lock_staleness
+                                         : std::chrono::seconds{600};
 
     for (const auto& entry : fs::directory_iterator(config_.shared_root, ec)) {
       const std::string name = entry.path().filename().string();
@@ -477,14 +473,13 @@ namespace {
                                                  RefdataValidateFn validate) {
   return [cache = std::move(cache), broker = std::move(broker), segment = std::move(segment),
           extension = std::move(extension), trading_date_fn = std::move(trading_date_fn),
-          upstream = std::move(upstream),
-          validate = std::move(validate)]() -> Result<std::string> {
+          upstream = std::move(upstream), validate = std::move(validate)]() -> Result<std::string> {
     if (!cache) {
       return fail(make_error(ErrorCategory::Internal, "shared refdata cache: no cache wired"));
     }
     if (!trading_date_fn) {
-      return fail(make_error(ErrorCategory::Internal,
-                             "shared refdata cache: no trading-date seam wired"));
+      return fail(
+          make_error(ErrorCategory::Internal, "shared refdata cache: no trading-date seam wired"));
     }
     RefdataKey key;
     key.broker = broker;

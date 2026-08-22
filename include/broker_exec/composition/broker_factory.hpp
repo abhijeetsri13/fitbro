@@ -150,8 +150,7 @@ struct BrokerDeps {
 //     the same broker.
 // It promotes nothing in any adapter's real profile. Only the live smoke may.
 struct FixtureCertification {
-  explicit FixtureCertification(capabilities::CapabilitySet profile) noexcept
-      : asserted(profile) {}
+  explicit FixtureCertification(capabilities::CapabilitySet profile) noexcept : asserted(profile) {}
 
   capabilities::CapabilitySet asserted;
 };

@@ -53,8 +53,8 @@ using errors::SuggestedAction;
 // process must stop (Internal's default is RaiseAlert).
 [[nodiscard]] Error missing_component(SafeCheckId id, std::string_view component) {
   return blocking(ErrorCategory::Internal,
-                  std::string("boot: the ") + std::string(to_string(id)) +
-                      " check has no " + std::string(component) +
+                  std::string("boot: the ") + std::string(to_string(id)) + " check has no " +
+                      std::string(component) +
                       " to consult (composition fault: the component was not wired)");
 }
 
@@ -171,7 +171,9 @@ int SafeStartAudit::total() const noexcept {
   return sum;
 }
 
-bool SafeStartAudit::all_invoked() const noexcept { return !first_missing().has_value(); }
+bool SafeStartAudit::all_invoked() const noexcept {
+  return !first_missing().has_value();
+}
 
 std::optional<SafeCheckId> SafeStartAudit::first_missing() const noexcept {
   for (std::size_t i = 0; i < kSafeCheckCount; ++i) {
@@ -201,12 +203,11 @@ Result<ports::Ok> require_config_consistent(const config::Config& cfg, const Boo
     // Both ids are validated `[a-z0-9_-]` NAMES by the time they matter, but the
     // config one has not been through validate_account_id yet, so neither is
     // echoed here: a mismatch is reported without quoting either value.
-    return fail(blocking(
-        ErrorCategory::Validation,
-        "boot: the account this process was started for does not match "
-        "config engine.account_id — this binary would open a DIFFERENT account's "
-        "data tree than its configuration describes. Check the systemd instance "
-        "name (%i) against the configuration file"));
+    return fail(blocking(ErrorCategory::Validation,
+                         "boot: the account this process was started for does not match "
+                         "config engine.account_id — this binary would open a DIFFERENT account's "
+                         "data tree than its configuration describes. Check the systemd instance "
+                         "name (%i) against the configuration file"));
   }
   // The broker-roster check `config` deliberately cannot make (it must not know
   // which adapters exist). A typo here would otherwise survive until make_broker.
@@ -264,17 +265,16 @@ Result<std::vector<unsigned char>> read_pinned_public_key(const fs::path& path) 
   }
   // Strip ALL ASCII whitespace (a hex file written by an editor carries a
   // trailing newline; some carry CRLF).
-  text.erase(std::remove_if(text.begin(), text.end(),
-                            [](char c) noexcept {
-                              return c == '\n' || c == '\r' || c == ' ' || c == '\t';
-                            }),
+  text.erase(std::remove_if(
+                 text.begin(), text.end(),
+                 [](char c) noexcept { return c == '\n' || c == '\r' || c == ' ' || c == '\t'; }),
              text.end());
 
   if (text.size() != kEd25519PublicKeyBytes * 2) {
-    return fail(blocking(ErrorCategory::Validation,
-                         "boot: the pinned ledger public key must be exactly " +
-                             std::to_string(kEd25519PublicKeyBytes) +
-                             " bytes of hex (Ed25519 raw public key)"));
+    return fail(
+        blocking(ErrorCategory::Validation, "boot: the pinned ledger public key must be exactly " +
+                                                std::to_string(kEd25519PublicKeyBytes) +
+                                                " bytes of hex (Ed25519 raw public key)"));
   }
 
   std::vector<unsigned char> key;
@@ -418,14 +418,14 @@ Result<ports::Ok> require_no_unreconciled_orders(const std::vector<domain::Order
 
   // Redaction-safe: a count, a state name and a client_ref (an id the operator
   // needs in order to act) — never a price or a quantity.
-  return fail(blocking(
-      ErrorCategory::Validation,
-      "boot: the projection holds " + std::to_string(count) +
-          " order(s) whose send result was never confirmed (first state " +
-          std::string(first_state.empty() ? std::string_view("unknown") : first_state) +
-          "). Trading on top of one is the duplicate-order hazard this library exists to "
-          "prevent: it must be resolved against broker truth before a start. First: " +
-          (first_ref.empty() ? std::string("<no client_ref>") : first_ref)));
+  return fail(
+      blocking(ErrorCategory::Validation,
+               "boot: the projection holds " + std::to_string(count) +
+                   " order(s) whose send result was never confirmed (first state " +
+                   std::string(first_state.empty() ? std::string_view("unknown") : first_state) +
+                   "). Trading on top of one is the duplicate-order hazard this library exists to "
+                   "prevent: it must be resolved against broker truth before a start. First: " +
+                   (first_ref.empty() ? std::string("<no client_ref>") : first_ref)));
 }
 
 // ── The ten-check wiring ────────────────────────────────────────────────────
@@ -496,9 +496,9 @@ session::SafeStartContext make_safe_start_context(const SafeStartWiring& wiring,
         return require_crypto_keys(*secret_source, secret_name, pinned);
       };
     }
-    ctx.crypto_keys_check = instrumented(SafeCheckId::CryptoKeys, audit, std::move(inner),
-                                         missing_component(SafeCheckId::CryptoKeys,
-                                                           "secret provider"));
+    ctx.crypto_keys_check =
+        instrumented(SafeCheckId::CryptoKeys, audit, std::move(inner),
+                     missing_component(SafeCheckId::CryptoKeys, "secret provider"));
   }
 
   // 4. clock — a REAL second sample through clock::SkewStallDetector. boot took
@@ -517,10 +517,9 @@ session::SafeStartContext make_safe_start_context(const SafeStartWiring& wiring,
         }
         // reason() is documented safe to log. DataStale, because audit stamps and
         // wall-clock deadlines are the untrustworthy thing here.
-        return fail(blocking(ErrorCategory::DataStale,
-                             std::string("boot: clock is ") +
-                                 std::string(clock::to_string(status)) + " — " +
-                                 detector->reason()));
+        return fail(blocking(ErrorCategory::DataStale, std::string("boot: clock is ") +
+                                                           std::string(clock::to_string(status)) +
+                                                           " — " + detector->reason()));
       };
     }
     ctx.clock_check =
@@ -555,9 +554,9 @@ session::SafeStartContext make_safe_start_context(const SafeStartWiring& wiring,
     if (env_seam) {
       inner = [env_seam]() -> Result<ports::Ok> { return require_egress_ip_allowed(env_seam); };
     }
-    ctx.egress_ip_check = instrumented(SafeCheckId::EgressIp, audit, std::move(inner),
-                                       missing_component(SafeCheckId::EgressIp,
-                                                         "environment seam"));
+    ctx.egress_ip_check =
+        instrumented(SafeCheckId::EgressIp, audit, std::move(inner),
+                     missing_component(SafeCheckId::EgressIp, "environment seam"));
   }
 
   // 7. instrument-master — refdata::InstrumentMaster::require_fresh(), refreshing
@@ -616,9 +615,9 @@ session::SafeStartContext make_safe_start_context(const SafeStartWiring& wiring,
         return session::require_no_legacy_stops(rows.value());
       };
     }
-    ctx.legacy_stop_check = instrumented(SafeCheckId::LegacyStops, audit, std::move(inner),
-                                         missing_component(SafeCheckId::LegacyStops,
-                                                           "order projection"));
+    ctx.legacy_stop_check =
+        instrumented(SafeCheckId::LegacyStops, audit, std::move(inner),
+                     missing_component(SafeCheckId::LegacyStops, "order projection"));
   }
 
   // 10. reconciliation — the cold-boot LOCAL-PROJECTION precondition. See
@@ -637,9 +636,9 @@ session::SafeStartContext make_safe_start_context(const SafeStartWiring& wiring,
         return require_no_unreconciled_orders(rows.value());
       };
     }
-    ctx.reconciliation_check = instrumented(SafeCheckId::Reconciliation, audit, std::move(inner),
-                                            missing_component(SafeCheckId::Reconciliation,
-                                                              "order projection"));
+    ctx.reconciliation_check =
+        instrumented(SafeCheckId::Reconciliation, audit, std::move(inner),
+                     missing_component(SafeCheckId::Reconciliation, "order projection"));
   }
 
   return ctx;

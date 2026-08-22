@@ -119,10 +119,9 @@ MarginSafetyResult evaluate_margin(const MarginInputs& in, const MarginSafetyCon
   // raw broker text).
   result.detail = std::string(to_string(result.verdict)) + ": effective_required " +
                   result.effective_required.to_string() + " (base " +
-                  result.base_required.to_string() + ") vs available " +
-                  in.available.to_string() + " [worst_case=" +
-                  (result.used_worst_case ? "true" : "false") + ", boundary_flagged=" +
-                  (result.boundary_flagged ? "true" : "false") + "]";
+                  result.base_required.to_string() + ") vs available " + in.available.to_string() +
+                  " [worst_case=" + (result.used_worst_case ? "true" : "false") +
+                  ", boundary_flagged=" + (result.boundary_flagged ? "true" : "false") + "]";
 
   return result;
 }

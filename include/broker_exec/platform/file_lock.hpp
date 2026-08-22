@@ -108,9 +108,9 @@ inline constexpr std::chrono::seconds kDefaultLockStaleness{600};
 // The lock file's payload — operator-facing diagnostics plus the ownership
 // nonce. Redaction-safe: a pid, a timestamp and a synthetic id, never a secret.
 struct LockPayload {
-  long long pid = 0;         // the acquiring process id
-  std::string acquired_at;   // ISO-8601 UTC, "YYYY-MM-DDTHH:MM:SSZ"
-  std::string nonce;         // unique per acquisition: "<pid>-<epoch_ns>-<counter>"
+  long long pid = 0;        // the acquiring process id
+  std::string acquired_at;  // ISO-8601 UTC, "YYYY-MM-DDTHH:MM:SSZ"
+  std::string nonce;        // unique per acquisition: "<pid>-<epoch_ns>-<counter>"
 };
 
 // The on-disk payload text (exactly this shape; tests pin it):
@@ -142,8 +142,7 @@ class FileLock;
 // `staleness <= 0` disables takeover (a stale lock then blocks forever, which is
 // the safest possible posture and is what tests use to pin the "no steal" case).
 [[nodiscard]] Result<FileLock> try_acquire_file_lock(
-    const std::filesystem::path& lock_path,
-    std::chrono::seconds staleness = kDefaultLockStaleness);
+    const std::filesystem::path& lock_path, std::chrono::seconds staleness = kDefaultLockStaleness);
 
 // RAII guard over an acquired lock file. Move-only: a lock has exactly one
 // owner, and moving transfers the responsibility to release it.
@@ -188,8 +187,7 @@ class FileLock {
   void release() noexcept;
 
  private:
-  friend Result<FileLock> try_acquire_file_lock(const std::filesystem::path&,
-                                                std::chrono::seconds);
+  friend Result<FileLock> try_acquire_file_lock(const std::filesystem::path&, std::chrono::seconds);
 
   FileLock(std::filesystem::path lock_path, LockPayload payload) noexcept;
 
@@ -213,15 +211,15 @@ class FileLock {
 // arrange the world so that a step reports a failure it was already able to
 // report. NOT thread-safe, and not intended to be: it is a test seam.
 enum class LockFaultPoint {
-  AfterCreate,       // a create-exclusive at the lock path just succeeded
-  AfterStaleClaim,   // the atomic rename-claim of a stale lock just succeeded
+  AfterCreate,      // a create-exclusive at the lock path just succeeded
+  AfterStaleClaim,  // the atomic rename-claim of a stale lock just succeeded
 };
 
 // `lock_path` is the lock being acquired; `claim_path` is the private name the
 // stale file was moved to (empty for AfterCreate).
-using LockFaultHook = std::function<void(LockFaultPoint lock_fault_point,
-                                         const std::filesystem::path& lock_path,
-                                         const std::filesystem::path& claim_path)>;
+using LockFaultHook =
+    std::function<void(LockFaultPoint lock_fault_point, const std::filesystem::path& lock_path,
+                       const std::filesystem::path& claim_path)>;
 
 // Install (or, with an empty function, remove) the fault hook. TEST ONLY.
 void set_lock_fault_hook(LockFaultHook hook);

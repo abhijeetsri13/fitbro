@@ -70,14 +70,14 @@ namespace broker_exec::adapters::kotak {
 // broker strings, which callers must scrub before letting them reach any sink.
 // `map_kotak_error` is the only place in the adapter that does so.
 struct KotakEnvelope {
-  bool parsed = false;        // the body was a JSON object (or array of objects)
-  bool has_stat = false;      // a "stat" field was present
-  bool stat_ok = false;       // stat == "Ok" (case-insensitive)
-  bool has_fault = false;     // an API-gateway "fault" object was present
-  bool has_error = false;     // a login-style {"error":[{code,message}]} node
-  bool has_data = false;      // a "data" payload was present
-  std::string message;        // RAW errMsg / emsg / message / fault message
-  std::string status_code;    // RAW stCode / fault code, as text ("" when absent)
+  bool parsed = false;      // the body was a JSON object (or array of objects)
+  bool has_stat = false;    // a "stat" field was present
+  bool stat_ok = false;     // stat == "Ok" (case-insensitive)
+  bool has_fault = false;   // an API-gateway "fault" object was present
+  bool has_error = false;   // a login-style {"error":[{code,message}]} node
+  bool has_data = false;    // a "data" payload was present
+  std::string message;      // RAW errMsg / emsg / message / fault message
+  std::string status_code;  // RAW stCode / fault code, as text ("" when absent)
 };
 
 // Parse a Kotak response body into the envelope above. A non-JSON or non-object

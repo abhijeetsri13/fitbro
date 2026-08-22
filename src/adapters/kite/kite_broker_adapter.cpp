@@ -2,13 +2,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/square_off_exit.hpp"
 #include "broker_exec/domain/decimal_paise.hpp"
@@ -475,7 +474,7 @@ struct BrokerRow {
   std::string order_id;
   std::string tag;
   std::string symbol;
-  std::string side;      // Kite `transaction_type`: "BUY" / "SELL"
+  std::string side;  // Kite `transaction_type`: "BUY" / "SELL"
   std::string status;
   std::string product;   // Kite `product`: MIS / CNC / NRML — echoed onto the exit
   std::string exchange;  // Kite `exchange`: where the position ACTUALLY is
@@ -563,10 +562,10 @@ Result<std::string> KiteBrokerAdapter::resolve_exchange(const std::string& symbo
     return fail(resolved.error());
   }
   if (resolved.value().empty()) {
-    return fail(errors::make_error(
-        errors::ErrorCategory::Validation,
-        "kite: the exchange resolver returned an empty exchange for the symbol",
-        "KITE-EXCHANGE-EMPTY"));
+    return fail(
+        errors::make_error(errors::ErrorCategory::Validation,
+                           "kite: the exchange resolver returned an empty exchange for the symbol",
+                           "KITE-EXCHANGE-EMPTY"));
   }
   return resolved.value();
 }
@@ -924,8 +923,7 @@ Result<ports::Ok> KiteBrokerAdapter::square_off_banded(const std::string& broker
     // RMS, or an exchange-side purge). Both mean the same thing — the broker is
     // not going to close this position — and neither may be answered with `ok`,
     // nor with a silent re-fire. This is the one outcome that must reach a human.
-    if (exit_state == domain::OrderState::Rejected ||
-        exit_state == domain::OrderState::Cancelled) {
+    if (exit_state == domain::OrderState::Rejected || exit_state == domain::OrderState::Cancelled) {
       errors::Error error = errors::make_error(
           errors::ErrorCategory::BrokerRejected,
           exit_state == domain::OrderState::Rejected
@@ -1246,7 +1244,8 @@ Result<ports::FundsSnapshot> KiteBrokerAdapter::fetch_funds() {
     return funds;
   }
   const json& seg = data.value();
-  // Kite margins: `{ "available": { "live_balance": .. }, "utilised": { "debits": .. }, "net": .. }`.
+  // Kite margins: `{ "available": { "live_balance": .. }, "utilised": { "debits": .. }, "net": ..
+  // }`.
   bool malformed = false;
 
   // ── THE AVAILABLE BALANCE: TWO CANDIDATE SPELLINGS, ONE ANSWER ────────────

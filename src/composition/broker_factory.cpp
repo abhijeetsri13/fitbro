@@ -65,8 +65,7 @@ constexpr std::size_t kMaxEchoedValueChars = 16;
 // for anything that aggregates broker codes. The discriminator lives in the
 // message, which is where a local error's detail belongs.
 [[nodiscard]] errors::Error validation_error(std::string message) {
-  errors::Error error =
-      errors::make_error(errors::ErrorCategory::Validation, std::move(message));
+  errors::Error error = errors::make_error(errors::ErrorCategory::Validation, std::move(message));
   // Validation already defaults to DoNotRetry; set it explicitly so the contract
   // survives a change to default_action_for().
   error.action = errors::SuggestedAction::DoNotRetry;
@@ -179,15 +178,15 @@ class OwnedKiteBroker final : public ports::BrokerPort {
   }
 
  private:
-  adapters::kite::KiteRestClient rest_;      // must outlive adapter_
+  adapters::kite::KiteRestClient rest_;  // must outlive adapter_
   adapters::kite::KiteBrokerAdapter adapter_;
   capabilities::CapabilitySet admitted_;
 };
 
 class OwnedKotakBroker final : public ports::BrokerPort {
  public:
-  OwnedKotakBroker(const adapters::kotak::HttpClient& http,
-                   adapters::kotak::BundleProvider session, capabilities::CapabilitySet admitted)
+  OwnedKotakBroker(const adapters::kotak::HttpClient& http, adapters::kotak::BundleProvider session,
+                   capabilities::CapabilitySet admitted)
       : rest_(http, std::move(session)), adapter_(rest_), admitted_(admitted) {}
 
   OwnedKotakBroker(const OwnedKotakBroker&) = delete;
@@ -234,7 +233,7 @@ class OwnedKotakBroker final : public ports::BrokerPort {
   }
 
  private:
-  adapters::kotak::KotakRestClient rest_;      // must outlive adapter_
+  adapters::kotak::KotakRestClient rest_;  // must outlive adapter_
   adapters::kotak::KotakBrokerAdapter adapter_;
   capabilities::CapabilitySet admitted_;
 };
@@ -341,9 +340,8 @@ Result<BrokerAssembly> make_broker(BrokerChoice choice, const BrokerDeps& deps,
   // 1. Resolve the capability profile. The override, when present, is a TEST
   //    fixture posture (see FixtureCertification) and is recorded on the assembly.
   const bool override_in_effect = options.capability_override.has_value();
-  const capabilities::CapabilitySet profile = override_in_effect
-                                                  ? options.capability_override.value().asserted
-                                                  : real_capabilities(choice);
+  const capabilities::CapabilitySet profile =
+      override_in_effect ? options.capability_override.value().asserted : real_capabilities(choice);
 
   // 2. THE LOAD-TIME GATE (AC-2). Reject-only, fail-closed on Unknown, and it
   //    runs while nothing capable of reaching a broker exists yet.

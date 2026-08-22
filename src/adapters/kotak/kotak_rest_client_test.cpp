@@ -7,15 +7,13 @@
 #include "broker_exec/adapters/kotak/kotak_rest_client.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <deque>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/kotak/kotak_session.hpp"
 #include "broker_exec/adapters/kotak/kotak_transport.hpp"
@@ -143,9 +141,9 @@ class ScriptedHttpClient final : public HttpClient {
 }
 
 [[nodiscard]] nlohmann::json sample_order() {
-  return nlohmann::json{{"am", "NO"},   {"dq", "0"},    {"es", "nse_cm"}, {"mp", "0"},
-                        {"pc", "MIS"},  {"pf", "N"},    {"pr", "1450.5"}, {"pt", "L"},
-                        {"qt", "1"},    {"rt", "DAY"},  {"tp", "0"},      {"ts", "INFY-EQ"},
+  return nlohmann::json{{"am", "NO"},  {"dq", "0"},   {"es", "nse_cm"}, {"mp", "0"},
+                        {"pc", "MIS"}, {"pf", "N"},   {"pr", "1450.5"}, {"pt", "L"},
+                        {"qt", "1"},   {"rt", "DAY"}, {"tp", "0"},      {"ts", "INFY-EQ"},
                         {"tt", "B"}};
 }
 

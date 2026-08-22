@@ -78,11 +78,9 @@ class expected {
                                       std::is_nothrow_move_constructible_v<E>)
       : has_value_(other.has_value_) {
     if (has_value_) {
-      ::new (static_cast<void*>(std::addressof(storage_.value)))
-          T(std::move(other.storage_.value));
+      ::new (static_cast<void*>(std::addressof(storage_.value))) T(std::move(other.storage_.value));
     } else {
-      ::new (static_cast<void*>(std::addressof(storage_.error)))
-          E(std::move(other.storage_.error));
+      ::new (static_cast<void*>(std::addressof(storage_.error))) E(std::move(other.storage_.error));
     }
   }
 

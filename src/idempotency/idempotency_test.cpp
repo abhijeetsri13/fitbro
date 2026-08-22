@@ -1,7 +1,6 @@
 #include "broker_exec/idempotency/idempotency.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -337,21 +336,19 @@ TEST_CASE("child_ref / parent_of round-trip and is_child_ref", "[idempotency][ch
 
 // ── (b) deterministic signal signature ─────────────────────────────────────
 
-TEST_CASE("signal_signature is deterministic and excludes client_ref",
-          "[idempotency][signature]") {
+TEST_CASE("signal_signature is deterministic and excludes client_ref", "[idempotency][signature]") {
   OrderIntent a = sample_intent();
   OrderIntent b = sample_intent();
   a.client_ref = "alpha-aaaaaaaa-0001";
   b.client_ref = "alpha-bbbbbbbb-9999";  // different ref, same signal
 
   const std::string sig_a = idem::signal_signature(a);
-  REQUIRE(sig_a.size() == 64);  // SHA-256 hex
-  REQUIRE(sig_a == idem::signal_signature(a));     // stable across calls
-  REQUIRE(sig_a == idem::signal_signature(b));     // client_ref does not change it
+  REQUIRE(sig_a.size() == 64);                  // SHA-256 hex
+  REQUIRE(sig_a == idem::signal_signature(a));  // stable across calls
+  REQUIRE(sig_a == idem::signal_signature(b));  // client_ref does not change it
 }
 
-TEST_CASE("changing any order-defining field changes the signature",
-          "[idempotency][signature]") {
+TEST_CASE("changing any order-defining field changes the signature", "[idempotency][signature]") {
   const std::string base = idem::signal_signature(sample_intent());
 
   {
@@ -512,9 +509,13 @@ TEST_CASE("IMP-17: intent_payload_json NEVER THROWS on ill-formed caller text",
   // error_handler_t::replace makes the render total; the output is valid UTF-8, so
   // the intent log's canonical_text() is then a provable no-op on this path.
   OrderIntent bad = sample_intent();
-  bad.symbol = "NIFTY24\xFF" "JUN24000CE";  // 0xFF, never a valid UTF-8 lead
-  bad.strategy = "al\x80" "pha";            // bare continuation byte
-  bad.client_ref = "ref-\xE2\x82";          // truncated 3-byte run
+  bad.symbol =
+      "NIFTY24\xFF"
+      "JUN24000CE";  // 0xFF, never a valid UTF-8 lead
+  bad.strategy =
+      "al\x80"
+      "pha";                        // bare continuation byte
+  bad.client_ref = "ref-\xE2\x82";  // truncated 3-byte run
 
   std::string payload;
   REQUIRE_NOTHROW(payload = idem::intent_payload_json(bad));
@@ -525,8 +526,12 @@ TEST_CASE("IMP-17: intent_payload_json NEVER THROWS on ill-formed caller text",
   // have become U+FFFD rather than aborting the write.
   const nlohmann::json parsed = nlohmann::json::parse(payload, nullptr, false);
   REQUIRE_FALSE(parsed.is_discarded());
-  CHECK(parsed.at("symbol").get<std::string>() == "NIFTY24\xEF\xBF\xBD" "JUN24000CE");
-  CHECK(parsed.at("strategy").get<std::string>() == "al\xEF\xBF\xBD" "pha");
+  CHECK(parsed.at("symbol").get<std::string>() ==
+        "NIFTY24\xEF\xBF\xBD"
+        "JUN24000CE");
+  CHECK(parsed.at("strategy").get<std::string>() ==
+        "al\xEF\xBF\xBD"
+        "pha");
 
   // The dedupe key is UNAFFECTED: signal_signature() hashes the RAW fields
   // directly (canonical_signature_input, not this JSON projection), so restart
@@ -535,8 +540,7 @@ TEST_CASE("IMP-17: intent_payload_json NEVER THROWS on ill-formed caller text",
 
   // And an ASCII intent is BYTE-IDENTICAL to what the strict handler produced, so
   // no committed payload — or the intent-log hash over it — moves.
-  CHECK(idem::intent_payload_json(sample_intent()).find("NIFTY24JUN24000CE") !=
-        std::string::npos);
+  CHECK(idem::intent_payload_json(sample_intent()).find("NIFTY24JUN24000CE") != std::string::npos);
 }
 
 // ── (c) dedup: reserve twice -> one order ──────────────────────────────────
@@ -597,8 +601,7 @@ TEST_CASE("UNIQUE(client_ref) rejects a duplicate insert (store backstop)",
   REQUIRE(dup.error().category == broker_exec::errors::ErrorCategory::DuplicateOrder);
 }
 
-TEST_CASE("reserve finds a store-only duplicate even with an empty index",
-          "[idempotency][dedup]") {
+TEST_CASE("reserve finds a store-only duplicate even with an empty index", "[idempotency][dedup]") {
   // Simulates a torn restart: the order is in the store but the in-memory index
   // was not rebuilt for it. reserve must still return it (UNIQUE backstop path).
   auto opened = Store::open(":memory:");
@@ -618,7 +621,7 @@ TEST_CASE("reserve finds a store-only duplicate even with an empty index",
   order.state = OrderState::Acknowledged;
   REQUIRE(store.insert_order(order).has_value());
 
-  idem::IdempotencyIndex empty_index;  // not rebuilt
+  idem::IdempotencyIndex empty_index;   // not rebuilt
   idem::SeededUuidGenerator uuids(99);  // same seq -> mints the same ref
   auto r = idem::reserve(empty_index, store, uuids, intent.strategy, intent);
   REQUIRE(r.has_value());
@@ -632,8 +635,7 @@ TEST_CASE("reserve finds a store-only duplicate even with an empty index",
 TEST_CASE("rebuild_from_log recovers a prior submission so restart dedups",
           "[idempotency][restart]") {
   TempLog tmp("restart");
-  TestClock clock(std::chrono::steady_clock::time_point{},
-                  std::chrono::system_clock::time_point{});
+  TestClock clock(std::chrono::steady_clock::time_point{}, std::chrono::system_clock::time_point{});
 
   const OrderIntent intent = sample_intent();
   idem::SeededUuidGenerator uuids(123);
@@ -680,8 +682,7 @@ TEST_CASE("rebuild_from_log recovers a prior submission so restart dedups",
 TEST_CASE("rebuild_from_log skips opaque/foreign payloads without guessing",
           "[idempotency][restart]") {
   TempLog tmp("opaque");
-  TestClock clock(std::chrono::steady_clock::time_point{},
-                  std::chrono::system_clock::time_point{});
+  TestClock clock(std::chrono::steady_clock::time_point{}, std::chrono::system_clock::time_point{});
 
   std::vector<IntentRecord> records;
   {
@@ -704,8 +705,7 @@ TEST_CASE("rebuild_from_log skips opaque/foreign payloads without guessing",
 TEST_CASE("end-to-end: rebuilt index makes reserve return the prior ref after restart",
           "[idempotency][restart]") {
   TempLog tmp("e2e");
-  TestClock clock(std::chrono::steady_clock::time_point{},
-                  std::chrono::system_clock::time_point{});
+  TestClock clock(std::chrono::steady_clock::time_point{}, std::chrono::system_clock::time_point{});
   const OrderIntent intent = sample_intent();
 
   auto store_opened = Store::open(":memory:");

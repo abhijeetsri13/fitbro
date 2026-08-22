@@ -1,5 +1,9 @@
 #include "broker_exec/observability/structured_logger.hpp"
 
+#include <spdlog/logger.h>
+#include <spdlog/sinks/sink.h>
+#include <spdlog/spdlog.h>
+
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -9,10 +13,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-
-#include <spdlog/logger.h>
-#include <spdlog/sinks/sink.h>
-#include <spdlog/spdlog.h>
 
 #include "broker_exec/domain/redaction.hpp"
 #include "broker_exec/observability/audit_event.hpp"
@@ -66,9 +66,9 @@ namespace {
 // picks which orders become un-correlatable. So each sentinel carries a
 // per-process random tail (see make_sentinels) that no caller can know.
 struct ProvenanceColumn {
-  std::string_view key;              // the rendered JSON key
-  std::string AuditEvent::* member;  // the typed column it renders from
-  std::string_view tag;              // fixed, human-legible part of the sentinel
+  std::string_view key;             // the rendered JSON key
+  std::string AuditEvent::*member;  // the typed column it renders from
+  std::string_view tag;             // fixed, human-legible part of the sentinel
 };
 
 constexpr std::array<ProvenanceColumn, 5> kProvenanceColumns = {{
@@ -108,8 +108,7 @@ constexpr std::string_view kSentinelAlphabet = "ABCDFGHIJKLMNOQRSTUVWXYZ";
     // A platform with no usable random_device must still start: fall back to the
     // monotonic clock. Weaker, but the value is still not a compile-time constant
     // a caller can read off the source.
-    seed = static_cast<std::uint64_t>(
-        std::chrono::steady_clock::now().time_since_epoch().count());
+    seed = static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
   }
   std::mt19937_64 engine(seed);
   std::uniform_int_distribution<std::size_t> pick(0, kSentinelAlphabet.size() - 1);

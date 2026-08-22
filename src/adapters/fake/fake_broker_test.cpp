@@ -1,7 +1,6 @@
 #include "broker_exec/adapters/fake/fake_broker.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <string>
 #include <vector>

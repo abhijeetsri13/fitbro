@@ -19,8 +19,7 @@ namespace {
   std::string out;
   out.reserve(text.size());
   for (const char ch : text) {
-    out.push_back(static_cast<char>(
-        std::tolower(static_cast<unsigned char>(ch))));
+    out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
   }
   return out;
 }
@@ -28,11 +27,12 @@ namespace {
 // Trim ASCII whitespace from both ends (used only for exact status matching).
 [[nodiscard]] std::string_view trim(std::string_view s) {
   const auto is_ws = [](char c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' ||
-           c == '\v';
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
   };
-  while (!s.empty() && is_ws(s.front())) s.remove_prefix(1);
-  while (!s.empty() && is_ws(s.back())) s.remove_suffix(1);
+  while (!s.empty() && is_ws(s.front()))
+    s.remove_prefix(1);
+  while (!s.empty() && is_ws(s.back()))
+    s.remove_suffix(1);
   return s;
 }
 
@@ -118,7 +118,9 @@ struct ReasonRule {
   return c;
 }
 
-[[nodiscard]] Classification make(ReasonRule r) { return make(r.reason, r.posture, r.alert); }
+[[nodiscard]] Classification make(ReasonRule r) {
+  return make(r.reason, r.posture, r.alert);
+}
 
 }  // namespace
 
@@ -191,8 +193,7 @@ Classification classify_rejection(std::string_view raw_message) {
     return make(rule_for(RejectReason::Margin));
   }
   if (contains(m, "circuit") || contains(m, "price out of") || contains(m, "lpp") ||
-      contains(m, "dpr") || contains(m, "out of range") ||
-      contains(m, "outside the daily price")) {
+      contains(m, "dpr") || contains(m, "out of range") || contains(m, "outside the daily price")) {
     return make(rule_for(RejectReason::CircuitLimit));
   }
   if (contains(m, "freeze") || contains(m, "quantity higher than maximum") ||
@@ -215,10 +216,10 @@ Classification classify_rejection(std::string_view raw_message) {
   // bare "429" substring, which collides with arbitrary numeric order/exchange ids
   // (e.g. "rejected, ref 980429117") and would mis-classify a hard reject as
   // safe-to-retry => duplicate-order hazard. Only ANCHORED 429 forms count.
-  if (contains(m, "too many requests") || contains(m, "rate limit") ||
-      contains(m, "rate-limit") || contains(m, "ratelimit") || contains(m, "throttle") ||
-      contains(m, "429 too many") || contains(m, "http 429") || contains(m, "status 429") ||
-      contains(m, "error 429") || contains(m, "code 429") || contains(m, "(429)")) {
+  if (contains(m, "too many requests") || contains(m, "rate limit") || contains(m, "rate-limit") ||
+      contains(m, "ratelimit") || contains(m, "throttle") || contains(m, "429 too many") ||
+      contains(m, "http 429") || contains(m, "status 429") || contains(m, "error 429") ||
+      contains(m, "code 429") || contains(m, "(429)")) {
     return make(rule_for(RejectReason::RateLimited));
   }
   // AlreadyComplete: the broker says the order is already terminal. Two-keyword
@@ -241,10 +242,9 @@ Classification classify_rejection(std::string_view raw_message) {
   // words ("customs"); the explicit "no response from oms"/"kt-oms" cover the real
   // Kite OMS-failure strings, and even a miss here lands on the safe RmsBlock
   // (DoNotRetry), never on a retry-able posture.
-  if (contains(m, "timeout") || contains(m, "timed out") ||
-      contains(m, "no response from oms") || contains(m, "no response") ||
-      contains(m, "kt-oms") || contains(m, "gateway timeout") || contains(m, "502") ||
-      contains(m, "503") || contains(m, "504")) {
+  if (contains(m, "timeout") || contains(m, "timed out") || contains(m, "no response from oms") ||
+      contains(m, "no response") || contains(m, "kt-oms") || contains(m, "gateway timeout") ||
+      contains(m, "502") || contains(m, "503") || contains(m, "504")) {
     return make(rule_for(RejectReason::Indeterminate));
   }
   // Generic RmsBlock LAST among the matchers: broad "rms"/"blocked" keywords, so

@@ -36,9 +36,9 @@ namespace {
 // non-cancel/square-off order on risk grounds.
 [[nodiscard]] errors::Error blocked(errors::ErrorCategory category, TradingMode m, OrderOp op,
                                     std::string reason) {
-  errors::Error err = errors::make_error(
-      category, "mode " + std::string(to_string(m)) + ": " + reason + " (" +
-                    std::string(to_string(op)) + " not allowed)");
+  errors::Error err =
+      errors::make_error(category, "mode " + std::string(to_string(m)) + ": " + reason + " (" +
+                                       std::string(to_string(op)) + " not allowed)");
   err.action = errors::SuggestedAction::DoNotRetry;
   return err;
 }
@@ -109,13 +109,21 @@ ModePolicy policy_for(TradingMode m) noexcept {
   return locked_down();
 }
 
-bool can_place_entry(TradingMode m) noexcept { return policy_for(m).allows_entry; }
+bool can_place_entry(TradingMode m) noexcept {
+  return policy_for(m).allows_entry;
+}
 
-bool can_place_exit(TradingMode m) noexcept { return policy_for(m).allows_exit; }
+bool can_place_exit(TradingMode m) noexcept {
+  return policy_for(m).allows_exit;
+}
 
-bool will_execute_live(TradingMode m) noexcept { return policy_for(m).live_execution; }
+bool will_execute_live(TradingMode m) noexcept {
+  return policy_for(m).live_execution;
+}
 
-bool uses_recorded_clock(TradingMode m) noexcept { return policy_for(m).replay_clock; }
+bool uses_recorded_clock(TradingMode m) noexcept {
+  return policy_for(m).replay_clock;
+}
 
 Result<ports::Ok> require_op_allowed(TradingMode m, OrderOp op) {
   const ModePolicy policy = policy_for(m);
@@ -131,8 +139,8 @@ Result<ports::Ok> require_op_allowed(TradingMode m, OrderOp op) {
     if (op == OrderOp::Cancel || op == OrderOp::SquareOff) {
       return ports::ok();
     }
-    return fail(blocked(errors::ErrorCategory::RiskRejected, m, op,
-                        "permits only cancel/square-off"));
+    return fail(
+        blocked(errors::ErrorCategory::RiskRejected, m, op, "permits only cancel/square-off"));
   }
 
   // ExitOnly: risk-reducing exits only — Entry blocked, the rest allowed.

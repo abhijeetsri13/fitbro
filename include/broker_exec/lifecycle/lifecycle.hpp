@@ -50,12 +50,12 @@ namespace broker_exec::lifecycle {
 // a monotonic broker/exchange update sequence where a higher value is newer.
 // Two views with the same key are the same observation (idempotent re-apply).
 struct BrokerView {
-  std::string client_ref;          // The order's client-ref (Story 1.7).
-  std::string broker_order_id;     // Broker-assigned id; empty until acknowledged.
+  std::string client_ref;       // The order's client-ref (Story 1.7).
+  std::string broker_order_id;  // Broker-assigned id; empty until acknowledged.
   domain::OrderState observed_state{domain::OrderState::Unknown};
-  domain::Quantity filled_qty;     // Cumulative filled quantity in this view.
-  domain::Price avg_price;         // Volume-weighted average fill price in this view.
-  std::int64_t ordering_key{0};    // Monotonic update sequence; higher = newer.
+  domain::Quantity filled_qty;   // Cumulative filled quantity in this view.
+  domain::Price avg_price;       // Volume-weighted average fill price in this view.
+  std::int64_t ordering_key{0};  // Monotonic update sequence; higher = newer.
 };
 
 // What apply() did, for logging / metrics. Exactly one is returned per call.
@@ -125,8 +125,7 @@ class LifecycleEngine {
   // (fold_parent_state over all known children of this parent). The parent state
   // is also cached and queryable via parent_state().
   domain::OrderState apply_child(std::string_view parent_client_ref,
-                                 std::string_view child_client_ref,
-                                 domain::OrderState child_state);
+                                 std::string_view child_client_ref, domain::OrderState child_state);
 
   // The last ordering key applied for `client_ref`, if any view has been applied
   // to it yet. (A DroppedStale call does not advance it; an Applied/NoChange does.)

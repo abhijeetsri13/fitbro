@@ -11,13 +11,11 @@
 // Cross-platform: C++20 standard library only. No OS APIs, no `#ifdef`.
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <memory>
 
 #include "broker_exec/adapters/fake/fake_broker.hpp"
 #include "broker_exec/ports/broker_port.hpp"
 #include "broker_exec/ports/clock_port.hpp"
-
 #include "conformance_kit.hpp"
 
 namespace conf = broker_exec::conformance;
@@ -29,8 +27,7 @@ namespace {
 // shape an Epic-2/6 adapter factory will take (minus the FaultConfig, which a real
 // adapter ignores in favor of its recorded fixtures).
 conf::BrokerFactory fake_factory() {
-  return [](broker_exec::ports::ClockPort& clock,
-            broker_exec::adapters::fake::FaultConfig fault)
+  return [](broker_exec::ports::ClockPort& clock, broker_exec::adapters::fake::FaultConfig fault)
              -> std::unique_ptr<broker_exec::ports::BrokerPort> {
     return std::make_unique<broker_exec::adapters::fake::FakeBroker>(clock, fault);
   };
@@ -59,8 +56,7 @@ TEST_CASE("conformance: the full fault matrix produces zero duplicate orders",
   CHECK(report.ok());
 }
 
-TEST_CASE("conformance: every scenario in the matrix is exercised",
-          "[conformance][fault-matrix]") {
+TEST_CASE("conformance: every scenario in the matrix is exercised", "[conformance][fault-matrix]") {
   const conf::ConformanceReport report = conf::run_conformance(fake_factory());
   // The matrix covers the control + every FaultConfig knob (drop_ack,
   // ack_lost_but_placed, rate_limit, duplicate_fill, out_of_order, delay_ack):

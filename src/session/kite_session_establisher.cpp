@@ -5,11 +5,10 @@
 #include <array>
 #include <cctype>
 #include <cstddef>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/kite/http_client.hpp"
 #include "broker_exec/adapters/kite/kite_rest_client.hpp"
@@ -124,8 +123,8 @@ struct Envelope {
 }
 
 [[nodiscard]] bool is_token_failure(const HttpResponse& resp, const Envelope& env) {
-  return resp.status_code == 401 || resp.status_code == 403 ||
-         env.error_type == "TokenException" || env.error_type == "PermissionException";
+  return resp.status_code == 401 || resp.status_code == 403 || env.error_type == "TokenException" ||
+         env.error_type == "PermissionException";
 }
 
 }  // namespace
@@ -160,8 +159,8 @@ Result<SessionState> KiteSessionEstablisher::establish(std::string request_token
   const std::string checksum = sha256_hex(api_key.value(), request_token, api_secret.value());
   if (checksum.empty()) {
     // A crypto failure — never echo any input.
-    return broker_exec::fail(errors::make_error(
-        errors::ErrorCategory::Internal, "kite: session checksum computation failed"));
+    return broker_exec::fail(errors::make_error(errors::ErrorCategory::Internal,
+                                                "kite: session checksum computation failed"));
   }
 
   // Form-encoded body for the UNauthenticated /session/token exchange. No
@@ -202,9 +201,9 @@ Result<SessionState> KiteSessionEstablisher::establish(std::string request_token
     }
   }
   if (access_token.empty()) {
-    return broker_exec::fail(errors::make_error(
-        errors::ErrorCategory::Unknown, "kite: session response missing access_token",
-        "HTTP " + std::to_string(r.status_code)));
+    return broker_exec::fail(errors::make_error(errors::ErrorCategory::Unknown,
+                                                "kite: session response missing access_token",
+                                                "HTTP " + std::to_string(r.status_code)));
   }
 
   // Persist the daily token ENCRYPTED at rest. The TokenStore Error is already

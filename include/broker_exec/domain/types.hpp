@@ -13,13 +13,13 @@ namespace broker_exec::domain {
 // master (Story 2.6). Symbol<->token plus the derived lot/tick/freeze/expiry
 // the validation gate needs. Value type with full value-equality.
 struct Instrument {
-  std::string symbol;       // Trading symbol, e.g. "NIFTY24JUN24000CE".
-  std::int64_t token{0};    // Broker instrument token.
-  std::string exchange;     // e.g. "NFO", "NSE".
-  Quantity lot_size;        // Minimum tradable / lot-aligned unit.
-  Price tick_size;          // Minimum price increment.
-  Quantity freeze_qty;      // Per-order exchange freeze ceiling (over => slice).
-  std::string expiry;       // ISO date "YYYY-MM-DD"; empty for cash equities.
+  std::string symbol;     // Trading symbol, e.g. "NIFTY24JUN24000CE".
+  std::int64_t token{0};  // Broker instrument token.
+  std::string exchange;   // e.g. "NFO", "NSE".
+  Quantity lot_size;      // Minimum tradable / lot-aligned unit.
+  Price tick_size;        // Minimum price increment.
+  Quantity freeze_qty;    // Per-order exchange freeze ceiling (over => slice).
+  std::string expiry;     // ISO date "YYYY-MM-DD"; empty for cash equities.
 
   [[nodiscard]] bool operator==(const Instrument&) const = default;
 

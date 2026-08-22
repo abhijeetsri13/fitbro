@@ -14,8 +14,7 @@ namespace {
 // failing that, their broker_order_ids match (the fallback). Empty fields never
 // match — an unacknowledged local order with no broker id only matches by ref.
 [[nodiscard]] bool same_order(const domain::Order& local, const domain::Order& broker) noexcept {
-  if (!local.intent.client_ref.empty() &&
-      local.intent.client_ref == broker.intent.client_ref) {
+  if (!local.intent.client_ref.empty() && local.intent.client_ref == broker.intent.client_ref) {
     return true;
   }
   if (!local.broker_order_id.empty() && local.broker_order_id == broker.broker_order_id) {
@@ -127,8 +126,8 @@ ReconcileOutcome ReconcileApplier::apply(const ReconcileResult& result,
     // the match came via the broker_order_id fallback with an empty client_ref
     // (an empty key would collide all such orders into one bucket).
     lifecycle::BrokerView view;
-    view.client_ref = !match->intent.client_ref.empty() ? match->intent.client_ref
-                                                         : match->broker_order_id;
+    view.client_ref =
+        !match->intent.client_ref.empty() ? match->intent.client_ref : match->broker_order_id;
     view.broker_order_id = broker_order.broker_order_id;
     view.observed_state = broker_order.state;
     view.filled_qty = broker_order.filled_qty;
@@ -183,8 +182,7 @@ ReconcileOutcome ReconcileApplier::apply(const ReconcileResult& result,
   return outcome;
 }
 
-std::chrono::milliseconds next_cadence(const ReconcileState& state,
-                                       std::chrono::milliseconds tight,
+std::chrono::milliseconds next_cadence(const ReconcileState& state, std::chrono::milliseconds tight,
                                        std::chrono::milliseconds loose) {
   return (state.any_inflight || state.any_open_position) ? tight : loose;
 }

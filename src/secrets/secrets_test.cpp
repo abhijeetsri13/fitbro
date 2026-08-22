@@ -1,8 +1,4 @@
-#include "broker_exec/secrets/env_secret_provider.hpp"
-#include "broker_exec/secrets/token_store.hpp"
-
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -14,6 +10,8 @@
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/ports/secret_provider.hpp"
 #include "broker_exec/result.hpp"
+#include "broker_exec/secrets/env_secret_provider.hpp"
+#include "broker_exec/secrets/token_store.hpp"
 
 // POSIX-only: AC-1 ("mode 0600 in a 0700 dir") can only be asserted by reading
 // the real mode bits via stat(2). MSVC/Windows has no equivalent owner-only
@@ -60,9 +58,8 @@ struct TempDir {
   fs::path path;
 
   explicit TempDir(const std::string& tag)
-      : path(fs::temp_directory_path() /
-             ("broker_exec_secrets_" + tag + "_" +
-              std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
+      : path(fs::temp_directory_path() / ("broker_exec_secrets_" + tag + "_" +
+                                          std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
     std::error_code ec;
     fs::create_directories(path, ec);
   }

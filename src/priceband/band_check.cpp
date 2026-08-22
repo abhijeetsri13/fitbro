@@ -162,10 +162,10 @@ Result<ports::Ok> require_band_ok(domain::Side side, domain::OrderType order_typ
 
   // Redaction-safe Error: names the verdict + side only, no prices/secrets.
   // Validation category + BlockStrategy action so a gate halts the entry.
-  errors::Error err = errors::make_error(
-      errors::ErrorCategory::Validation,
-      "price band: " + std::string(to_string(result.verdict)) + " (" +
-          std::string(domain::to_string(side)) + ") — entry outside circuit/LPP band");
+  errors::Error err = errors::make_error(errors::ErrorCategory::Validation,
+                                         "price band: " + std::string(to_string(result.verdict)) +
+                                             " (" + std::string(domain::to_string(side)) +
+                                             ") — entry outside circuit/LPP band");
   err.action = errors::SuggestedAction::BlockStrategy;
   return fail(err);
 }

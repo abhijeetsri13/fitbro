@@ -270,8 +270,7 @@ void fire_fault(LockFaultPoint point, const fs::path& lock_path, const fs::path&
       return make_error(ErrorCategory::Transient,
                         "file lock: re-acquired by another process during takeover");
     }
-    return make_error(ErrorCategory::Internal,
-                      "file lock: cannot create lock file after takeover");
+    return make_error(ErrorCategory::Internal, "file lock: cannot create lock file after takeover");
   }
   fire_fault(LockFaultPoint::AfterCreate, lock_path, claim_path);
 
@@ -307,8 +306,9 @@ void fire_fault(LockFaultPoint point, const fs::path& lock_path, const fs::path&
                         "file lock: stale takeover aborted and the displaced lock could NOT be "
                         "restored (a claimed-lock '.stale-' file remains beside it)");
     }
-    return make_error(ErrorCategory::Transient,
-                      "file lock: stale takeover aborted - the lock was live and has been restored");
+    return make_error(
+        ErrorCategory::Transient,
+        "file lock: stale takeover aborted - the lock was live and has been restored");
   }
 
   fs::remove(claim_path, ec);  // best-effort: the corpse is ours to bury
@@ -392,7 +392,9 @@ FileLock& FileLock::operator=(FileLock&& other) noexcept {
   return *this;
 }
 
-FileLock::~FileLock() { release(); }
+FileLock::~FileLock() {
+  release();
+}
 
 bool FileLock::still_ours() const noexcept {
   if (!held_) {
@@ -441,7 +443,9 @@ void FileLock::release() noexcept {
   }
 }
 
-void set_lock_fault_hook(LockFaultHook hook) { g_lock_fault_hook = std::move(hook); }
+void set_lock_fault_hook(LockFaultHook hook) {
+  g_lock_fault_hook = std::move(hook);
+}
 
 Result<FileLock> try_acquire_file_lock(const std::filesystem::path& lock_path,
                                        std::chrono::seconds staleness) {
@@ -482,8 +486,8 @@ Result<FileLock> try_acquire_file_lock(const std::filesystem::path& lock_path,
                              "file lock: lock file age unreadable - failing closed"));
     }
     if (!*stale) {
-      return fail(make_error(ErrorCategory::Transient,
-                             "file lock: already held by another process"));
+      return fail(
+          make_error(ErrorCategory::Transient, "file lock: already held by another process"));
     }
 
     // GUARANTEE 4: age alone does not license a takeover. The file must also
@@ -519,8 +523,8 @@ Result<FileLock> try_acquire_file_lock(const std::filesystem::path& lock_path,
   }
   const std::optional<LockPayload> parsed = parse_lock_payload(*back);
   if (!parsed.has_value() || parsed->nonce != payload.nonce) {
-    return fail(make_error(ErrorCategory::Transient,
-                           "file lock: lost the lock to a concurrent takeover"));
+    return fail(
+        make_error(ErrorCategory::Transient, "file lock: lost the lock to a concurrent takeover"));
   }
 
   return FileLock(lock_path, std::move(payload));

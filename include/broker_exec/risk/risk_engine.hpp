@@ -68,17 +68,17 @@ struct RiskLimits {
 // real wiring lands in later stories). The engine reads it; it never mutates it.
 struct RiskState {
   // ── account ──────────────────────────────────────────────────────────────
-  std::int64_t account_pnl_paise = 0;   // Signed; negative = loss.
-  int open_positions = 0;               // Currently open position count.
-  std::int64_t used_margin_paise = 0;   // Margin already committed.
+  std::int64_t account_pnl_paise = 0;  // Signed; negative = loss.
+  int open_positions = 0;              // Currently open position count.
+  std::int64_t used_margin_paise = 0;  // Margin already committed.
 
   // ── this order ───────────────────────────────────────────────────────────
-  std::int64_t order_value_paise = 0;   // This order's notional (0 = unknown).
+  std::int64_t order_value_paise = 0;  // This order's notional (0 = unknown).
   // True when order_value_paise is a real estimate. false for a Market order
   // with no estimate: the checks that NEED the value (account margin + order
   // value) then FAIL-CLOSED, but only where their limit is armed.
   bool order_value_known = true;
-  int order_lots = 0;                   // Lots this order adds.
+  int order_lots = 0;  // Lots this order adds.
   // This order's estimated slippage (bps). Supplied directly; evaluated
   // independently of order_value_known (NOT fail-closed on an unknown value).
   int slippage_bps = 0;
@@ -94,7 +94,7 @@ struct RiskState {
   bool strategy_enabled = true;
 
   // ── instrument ───────────────────────────────────────────────────────────
-  int instrument_lots = 0;              // This instrument's current lots.
+  int instrument_lots = 0;  // This instrument's current lots.
   // false = the price is illiquid / stale and not tradable -> block.
   bool data_tradable = true;
 };
@@ -128,8 +128,7 @@ class RiskEngine {
   // order; the FIRST violation is returned, named. This is what the runtime
   // binds as the gate's injected `risk_check` (Story 2.8).
   [[nodiscard]] Result<ports::Ok> check_all(const domain::OrderIntent& intent,
-                                            const RiskLimits& limits,
-                                            const RiskState& state) const;
+                                            const RiskLimits& limits, const RiskState& state) const;
 };
 
 // Adapter: produce a nullary predicate bound to (intent, limits, state) that
@@ -138,7 +137,8 @@ class RiskEngine {
 // at bind time) and the engine is stateless, so the closure is self-contained
 // with no external lifetime dependency and is safe to outlive every argument.
 [[nodiscard]] std::function<Result<ports::Ok>()> make_risk_check(const RiskEngine& engine,
-                                                                const domain::OrderIntent& intent,
-                                                                RiskLimits limits, RiskState state);
+                                                                 const domain::OrderIntent& intent,
+                                                                 RiskLimits limits,
+                                                                 RiskState state);
 
 }  // namespace broker_exec::risk

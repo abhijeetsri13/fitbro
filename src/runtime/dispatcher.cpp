@@ -219,8 +219,7 @@ Result<Order> Dispatcher::place(std::string_view strategy, const OrderIntent& in
   // FAILURE. Decide UNKNOWN (reconcile-first / ambiguous) vs Rejected (clean
   // do-not-retry verdict). EITHER WAY: never an immediate repeat (FR-10).
   const Error& err = ack.error();
-  const OrderState resolved =
-      is_reconcile_first(err) ? OrderState::Unknown : OrderState::Rejected;
+  const OrderState resolved = is_reconcile_first(err) ? OrderState::Unknown : OrderState::Rejected;
 
   Order order = make_order(placed, resolved);
   if (auto ins = store_.insert_order(order); !ins) {

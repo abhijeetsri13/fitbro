@@ -7,7 +7,6 @@
 #include "broker_exec/adapters/kotak/kotak_ws_protocol.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -18,8 +17,8 @@
 using broker_exec::adapters::kotak::build_subscribe_frame;
 using broker_exec::adapters::kotak::build_unsubscribe_frame;
 using broker_exec::adapters::kotak::classify_message;
-using broker_exec::adapters::kotak::KotakMessageKind;
 using broker_exec::adapters::kotak::kotak_capabilities;
+using broker_exec::adapters::kotak::KotakMessageKind;
 using broker_exec::adapters::kotak::KotakSubscription;
 using broker_exec::adapters::kotak::parse_subscription_frame;
 using broker_exec::capabilities::Capability;

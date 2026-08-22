@@ -1,7 +1,4 @@
-#include "broker_exec/reconcile/reconciler.hpp"
-
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstddef>
 #include <string>
@@ -14,6 +11,7 @@
 #include "broker_exec/domain/types.hpp"
 #include "broker_exec/lifecycle/lifecycle.hpp"
 #include "broker_exec/ports/alert_sink.hpp"
+#include "broker_exec/reconcile/reconciler.hpp"
 
 using broker_exec::domain::Order;
 using broker_exec::domain::OrderState;
@@ -99,9 +97,9 @@ rec::ReconcileResult result_with(std::vector<Order> orders, std::int64_t orderin
 // ── fetch (AC-1): reads-only, all fields populated; a read failure -> Error ──
 
 TEST_CASE("fetch: drives a FakeBroker and populates the immutable result", "[reconcile]") {
-  broker_exec::clock::TestClock clock(std::chrono::steady_clock::time_point{},
-                                      std::chrono::system_clock::time_point{} +
-                                          std::chrono::seconds{42});
+  broker_exec::clock::TestClock clock(
+      std::chrono::steady_clock::time_point{},
+      std::chrono::system_clock::time_point{} + std::chrono::seconds{42});
   fake::FakeBroker broker(clock);
   broker.set_funds({broker_exec::domain::Money::from_rupees(5000),
                     broker_exec::domain::Money::from_rupees(100)});
@@ -125,8 +123,7 @@ TEST_CASE("fetch: drives a FakeBroker and populates the immutable result", "[rec
   CHECK_FALSE(result.trades.empty());
   CHECK_FALSE(result.positions.empty());
   CHECK(result.ordering_key == 7);
-  CHECK(result.fetched_at ==
-        std::chrono::system_clock::time_point{} + std::chrono::seconds{42});
+  CHECK(result.fetched_at == std::chrono::system_clock::time_point{} + std::chrono::seconds{42});
   CHECK(result.funds.available_margin == broker_exec::domain::Money::from_rupees(5000));
 }
 
@@ -314,14 +311,12 @@ TEST_CASE("apply: a vanished terminal local order is NOT a mismatch", "[reconcil
 
 TEST_CASE("cadence: in-flight or open position -> tight; flat -> loose", "[reconcile]") {
   // Any in-flight (SENT) order -> tight.
-  const rec::ReconcileState inflight =
-      rec::derive_state({local_order("a", OrderState::Sent)}, {});
+  const rec::ReconcileState inflight = rec::derive_state({local_order("a", OrderState::Sent)}, {});
   CHECK(inflight.any_inflight);
   CHECK(rec::next_cadence(inflight) == std::chrono::milliseconds(1500));
 
   // Flat: a terminal order, no positions -> loose.
-  const rec::ReconcileState flat =
-      rec::derive_state({local_order("a", OrderState::Filled)}, {});
+  const rec::ReconcileState flat = rec::derive_state({local_order("a", OrderState::Filled)}, {});
   CHECK_FALSE(flat.any_inflight);
   CHECK_FALSE(flat.any_open_position);
   CHECK(rec::next_cadence(flat) == std::chrono::milliseconds(20000));
@@ -330,8 +325,7 @@ TEST_CASE("cadence: in-flight or open position -> tight; flat -> loose", "[recon
   Position pos;
   pos.symbol = "NIFTY";
   pos.net_qty = Quantity::of(-50);  // short
-  const rec::ReconcileState open =
-      rec::derive_state({local_order("a", OrderState::Filled)}, {pos});
+  const rec::ReconcileState open = rec::derive_state({local_order("a", OrderState::Filled)}, {pos});
   CHECK(open.any_open_position);
   CHECK(rec::next_cadence(open) == std::chrono::milliseconds(1500));
 

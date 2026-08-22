@@ -60,7 +60,8 @@ enum class Capability {
 
 // The number of modelled capabilities — the fixed size of CapabilitySet's
 // backing array. Derived from the last enumerator so it tracks the enum.
-inline constexpr std::size_t kCapabilityCount = static_cast<std::size_t>(Capability::MarginShockSim) + 1;
+inline constexpr std::size_t kCapabilityCount =
+    static_cast<std::size_t>(Capability::MarginShockSim) + 1;
 
 // Tri-state support for a capability.
 //   Unknown     — not yet verified; treated as Unsupported at the gate (AC-2).

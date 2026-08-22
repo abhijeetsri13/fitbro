@@ -29,7 +29,6 @@
 // hand-built separator). No OS APIs, no `#ifdef`, no float.
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cctype>
 #include <cstddef>
 #include <filesystem>
@@ -106,8 +105,7 @@ void scan_one(const std::filesystem::path& path) {
   for (const std::string_view needle : kForbidden) {
     const std::size_t at = lowered.find(needle);
     if (at != std::string::npos) {
-      UNSCOPED_INFO("broker identifier '" << needle << "' found at line "
-                                          << line_of(lowered, at)
+      UNSCOPED_INFO("broker identifier '" << needle << "' found at line " << line_of(lowered, at)
                                           << " — a portable strategy may not name a broker. "
                                              "If you need broker-specific behaviour, widen "
                                              "ports::BrokerPort or the capability model instead.");
@@ -120,8 +118,12 @@ void scan_one(const std::filesystem::path& path) {
 
 TEST_CASE("portability: the strategy translation unit names no broker (AC-3)",
           "[portability][ac3][scan]") {
-  SECTION("implementation") { scan_one(std::filesystem::path(PORTABLE_STRATEGY_SRC)); }
-  SECTION("header") { scan_one(std::filesystem::path(PORTABLE_STRATEGY_HDR)); }
+  SECTION("implementation") {
+    scan_one(std::filesystem::path(PORTABLE_STRATEGY_SRC));
+  }
+  SECTION("header") {
+    scan_one(std::filesystem::path(PORTABLE_STRATEGY_HDR));
+  }
 }
 
 TEST_CASE("portability: the scan itself would catch a broker identifier",

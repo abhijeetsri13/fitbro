@@ -18,9 +18,13 @@ void UnknownPause::clear(std::string_view client_ref) {
   outstanding_.erase(std::string(client_ref));
 }
 
-bool UnknownPause::is_paused() const noexcept { return !outstanding_.empty(); }
+bool UnknownPause::is_paused() const noexcept {
+  return !outstanding_.empty();
+}
 
-std::size_t UnknownPause::outstanding() const noexcept { return outstanding_.size(); }
+std::size_t UnknownPause::outstanding() const noexcept {
+  return outstanding_.size();
+}
 
 bool UnknownPause::allows(bool is_risk_reducing_exit) const noexcept {
   // A risk-reducing exit is NEVER blocked: trapping a live position behind an

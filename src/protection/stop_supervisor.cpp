@@ -21,11 +21,15 @@ namespace {
                                             const PriceBand& band) {
   domain::Money out = limit;
   if (side == domain::Side::Sell) {
-    if (out < band.lower) out = band.lower;  // never price below the band floor
-    if (out > band.upper) out = band.upper;  // and never above the ceiling
+    if (out < band.lower)
+      out = band.lower;  // never price below the band floor
+    if (out > band.upper)
+      out = band.upper;  // and never above the ceiling
   } else {
-    if (out > band.upper) out = band.upper;  // never price above the band ceiling
-    if (out < band.lower) out = band.lower;  // and never below the floor
+    if (out > band.upper)
+      out = band.upper;  // never price above the band ceiling
+    if (out < band.lower)
+      out = band.lower;  // and never below the floor
   }
   return out;
 }
@@ -88,16 +92,14 @@ ProtectionDecision evaluate_protection(const ProtectiveStop& stop, const StopInp
   // INT64_MIN is well-defined (plain `-INT64_MIN` is signed-overflow UB and would
   // TRAP under the UBSan build). A genuinely non-positive magnitude is impossible
   // after this, but the guard stays as defence-in-depth -> FAIL-CLOSED Unprotected.
-  const domain::Side exit_side =
-      stop.position_qty > 0 ? domain::Side::Sell : domain::Side::Buy;
+  const domain::Side exit_side = stop.position_qty > 0 ? domain::Side::Sell : domain::Side::Buy;
   const std::int64_t exit_qty =
       stop.position_qty > 0
           ? stop.position_qty
           : static_cast<std::int64_t>(0ULL - static_cast<std::uint64_t>(stop.position_qty));
   if (exit_qty <= 0) {
     decision.state = ProtectionState::Unprotected;
-    decision.detail =
-        "non-positive exit qty for " + stop.symbol + ": cannot form protective exit";
+    decision.detail = "non-positive exit qty for " + stop.symbol + ": cannot form protective exit";
     best_effort_alert(alerts,
                       "PROTECTION: non-positive exit quantity; cannot arm a protective "
                       "exit — manual intervention required",

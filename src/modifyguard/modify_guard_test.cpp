@@ -1,7 +1,6 @@
 #include "broker_exec/modifyguard/modify_guard.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <string>
 
@@ -63,9 +62,8 @@ TEST_CASE("terminal states reject: nothing to modify", "[modifyguard]") {
 
 // ── 2. NOT-MODIFIABLE base ──────────────────────────────────────────────────
 TEST_CASE("ambiguous / awaiting-reconcile states reject", "[modifyguard]") {
-  for (const OrderState ambiguous :
-       {OrderState::Unknown, OrderState::ManualInterventionRequired, OrderState::Reconciled,
-        OrderState::PartiallyPlaced}) {
+  for (const OrderState ambiguous : {OrderState::Unknown, OrderState::ManualInterventionRequired,
+                                     OrderState::Reconciled, OrderState::PartiallyPlaced}) {
     OrderModifyState cur = working_clean();
     cur.state = ambiguous;
     const ModifyResult res = evaluate_modify(cur, price_only(), 0);
@@ -75,8 +73,7 @@ TEST_CASE("ambiguous / awaiting-reconcile states reject", "[modifyguard]") {
 }
 
 // ── 3. RACED FILL ───────────────────────────────────────────────────────────
-TEST_CASE("a fill that raced in since the decision rejects, even price-only",
-          "[modifyguard]") {
+TEST_CASE("a fill that raced in since the decision rejects, even price-only", "[modifyguard]") {
   OrderModifyState cur = working_clean();
   cur.state = OrderState::PartiallyFilled;
   cur.filled_qty = 30;  // current truth
@@ -87,8 +84,7 @@ TEST_CASE("a fill that raced in since the decision rejects, even price-only",
 }
 
 // ── 4. QTY MODIFY ON A PARTIAL ──────────────────────────────────────────────
-TEST_CASE("a quantity modify on a partial rejects (would cancel the remainder)",
-          "[modifyguard]") {
+TEST_CASE("a quantity modify on a partial rejects (would cancel the remainder)", "[modifyguard]") {
   OrderModifyState cur = working_clean();
   cur.state = OrderState::PartiallyFilled;
   cur.filled_qty = 30;
@@ -155,8 +151,8 @@ TEST_CASE("pre-ack/in-flight states reject: a qty modify on an unconfirmed order
   // Created/Validated/PendingSend/Sent are not broker-confirmed: the local
   // filled_qty is stale, so a qty modify could set a TOTAL below the true fill and
   // cancel the working remainder. NEVER modify until Acknowledged/PartiallyFilled.
-  for (const OrderState st : {OrderState::Created, OrderState::Validated,
-                              OrderState::PendingSend, OrderState::Sent}) {
+  for (const OrderState st :
+       {OrderState::Created, OrderState::Validated, OrderState::PendingSend, OrderState::Sent}) {
     OrderModifyState cur = working_clean();
     cur.state = st;
     cur.filled_qty = 0;  // stale: the broker may already have fills on a Sent order
@@ -237,7 +233,7 @@ TEST_CASE("make_modify_request: moving ONLY the trigger is a price change",
   amended.trigger_price = broker_exec::domain::Price::from_rupees(101);  // trail the stop
 
   const ModifyRequest req = broker_exec::modifyguard::make_modify_request(current, amended);
-  CHECK(req.changes_price);          // the hazard: this used to be missable
+  CHECK(req.changes_price);           // the hazard: this used to be missable
   CHECK_FALSE(req.changes_quantity);  // and it is NOT a quantity modify
   CHECK(req.new_total_qty == 50);
 

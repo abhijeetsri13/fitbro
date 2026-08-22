@@ -19,7 +19,6 @@
 #include "broker_exec/boot/boot.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -104,8 +103,8 @@ class MapSecrets final : public broker_exec::ports::SecretProvider {
   [[nodiscard]] Result<std::string> get(std::string_view key) const override {
     const auto it = values.find(std::string(key));
     if (it == values.end()) {
-      return broker_exec::fail(broker_exec::errors::make_error(
-          ErrorCategory::Validation, "test secrets: no such key"));
+      return broker_exec::fail(
+          broker_exec::errors::make_error(ErrorCategory::Validation, "test secrets: no such key"));
     }
     return it->second;
   }
@@ -240,14 +239,15 @@ struct World {
     REQUIRE(opened.has_value());
     store.emplace(std::move(opened).value());
 
-    ledger = std::make_unique<broker_exec::ledger::Ledger>(test_clock, account_root / "ledger.jsonl");
+    ledger =
+        std::make_unique<broker_exec::ledger::Ledger>(test_clock, account_root / "ledger.jsonl");
 
     instruments = std::make_unique<broker_exec::refdata::InstrumentMaster>(
-        []() -> Result<std::string> { return valid_instruments_csv(); }, test_clock, refdata_cache.path,
-        "kite", "nfo");
+        []() -> Result<std::string> { return valid_instruments_csv(); }, test_clock,
+        refdata_cache.path, "kite", "nfo");
     calendar = std::make_unique<broker_exec::refdata::TradingCalendar>(
-        []() -> Result<std::string> { return valid_calendar_json(); }, test_clock, refdata_cache.path,
-        "kite");
+        []() -> Result<std::string> { return valid_calendar_json(); }, test_clock,
+        refdata_cache.path, "kite");
   }
 
   World(const World&) = delete;
@@ -296,10 +296,9 @@ struct World {
 
     d.broker_deps.kite_http = &kite_http;
     d.broker_deps.kite_secrets = &secrets;
-    d.broker_options.required_capabilities = {caps::Capability::PlaceOrder,
-                                              caps::Capability::ModifyOrder,
-                                              caps::Capability::CancelOrder,
-                                              caps::Capability::SquareOff};
+    d.broker_options.required_capabilities = {
+        caps::Capability::PlaceOrder, caps::Capability::ModifyOrder, caps::Capability::CancelOrder,
+        caps::Capability::SquareOff};
 
     d.engine_deps.kill_state = &kill_state;
     d.engine_deps.posture = &posture;

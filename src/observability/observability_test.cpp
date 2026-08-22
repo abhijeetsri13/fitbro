@@ -1,24 +1,22 @@
-#include "broker_exec/observability/audit_event.hpp"
-#include "broker_exec/observability/audit_trail.hpp"
-#include "broker_exec/observability/structured_logger.hpp"
+#include <spdlog/details/log_msg.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/base_sink.h>
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <initializer_list>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include <nlohmann/json.hpp>
-#include <spdlog/details/log_msg.h>
-#include <spdlog/logger.h>
-#include <spdlog/sinks/base_sink.h>
-
 #include "broker_exec/clock/test_clock.hpp"
+#include "broker_exec/observability/audit_event.hpp"
+#include "broker_exec/observability/audit_trail.hpp"
+#include "broker_exec/observability/structured_logger.hpp"
 
 using broker_exec::clock::TestClock;
 using broker_exec::observability::AuditEvent;
@@ -141,7 +139,8 @@ TEST_CASE("stable EventType names cover the observability contract") {
   CHECK(to_json_line(AuditEvent{.type = EventType::ReconcileResult}).find("reconcile.result") !=
         std::string::npos);
   CHECK(to_json_line(AuditEvent{.type = EventType::Error}).find("\"error\"") != std::string::npos);
-  CHECK(to_json_line(AuditEvent{.type = EventType::Override}).find("override") != std::string::npos);
+  CHECK(to_json_line(AuditEvent{.type = EventType::Override}).find("override") !=
+        std::string::npos);
 }
 
 TEST_CASE("full provenance round-trips into the JSON line (AC-1)") {
@@ -154,12 +153,9 @@ TEST_CASE("full provenance round-trips into the JSON line (AC-1)") {
   ev.client_ref = "alpha-1";
   ev.broker_order_id = "240627000123456";
   ev.fields = json{
-      {"status", "COMPLETE"},
-      {"risk_result", "passed"},
-      {"reconcile_result", "matched"},
+      {"status", "COMPLETE"}, {"risk_result", "passed"}, {"reconcile_result", "matched"},
       {"pnl", 125000},  // integer paise — NEVER a float
-      {"error", ""},
-      {"override", false},
+      {"error", ""},          {"override", false},
   };
 
   const json parsed = json::parse(to_json_line(ev), nullptr, /*allow_exceptions=*/false);
@@ -193,7 +189,7 @@ TEST_CASE("the redaction binding scrubs a token from EVERY field (AC-1 crux)") {
   AuditEvent ev;
   ev.type = EventType::OrderPlaced;
   ev.client_ref = "alpha-1";
-  ev.broker_order_id = kSyntheticToken;  // token in a TYPED column
+  ev.broker_order_id = kSyntheticToken;                 // token in a TYPED column
   ev.fields = json{{"access_token", kSyntheticToken}};  // ... and in fields
 
   structured.log(ev);
@@ -282,11 +278,11 @@ TEST_CASE("a token-shaped value in a TYPED column is still redacted (IMP-15 fail
   // spelling is the base64url case that the segment count alone let through.
   AuditEvent ev;
   ev.type = EventType::OrderPlaced;
-  ev.client_ref = kSyntheticToken;                      // a token in the id column
-  ev.broker_order_id = kSyntheticToken;                 // ... and in the other id column
+  ev.client_ref = kSyntheticToken;                              // a token in the id column
+  ev.broker_order_id = kSyntheticToken;                         // ... and in the other id column
   ev.account = std::string("access_token=") + kSyntheticToken;  // ... and as a pasted pair
-  ev.strategy = "v4Xk29mZpQ7rTb-4Lw8Nc1Vd6Ya3Hs0Ue5";   // ... and URL-safe, with a '-'
-  ev.broker = "token_Ab12Cd34Ef56Gh78Ij90Kl12";         // ... and with a '_'
+  ev.strategy = "v4Xk29mZpQ7rTb-4Lw8Nc1Vd6Ya3Hs0Ue5";           // ... and URL-safe, with a '-'
+  ev.broker = "token_Ab12Cd34Ef56Gh78Ij90Kl12";                 // ... and with a '_'
 
   const std::string text = logged_text(ev);
   REQUIRE_FALSE(text.empty());
@@ -310,10 +306,10 @@ TEST_CASE("`fields` keeps FULL scrubbing while the typed column survives (IMP-15
   ev.type = EventType::Error;
   ev.client_ref = kClientRef;  // typed column: exempt
   ev.fields = json{
-      {"access_token", kSyntheticToken},  // key=value rule
-      {"blob", kSyntheticToken},          // bare high-entropy rule
-      {"echoed_ref", kClientRef},         // free-form text is NOT exempt, even if it
-                                          // happens to hold a copy of the ref
+      {"access_token", kSyntheticToken},                 // key=value rule
+      {"blob", kSyntheticToken},                         // bare high-entropy rule
+      {"echoed_ref", kClientRef},                        // free-form text is NOT exempt, even if it
+                                                         // happens to hold a copy of the ref
       {"note", "user entered MPIN 4321 at the prompt"},  // MPIN auth-context rule
   };
 
@@ -407,9 +403,9 @@ TEST_CASE("the decision path is legible end to end: every line names the same re
     return ev;
   };
 
-  for (const EventType type : {EventType::OrderPlaced, EventType::RiskResult,
-                               EventType::OrderAcknowledged, EventType::OrderFilled,
-                               EventType::ReconcileResult}) {
+  for (const EventType type :
+       {EventType::OrderPlaced, EventType::RiskResult, EventType::OrderAcknowledged,
+        EventType::OrderFilled, EventType::ReconcileResult}) {
     trail.record_and_log(step(type, kClientRef), structured);
   }
   // A second order's steps must not bleed into the first order's path.
@@ -473,7 +469,7 @@ TEST_CASE("invalid UTF-8 in a field does not throw and stays parseable JSON") {
   AuditEvent ev;
   ev.type = EventType::Error;
   ev.client_ref = "alpha-1";
-  ev.broker_order_id = bad;  // invalid UTF-8 in a TYPED column
+  ev.broker_order_id = bad;          // invalid UTF-8 in a TYPED column
   ev.fields = json{{"error", bad}};  // ... and in fields
 
   // The non-throwing UTF-8 handler keeps to_json_line total.

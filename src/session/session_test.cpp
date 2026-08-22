@@ -1,7 +1,4 @@
-#include "broker_exec/session/kite_session_establisher.hpp"
-
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -14,6 +11,7 @@
 #include "broker_exec/ports/secret_provider.hpp"
 #include "broker_exec/result.hpp"
 #include "broker_exec/secrets/token_store.hpp"
+#include "broker_exec/session/kite_session_establisher.hpp"
 #include "broker_exec/session/session_state.hpp"
 
 namespace fs = std::filesystem;
@@ -115,9 +113,8 @@ struct TempDir {
   fs::path path;
 
   explicit TempDir(const std::string& tag)
-      : path(fs::temp_directory_path() /
-             ("broker_exec_session_" + tag + "_" +
-              std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
+      : path(fs::temp_directory_path() / ("broker_exec_session_" + tag + "_" +
+                                          std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
     std::error_code ec;
     fs::create_directories(path, ec);
   }
@@ -189,10 +186,11 @@ TEST_CASE("establish posts the correct SHA-256 checksum", "[session]") {
 
 TEST_CASE("establish surfaces a typed Error and never leaks secrets", "[session]") {
   RecordedHttpClient http;
-  http.on(HttpRequest::Method::Post, "/session/token",
-          json_response(
-              400,
-              R"({"status":"error","error_type":"InputException","message":"Invalid `request_token`."})"));
+  http.on(
+      HttpRequest::Method::Post, "/session/token",
+      json_response(
+          400,
+          R"({"status":"error","error_type":"InputException","message":"Invalid `request_token`."})"));
 
   const TempDir dir("establish_error");
   const auto secrets = make_secrets();
@@ -217,9 +215,10 @@ TEST_CASE("establish surfaces a typed Error and never leaks secrets", "[session]
 
 TEST_CASE("validate maps a 401 TokenException to NeedsReauth", "[session]") {
   RecordedHttpClient http;
-  http.on(HttpRequest::Method::Get, "/user/margins/equity",
-          json_response(401,
-                        R"({"status":"error","error_type":"TokenException","message":"Invalid session"})"));
+  http.on(
+      HttpRequest::Method::Get, "/user/margins/equity",
+      json_response(
+          401, R"({"status":"error","error_type":"TokenException","message":"Invalid session"})"));
 
   const TempDir dir("validate_dead");
   const auto secrets = make_secrets();

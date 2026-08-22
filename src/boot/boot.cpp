@@ -77,10 +77,11 @@ void fire_absence_alarm(BootOutcome& outcome, const BootDeps& deps) {
   // way out, which is where outbound redaction belongs.
   const std::string message =
       std::string("broker-exec FAILED CLOSED during boot at step '") +
-      std::string(to_string(outcome.step)) + "' for account '" + deps.args.account_id +
-      "'. Exit " + std::to_string(exit_code_for(outcome.exit_class)) +
+      std::string(to_string(outcome.step)) + "' for account '" + deps.args.account_id + "'. Exit " +
+      std::to_string(exit_code_for(outcome.exit_class)) +
       ": there will be NO automatic restart and this account is now ABSENT until a "
-      "human intervenes. Reason: " + outcome.error.message;
+      "human intervenes. Reason: " +
+      outcome.error.message;
   const Result<ports::Ok> sent = deps.alerts->send(ports::AlertLevel::Critical, message);
   outcome.absence_alarm_delivered = sent.has_value();
 }
@@ -230,13 +231,13 @@ RunPhaseFn unimplemented_run_phase() {
     // See boot.hpp: this REFUSES rather than pretending to trade. A loop that
     // spun doing nothing would report a healthy trading engine that places no
     // orders — a far worse lie to hand an operator than an honest 70.
-    return fail(blocking(
-        ErrorCategory::Internal,
-        "boot: the trading run phase is not implemented. IMP-20 builds the process "
-        "entrypoint and the cold-boot sequence ONLY; the synchronous main loop "
-        "(dispatcher pumping, reconcile scheduling, market-data ingest) is a separate "
-        "story and is deliberately NOT stubbed into a fake loop. The world was verified "
-        "safe and the health surface is up; there is nothing yet to run"));
+    return fail(
+        blocking(ErrorCategory::Internal,
+                 "boot: the trading run phase is not implemented. IMP-20 builds the process "
+                 "entrypoint and the cold-boot sequence ONLY; the synchronous main loop "
+                 "(dispatcher pumping, reconcile scheduling, market-data ingest) is a separate "
+                 "story and is deliberately NOT stubbed into a fake loop. The world was verified "
+                 "safe and the health surface is up; there is nothing yet to run"));
   };
 }
 
@@ -297,8 +298,8 @@ BootOutcome boot(const BootDeps& deps) {
     const std::string account_id =
         deps.args.account_id.empty() ? outcome.config.engine.account_id : deps.args.account_id;
 
-    auto dir = accounts::AccountDataDir::create(std::move(root).value(), account_id,
-                                                deps.dir_permissions);
+    auto dir =
+        accounts::AccountDataDir::create(std::move(root).value(), account_id, deps.dir_permissions);
     if (!dir) {
       // An invalid account id is never sanitized into something "close enough".
       fail_step(outcome, BootStep::ResolveDataDir, ExitClass::FailClosedNeedsHuman,

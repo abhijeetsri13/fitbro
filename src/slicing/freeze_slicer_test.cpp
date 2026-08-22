@@ -1,7 +1,6 @@
 #include "broker_exec/slicing/freeze_slicer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -13,7 +12,6 @@
 #include "broker_exec/idempotency/idempotency.hpp"
 #include "broker_exec/result.hpp"
 
-using broker_exec::slicing::FreezeSlicer;
 using broker_exec::domain::Instrument;
 using broker_exec::domain::OrderIntent;
 using broker_exec::domain::OrderType;
@@ -22,6 +20,7 @@ using broker_exec::domain::Product;
 using broker_exec::domain::Quantity;
 using broker_exec::domain::Side;
 using broker_exec::errors::ErrorCategory;
+using broker_exec::slicing::FreezeSlicer;
 
 namespace {
 
@@ -92,8 +91,7 @@ TEST_CASE("over-freeze fans out into lot-aligned children that sum to qty") {
 }
 
 // ── IMP-11 AC-4: children inherit the parent's trigger UNCHANGED ─────────────
-TEST_CASE("slicing an over-freeze STOP carries the trigger to every child",
-          "[slicing][IMP-11]") {
+TEST_CASE("slicing an over-freeze STOP carries the trigger to every child", "[slicing][IMP-11]") {
   // The hazard this pins: slicing changes SIZE, never price. If a child lost the
   // trigger it would be placed as a plain order — so an over-freeze protective
   // stop would fan out into pieces that are not stops at all, and the position
@@ -212,8 +210,7 @@ TEST_CASE("child refs are parity-identical to idempotency::child_ref") {
 
   for (std::size_t i = 0; i < children.size(); ++i) {
     const int k = static_cast<int>(i) + 1;
-    CHECK(children[i].client_ref ==
-          broker_exec::idempotency::child_ref(parent.client_ref, k));
+    CHECK(children[i].client_ref == broker_exec::idempotency::child_ref(parent.client_ref, k));
   }
 }
 

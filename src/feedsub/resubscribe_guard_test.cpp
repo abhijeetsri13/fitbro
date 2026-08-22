@@ -1,8 +1,7 @@
 #include "broker_exec/feedsub/resubscribe_guard.hpp"
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <algorithm>
+#include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <string>
 #include <vector>
@@ -39,8 +38,8 @@ TEST_CASE("on_reconnect returns the FULL desired set and arms each token", "[fee
 
   // Every token is now awaiting its first post-resubscribe tick and NOT tradable
   // (fail-closed: it must prove it ticks before trading resumes).
-  for (const std::string& token : {std::string("256265"), std::string("260105"),
-                                   std::string("265")}) {
+  for (const std::string& token :
+       {std::string("256265"), std::string("260105"), std::string("265")}) {
     CHECK(guard.state_of(token) == TokenFeedState::AwaitingFirstTick);
     CHECK_FALSE(guard.is_tradable(token));
   }
@@ -237,8 +236,8 @@ TEST_CASE("a token subscribed AFTER a reconnect is not tradable until the next r
   TestClock clock;
   ResubscribeGuard guard(clock, 1000ms);
   guard.subscribe("A");
-  (void)guard.on_reconnect();   // arms A only
-  guard.subscribe("B");         // B added after the reconnect batch
+  (void)guard.on_reconnect();  // arms A only
+  guard.subscribe("B");        // B added after the reconnect batch
   // B was never armed -> not AwaitingFirstTick, not Live -> not tradable (fail-closed).
   CHECK_FALSE(guard.is_tradable("B"));
   // The next reconnect includes B and arms it.

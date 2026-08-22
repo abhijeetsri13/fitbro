@@ -4,8 +4,9 @@
 // returns are well-formed). It also smoke-tests the happy paths through the
 // abstract base-class references the core will actually hold.
 
-#include <catch2/catch_test_macros.hpp>
+#include "broker_exec/ports/ports.hpp"
 
+#include <catch2/catch_test_macros.hpp>
 #include <functional>
 #include <optional>
 #include <string>
@@ -14,7 +15,6 @@
 
 #include "broker_exec/domain/types.hpp"
 #include "broker_exec/errors/error.hpp"
-#include "broker_exec/ports/ports.hpp"
 #include "broker_exec/result.hpp"
 
 namespace {
@@ -57,8 +57,7 @@ class MockBackend final : public ports::BrokerPort,
     records_.push_back(record);
     return ports::ok();
   }
-  Result<Ok> replay_all(
-      const std::function<void(const std::string&)>& on_record) override {
+  Result<Ok> replay_all(const std::function<void(const std::string&)>& on_record) override {
     for (const auto& r : records_) {
       on_record(r);
     }

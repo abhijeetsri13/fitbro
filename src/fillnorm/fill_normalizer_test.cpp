@@ -1,7 +1,6 @@
 #include "broker_exec/fillnorm/fill_normalizer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 
 #include "broker_exec/domain/enums.hpp"
@@ -143,7 +142,8 @@ TEST_CASE("canonical state names reuse the stable domain::to_string contract", "
 TEST_CASE("HIGH fix: filled>0 with a ZERO/omitted total is still Filled (drive off quantity)") {
   // A broker that omitted/zeroed the order total must NOT make a real fill fall
   // through to a not-filled state.
-  const FillSnapshot snap = normalize_fill("UPDATE", /*filled=*/50, /*total=*/0, /*reconcile=*/true);
+  const FillSnapshot snap =
+      normalize_fill("UPDATE", /*filled=*/50, /*total=*/0, /*reconcile=*/true);
   CHECK(snap.canonical_state == OrderState::Filled);
   CHECK(snap.filled_qty == 50);
   CHECK(snap.pending_qty == 0);

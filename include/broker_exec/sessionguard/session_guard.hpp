@@ -79,11 +79,11 @@ enum class OpClass {
 // open position; the safe default for risk-REDUCING work is "permitted".
 struct SessionPosture {
   session::SessionState state = session::SessionState::Failed;  // effective state
-  bool freeze_entries = true;          // true unless Healthy — stop new RISK
-  bool allow_exits = true;             // exits stay allowed even on NeedsReauth/Failed
-  bool allow_reconcile_reads = true;   // reads stay allowed (retried post-reauth)
-  bool alert = true;                   // raise the operator alert on a non-Healthy state
-  std::string detail;                  // redaction-safe; names the state, never the raw text
+  bool freeze_entries = true;         // true unless Healthy — stop new RISK
+  bool allow_exits = true;            // exits stay allowed even on NeedsReauth/Failed
+  bool allow_reconcile_reads = true;  // reads stay allowed (retried post-reauth)
+  bool alert = true;                  // raise the operator alert on a non-Healthy state
+  std::string detail;                 // redaction-safe; names the state, never the raw text
 };
 
 // Stable, log/serialization-friendly names (observability contract).

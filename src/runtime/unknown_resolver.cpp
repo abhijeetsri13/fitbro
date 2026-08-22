@@ -54,12 +54,7 @@ std::string_view to_string(MatchKind kind) noexcept {
 UnknownResolver::UnknownResolver(ports::BrokerPort& broker, store::Store& store,
                                  lifecycle::LifecycleEngine& fsm, ports::AlertSink& alerts,
                                  ports::ClockPort& clock, Config config)
-    : broker_(broker),
-      store_(store),
-      fsm_(fsm),
-      alerts_(alerts),
-      clock_(clock),
-      config_(config) {}
+    : broker_(broker), store_(store), fsm_(fsm), alerts_(alerts), clock_(clock), config_(config) {}
 
 bool UnknownResolver::within_attr_window(const Order& /*broker_order*/) const noexcept {
   // The domain Order the broker returns carries no timestamp of its own (the
@@ -180,8 +175,7 @@ Result<UnknownResolution> UnknownResolver::resolve(const Order& unknown_order) {
     // whole-column allowlist (domain::scrub_provenance_column) and appends as
     // ` [client_ref=... broker_order_id=... strategy=...]`. The body's own
     // redaction is unchanged, and a column that is not id-shaped is still redacted.
-    const std::string message =
-        "UNKNOWN order has no authoritative broker match (fail-closed)";
+    const std::string message = "UNKNOWN order has no authoritative broker match (fail-closed)";
     ports::AlertContext provenance;
     provenance.client_ref = unknown_order.intent.client_ref;
     provenance.broker_order_id = unknown_order.broker_order_id;  // empty fields are omitted

@@ -4,11 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/domain/redaction.hpp"
 #include "broker_exec/observability/audit_event.hpp"

@@ -3,7 +3,6 @@
 #include <sqlite3.h>
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <filesystem>
 #include <string>
 
@@ -141,8 +140,7 @@ TEST_CASE("a future schema_version refuses to start", "[store]") {
   REQUIRE(rebuild.error().category == ErrorCategory::Internal);
 }
 
-TEST_CASE("insert_order enforces UNIQUE(client_ref); upsert updates; find round-trips",
-          "[store]") {
+TEST_CASE("insert_order enforces UNIQUE(client_ref); upsert updates; find round-trips", "[store]") {
   auto opened = Store::open(":memory:");  // in-memory is fine here (no reopen)
   REQUIRE(opened.has_value());
   Store& store = opened.value();
@@ -349,7 +347,7 @@ TEST_CASE("open_or_rebuild recovers a half-migrated projection and flags needs_r
   REQUIRE(rebuilt.value().needs_rebuild);
   Store& store = rebuilt.value().store;
   REQUIRE(store.schema_version() == 2);
-  REQUIRE(store.all_orders().value().empty());  // rebuilt clean; caller replays the log
+  REQUIRE(store.all_orders().value().empty());    // rebuilt clean; caller replays the log
   REQUIRE(store.find_position("X").has_value());  // the dropped table is back
 }
 

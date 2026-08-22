@@ -53,8 +53,8 @@ class RateLimiter {
   //   * `refill_period` <= 0 is treated as "no refill" (a fixed budget bucket).
   // The bucket starts FULL (tokens == capacity) and stamps last_refill from
   // clock.now_steady().
-  RateLimiter(const ports::ClockPort& clock, int capacity,
-              std::chrono::milliseconds refill_period, int reserved_exit);
+  RateLimiter(const ports::ClockPort& clock, int capacity, std::chrono::milliseconds refill_period,
+              int reserved_exit);
 
   // Try to take one token for an entry (is_exit == false) or an exit
   // (is_exit == true). Refills first, then applies the lane floor: an entry

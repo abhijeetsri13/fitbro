@@ -694,8 +694,7 @@ class EngineAssembly {
   // instrument + gate(risk-reducing) + price-band clamp, starting from an outcome
   // the caller has already begun.
   [[nodiscard]] StageResult exit_chain(const domain::OrderIntent& intent,
-                                       const PreflightInputs& ctx,
-                                       PreflightOutcome outcome) const;
+                                       const PreflightInputs& ctx, PreflightOutcome outcome) const;
 
   EngineDeps deps_;
   EngineOptions options_;

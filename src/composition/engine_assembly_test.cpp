@@ -26,7 +26,6 @@
 #include "broker_exec/composition/engine_assembly.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -662,8 +661,7 @@ TEST_CASE("engine: an unpopulated order value is NOT a known order value",
 // AC-4 — posture, with the kill switch as operator floor (and its SCOPE).
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("engine: the kill switch is the posture operator FLOOR",
-          "[composition][engine][AC4]") {
+TEST_CASE("engine: the kill switch is the posture operator FLOOR", "[composition][engine][AC4]") {
   Rig rig;
   auto engine = make_engine(rig.deps(), entry_options());
   REQUIRE(engine.has_value());
@@ -1000,11 +998,11 @@ TEST_CASE("engine: preflight_entry stage ORDER — the earliest armed stage wins
   // Arm EVERY stage at once, then disarm them one at a time. Each step must
   // surface the NEXT stage in the documented order — membership alone would not
   // prove this.
-  rig.signals = {DetectorSignal::StaleData};                           // posture
-  rig.session = SessionSnapshot{SessionState::NeedsReauth, ""};        // session
-  rig.margin_quote_fails = true;                                       // margin (quote)
-  rig.duplicate = true;                                                // gate
-  rig.funds_available_paise = 5'100'000;                               // margin (buffered)
+  rig.signals = {DetectorSignal::StaleData};                     // posture
+  rig.session = SessionSnapshot{SessionState::NeedsReauth, ""};  // session
+  rig.margin_quote_fails = true;                                 // margin (quote)
+  rig.duplicate = true;                                          // gate
+  rig.funds_available_paise = 5'100'000;                         // margin (buffered)
   PreflightInputs in = rig.inputs();
   in.instrument.symbol = "NIFTY26JUL24500PE";                          // instrument
   in.risk_limits = RiskLimits{};                                       // risk-limits
@@ -1203,16 +1201,14 @@ TEST_CASE("engine: an exit is still SHAPE-validated", "[composition][engine][AC3
   }
 
   SECTION("a SELL stop whose limit sits ABOVE its trigger would never fill") {
-    const StageResult r =
-        engine.value().preflight_exit(make_stop_exit(9'700, 9'600), rig.inputs());
+    const StageResult r = engine.value().preflight_exit(make_stop_exit(9'700, 9'600), rig.inputs());
     REQUIRE_FALSE(r.ok());
     CHECK(r.stage == comp::stage::kGate);
     CHECK(says(r, "gate: order-shape check failed"));
   }
 
   SECTION("a mis-ticked exit is still refused") {
-    const StageResult r =
-        engine.value().preflight_exit(make_stop_exit(9'503, 9'600), rig.inputs());
+    const StageResult r = engine.value().preflight_exit(make_stop_exit(9'503, 9'600), rig.inputs());
     REQUIRE_FALSE(r.ok());
     CHECK(r.stage == comp::stage::kGate);
     CHECK(says(r, "gate: tick check failed"));
@@ -1279,8 +1275,7 @@ TEST_CASE("engine: apply_clamp is a safe no-op when there is nothing to apply",
   CHECK(stop == before);
 }
 
-TEST_CASE("engine: an EXIT-ONLY assembly runs the exit chain",
-          "[composition][engine][AC3]") {
+TEST_CASE("engine: an EXIT-ONLY assembly runs the exit chain", "[composition][engine][AC3]") {
   Rig rig;
   EngineDeps deps = rig.deps();
   deps.funds_view = nullptr;

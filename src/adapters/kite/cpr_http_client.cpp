@@ -1,10 +1,10 @@
 #include "broker_exec/adapters/kite/cpr_http_client.hpp"
 
+#include <cpr/cpr.h>
+
 #include <chrono>
 #include <string>
 #include <utility>
-
-#include <cpr/cpr.h>
 
 #include "broker_exec/adapters/kite/http_client.hpp"
 #include "broker_exec/errors/error.hpp"

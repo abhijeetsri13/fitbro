@@ -57,9 +57,9 @@ struct Ok {};
 // clock at which the broker view was taken (the freshness stamp the fail-closed
 // funds gate keys on, Story 2.11). Money is exact integer paise (no float).
 struct Funds {
-  std::string account;                 // Owning account id (one row per account).
-  domain::Money available;             // Free cash available to trade.
-  domain::Money used_margin;           // Margin currently blocked.
+  std::string account;                  // Owning account id (one row per account).
+  domain::Money available;              // Free cash available to trade.
+  domain::Money used_margin;            // Margin currently blocked.
   std::int64_t fetched_at_epoch_ms{0};  // Wall-clock stamp of the broker view.
 
   [[nodiscard]] bool operator==(const Funds&) const = default;
@@ -68,11 +68,11 @@ struct Funds {
 // A risk-engine decision worth persisting for provenance (Story 2.10 / FR-15).
 // `rule` is the named rule that fired; `detail` is a short, redaction-safe note.
 struct RiskEvent {
-  std::int64_t id{0};            // Assigned by the store on insert (0 = unset).
-  std::string client_ref;        // Order the event relates to (may be empty).
-  std::string rule;              // Named risk rule, e.g. "max_lots".
-  std::string detail;            // Short human-readable note (log-safe).
-  std::int64_t at_epoch_ms{0};   // Wall-clock stamp.
+  std::int64_t id{0};           // Assigned by the store on insert (0 = unset).
+  std::string client_ref;       // Order the event relates to (may be empty).
+  std::string rule;             // Named risk rule, e.g. "max_lots".
+  std::string detail;           // Short human-readable note (log-safe).
+  std::int64_t at_epoch_ms{0};  // Wall-clock stamp.
 
   [[nodiscard]] bool operator==(const RiskEvent&) const = default;
 };
@@ -81,12 +81,12 @@ struct RiskEvent {
 // and read these back; structured interpretation happens in the observability
 // layer. `payload` is an already-redaction-safe string (e.g. a JSON line).
 struct AuditRecord {
-  std::int64_t id{0};            // Assigned by the store on insert (0 = unset).
-  std::int64_t seq{0};           // Monotonic provenance sequence (intent-log seq).
-  std::string client_ref;        // Related order, if any.
-  std::string event;             // Event kind, e.g. "ORDER_SENT".
-  std::string payload;           // Redaction-safe detail blob.
-  std::int64_t at_epoch_ms{0};   // Wall-clock stamp.
+  std::int64_t id{0};           // Assigned by the store on insert (0 = unset).
+  std::int64_t seq{0};          // Monotonic provenance sequence (intent-log seq).
+  std::string client_ref;       // Related order, if any.
+  std::string event;            // Event kind, e.g. "ORDER_SENT".
+  std::string payload;          // Redaction-safe detail blob.
+  std::int64_t at_epoch_ms{0};  // Wall-clock stamp.
 
   [[nodiscard]] bool operator==(const AuditRecord&) const = default;
 };
@@ -142,8 +142,7 @@ class Store {
   [[nodiscard]] Result<Ok> upsert_order(const domain::Order& order);
 
   // Look up an order by its client_ref. std::nullopt if none exists.
-  [[nodiscard]] Result<std::optional<domain::Order>> find_order(
-      std::string_view client_ref) const;
+  [[nodiscard]] Result<std::optional<domain::Order>> find_order(std::string_view client_ref) const;
 
   // All orders, ordered by client_ref for a stable, test-friendly result.
   [[nodiscard]] Result<std::vector<domain::Order>> all_orders() const;

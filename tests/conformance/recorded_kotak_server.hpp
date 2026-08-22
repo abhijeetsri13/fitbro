@@ -23,12 +23,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/fake/fake_broker.hpp"  // FaultConfig (the fault selector)
 #include "broker_exec/adapters/kotak/kotak_broker_adapter.hpp"
@@ -675,12 +674,12 @@ class RecordedKotakServer final : public HttpClient {
 
   // Kotak-specific knobs.
   bool hard_reject_ = false;
-  bool cancel_rejects_terminal_ = false;   // see set_cancel_rejects_terminal (IMP-13)
-  std::int64_t fill_qty_ = -1;             // < 0 -> fill the whole order
-  std::string fill_status_ = "complete";   // the `ordSt` a recorded order reports
-  std::string total_field_ = "qty";        // which key carries the order total
-  std::string price_type_override_;        // empty => report each row's placed `pt`
-  std::string report_tp_;                  // empty => no `tp` key on report rows
+  bool cancel_rejects_terminal_ = false;  // see set_cancel_rejects_terminal (IMP-13)
+  std::int64_t fill_qty_ = -1;            // < 0 -> fill the whole order
+  std::string fill_status_ = "complete";  // the `ordSt` a recorded order reports
+  std::string total_field_ = "qty";       // which key carries the order total
+  std::string price_type_override_;       // empty => report each row's placed `pt`
+  std::string report_tp_;                 // empty => no `tp` key on report rows
 
   // Stateful broker truth; mutable because HttpClient::send() is const.
   mutable std::vector<Record> book_;
@@ -730,8 +729,7 @@ struct OwningKotakAdapter final : broker_exec::ports::BrokerPort {
   OwningKotakAdapter(broker_exec::ports::ClockPort& clock, FaultConfig fault,
                      ConformanceTally* tally_sink = nullptr)
       : server(std::make_unique<RecordedKotakServer>(clock, fault)),
-        rest(*server,
-             [bundle = make_bundle()]() -> Result<KotakSessionBundle> { return bundle; }),
+        rest(*server, [bundle = make_bundle()]() -> Result<KotakSessionBundle> { return bundle; }),
         adapter(rest),
         tally(tally_sink) {}
 
@@ -750,12 +748,10 @@ struct OwningKotakAdapter final : broker_exec::ports::BrokerPort {
     return adapter.place(intent);
   }
   [[nodiscard]] Result<broker_exec::ports::BrokerAck> modify(
-      const std::string& broker_order_id,
-      const broker_exec::domain::OrderIntent& intent) override {
+      const std::string& broker_order_id, const broker_exec::domain::OrderIntent& intent) override {
     return adapter.modify(broker_order_id, intent);
   }
-  [[nodiscard]] Result<broker_exec::ports::Ok> cancel(
-      const std::string& broker_order_id) override {
+  [[nodiscard]] Result<broker_exec::ports::Ok> cancel(const std::string& broker_order_id) override {
     return adapter.cancel(broker_order_id);
   }
   [[nodiscard]] Result<broker_exec::ports::Ok> square_off(

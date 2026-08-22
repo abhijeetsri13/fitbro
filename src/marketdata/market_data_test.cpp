@@ -1,7 +1,6 @@
 #include "broker_exec/marketdata/market_data.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstddef>
 #include <string>

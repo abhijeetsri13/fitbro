@@ -5,12 +5,13 @@
 using broker_exec::runtime::UnknownPause;
 
 namespace {
-constexpr bool kEntry = false;          // a risk-INCREASING entry
+constexpr bool kEntry = false;            // a risk-INCREASING entry
 constexpr bool kRiskReducingExit = true;  // a risk-REDUCING exit
 }  // namespace
 
 // ── Default posture: not paused, everything allowed ──────────────────────────
-TEST_CASE("UnknownPause: fresh latch is not paused and allows entries", "[runtime][unknown][pause]") {
+TEST_CASE("UnknownPause: fresh latch is not paused and allows entries",
+          "[runtime][unknown][pause]") {
   UnknownPause pause;
   CHECK_FALSE(pause.is_paused());
   CHECK(pause.outstanding() == 0);

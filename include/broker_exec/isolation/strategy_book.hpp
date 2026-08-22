@@ -91,8 +91,8 @@ class StrategyBook {
   //     net_qty becomes n + f. If the fill EXCEEDS the position (|f| > |n|, a
   //     cross-zero), the remainder opens a NEW position at `price`
   //     (avg_cost = price). If net_qty returns to 0, avg_cost resets to 0.
-  void apply_fill(const std::string& strategy_id, const std::string& symbol,
-                  domain::Side side, domain::Quantity qty, domain::Money price);
+  void apply_fill(const std::string& strategy_id, const std::string& symbol, domain::Side side,
+                  domain::Quantity qty, domain::Money price);
 
   // The stored Position for (strategy_id, symbol), or a flat/zero Position if the
   // strategy or symbol is unknown — a strategy never sees another's book.

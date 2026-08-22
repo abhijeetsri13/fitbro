@@ -1,7 +1,6 @@
 #include "broker_exec/modes/trading_mode.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 
 #include "broker_exec/errors/error.hpp"
@@ -24,7 +23,7 @@ namespace {
 
 // All seven modes and all four ops, for table-driven sweeps.
 constexpr TradingMode kAllModes[] = {
-    TradingMode::Live,        TradingMode::Paper,    TradingMode::DryRun, TradingMode::Replay,
+    TradingMode::Live,        TradingMode::Paper,    TradingMode::DryRun,   TradingMode::Replay,
     TradingMode::MonitorOnly, TradingMode::ExitOnly, TradingMode::Emergency};
 
 constexpr OrderOp kAllOps[] = {OrderOp::Entry, OrderOp::Exit, OrderOp::Cancel, OrderOp::SquareOff};

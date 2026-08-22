@@ -82,9 +82,9 @@ Result<ports::Ok> MarketDataView::require_tradable(std::string_view symbol) cons
   }
   // Price-sensitive-entry block (AC-2): a DataStale Error (BlockStrategy default)
   // naming the symbol and the blocking state.
-  return fail(make_error(ErrorCategory::DataStale,
-                         "market data not tradable for " + std::string(symbol) + ": " +
-                             std::string(to_string(state))));
+  return fail(make_error(ErrorCategory::DataStale, "market data not tradable for " +
+                                                       std::string(symbol) + ": " +
+                                                       std::string(to_string(state))));
 }
 
 std::optional<domain::Price> MarketDataView::ltp(std::string_view symbol) const {

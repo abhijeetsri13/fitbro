@@ -41,26 +41,22 @@ using domain::OrderState;
 [[nodiscard]] bool table_allows(OrderState from, OrderState to) noexcept {
   switch (from) {
     case OrderState::Created:
-      return to == OrderState::Validated || to == OrderState::Rejected ||
-             to == OrderState::Unknown;
+      return to == OrderState::Validated || to == OrderState::Rejected || to == OrderState::Unknown;
     case OrderState::Validated:
       return to == OrderState::PendingSend || to == OrderState::Rejected ||
              to == OrderState::Unknown;
     case OrderState::PendingSend:
-      return to == OrderState::Sent || to == OrderState::Rejected ||
-             to == OrderState::Unknown;
+      return to == OrderState::Sent || to == OrderState::Rejected || to == OrderState::Unknown;
     case OrderState::Sent:
       return to == OrderState::Acknowledged || to == OrderState::PartiallyFilled ||
              to == OrderState::Filled || to == OrderState::Rejected ||
              to == OrderState::Cancelled || to == OrderState::Unknown;
     case OrderState::Acknowledged:
       return to == OrderState::PartiallyFilled || to == OrderState::Filled ||
-             to == OrderState::Rejected || to == OrderState::Cancelled ||
-             to == OrderState::Unknown;
+             to == OrderState::Rejected || to == OrderState::Cancelled || to == OrderState::Unknown;
     case OrderState::PartiallyFilled:
       return to == OrderState::PartiallyFilled || to == OrderState::Filled ||
-             to == OrderState::Cancelled || to == OrderState::Rejected ||
-             to == OrderState::Unknown;
+             to == OrderState::Cancelled || to == OrderState::Rejected || to == OrderState::Unknown;
     case OrderState::Filled:
     case OrderState::Rejected:
     case OrderState::Cancelled:
@@ -262,8 +258,7 @@ ApplyOutcome LifecycleEngine::apply(domain::Order& order, const BrokerView& view
 }
 
 OrderState LifecycleEngine::apply_child(std::string_view parent_client_ref,
-                                        std::string_view child_client_ref,
-                                        OrderState child_state) {
+                                        std::string_view child_client_ref, OrderState child_state) {
   // Recover the true parent from the child ref when it is a well-formed
   // "<parent>#<k>" slice ref (Story 1.7 model), so a caller cannot accidentally
   // file a child under the wrong parent. If the child ref is not a slice ref we
@@ -289,8 +284,7 @@ std::optional<std::int64_t> LifecycleEngine::last_key(std::string_view client_re
   return std::nullopt;
 }
 
-std::optional<OrderState> LifecycleEngine::parent_state(
-    std::string_view parent_client_ref) const {
+std::optional<OrderState> LifecycleEngine::parent_state(std::string_view parent_client_ref) const {
   const auto it = children_by_parent_.find(std::string(parent_client_ref));
   if (it == children_by_parent_.end()) {
     return std::nullopt;

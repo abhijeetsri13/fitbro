@@ -80,10 +80,10 @@ class Reconciler {
 
 // What a single apply() produced, for logging / metrics and the new-order gate.
 struct ReconcileOutcome {
-  int applied = 0;        // Broker orders matched to a local order and fed to the FSM.
-  int advanced = 0;       // Of those, how many the FSM advanced (ApplyOutcome::Applied).
-  int dropped_stale = 0;  // Of those, how many were stale/duplicate (DroppedStale).
-  int mismatches = 0;     // Phantom broker orders + vanished local orders.
+  int applied = 0;                // Broker orders matched to a local order and fed to the FSM.
+  int advanced = 0;               // Of those, how many the FSM advanced (ApplyOutcome::Applied).
+  int dropped_stale = 0;          // Of those, how many were stale/duplicate (DroppedStale).
+  int mismatches = 0;             // Phantom broker orders + vanished local orders.
   bool block_new_orders = false;  // Set on any mismatch (AC-3).
 };
 
@@ -112,8 +112,7 @@ class ReconcileApplier {
   // NO mismatch is escalated from it (no phantom/vanished alert, no block) and
   // the returned outcome has block_new_orders=false. NON-const: the applier is
   // the sole stateful writer and tracks the high-water snapshot key.
-  ReconcileOutcome apply(const ReconcileResult& result,
-                         std::vector<domain::Order>& local_orders);
+  ReconcileOutcome apply(const ReconcileResult& result, std::vector<domain::Order>& local_orders);
 
  private:
   lifecycle::LifecycleEngine& engine_;
@@ -136,8 +135,7 @@ struct ReconcileState {
 // Tight while anything is in-flight or a position is open, loose when flat.
 // Integer milliseconds only (no float). Defaults: tight 1500ms, loose 20000ms.
 [[nodiscard]] std::chrono::milliseconds next_cadence(
-    const ReconcileState& state,
-    std::chrono::milliseconds tight = std::chrono::milliseconds(1500),
+    const ReconcileState& state, std::chrono::milliseconds tight = std::chrono::milliseconds(1500),
     std::chrono::milliseconds loose = std::chrono::milliseconds(20000));
 
 // Derive the cadence inputs from the current orders + positions.

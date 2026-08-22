@@ -231,8 +231,8 @@ Result<ports::Ok> TokenStore::save(std::string_view account, std::string_view na
   std::error_code ec;
   fs::create_directories(account_dir, ec);
   if (ec) {
-    return fail(make_error(ErrorCategory::Internal,
-                           "token store: failed to create account directory"));
+    return fail(
+        make_error(ErrorCategory::Internal, "token store: failed to create account directory"));
   }
   // Tighten the directory to owner-only (0700) before writing the blob. A failed
   // tighten on POSIX would leave the blob group/world-readable, so we must not

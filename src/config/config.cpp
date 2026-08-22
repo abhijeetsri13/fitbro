@@ -10,10 +10,9 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <toml++/toml.hpp>
 #include <utility>
 #include <vector>
-
-#include <toml++/toml.hpp>
 
 #include "broker_exec/domain/redaction.hpp"
 #include "broker_exec/errors/error.hpp"
@@ -116,8 +115,8 @@ namespace fs = std::filesystem;
 // Substring needles (lowercase). Deliberately omits ambiguous fragments like a
 // bare "pin" that would also match innocuous keys ("mapping", "endpoint").
 constexpr std::array<std::string_view, 12> kSecretNeedles = {
-    "token",   "secret",  "password", "passwd",     "pwd",     "api_key",
-    "api-key", "apikey",  "mpin",     "totp",       "bearer",  "credential"};
+    "token",   "secret", "password", "passwd", "pwd",    "api_key",
+    "api-key", "apikey", "mpin",     "totp",   "bearer", "credential"};
 
 [[nodiscard]] std::optional<Error> matches_secret(std::string_view key, std::string_view path) {
   for (std::string_view needle : kSecretNeedles) {
@@ -131,7 +130,8 @@ constexpr std::array<std::string_view, 12> kSecretNeedles = {
 // Recursively reject any key (at any depth, including inside arrays-of-tables)
 // whose name looks like a secret. Runs BEFORE any value is read so a secret in
 // the file never reaches a loadable Config.
-[[nodiscard]] std::optional<Error> scan_secrets(const toml::table& table, const std::string& prefix);
+[[nodiscard]] std::optional<Error> scan_secrets(const toml::table& table,
+                                                const std::string& prefix);
 
 [[nodiscard]] std::optional<Error> scan_node(std::string_view path, const toml::node& node) {
   if (const toml::table* sub = node.as_table()) {
@@ -164,8 +164,8 @@ std::optional<Error> scan_secrets(const toml::table& table, const std::string& p
 // ── layered field application (file then env; env wins) ──────────────────────
 
 [[nodiscard]] std::optional<Error> apply_string(const toml::table& table, const EnvLookup& env,
-                                                 std::string_view section, std::string_view field,
-                                                 std::string& out) {
+                                                std::string_view section, std::string_view field,
+                                                std::string& out) {
   if (auto node = table[section][field]) {
     auto value = node.value<std::string>();
     if (!value) {

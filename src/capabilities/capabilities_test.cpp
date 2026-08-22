@@ -1,8 +1,7 @@
 #include "broker_exec/capabilities/capabilities.hpp"
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <array>
+#include <catch2/catch_test_macros.hpp>
 #include <string>
 #include <string_view>
 
@@ -33,7 +32,7 @@ TEST_CASE("supports() only passes for Support::Supported", "[capabilities]") {
       {Capability::CancelOrder, Support::Unknown},
   };
 
-  CHECK(set.supports(Capability::PlaceOrder));        // Supported -> true
+  CHECK(set.supports(Capability::PlaceOrder));         // Supported -> true
   CHECK_FALSE(set.supports(Capability::ModifyOrder));  // Unsupported -> false
   CHECK_FALSE(set.supports(Capability::CancelOrder));  // Unknown -> false (AC-2)
 

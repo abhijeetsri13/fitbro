@@ -75,8 +75,8 @@ class Statement {
   // ── Parameter binding (1-based index, the sqlite3 convention) ─────────────
   [[nodiscard]] int bind_text(int index, std::string_view value) noexcept {
     // SQLITE_TRANSIENT: sqlite copies the bytes, so a temporary is safe.
-    return sqlite3_bind_text(stmt_, index, value.data(),
-                             static_cast<int>(value.size()), SQLITE_TRANSIENT);
+    return sqlite3_bind_text(stmt_, index, value.data(), static_cast<int>(value.size()),
+                             SQLITE_TRANSIENT);
   }
   [[nodiscard]] int bind_int64(int index, std::int64_t value) noexcept {
     return sqlite3_bind_int64(stmt_, index, static_cast<sqlite3_int64>(value));

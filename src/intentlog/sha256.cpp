@@ -30,8 +30,8 @@ constexpr std::array<std::uint32_t, 64> kRoundConstants = {
 }  // namespace
 
 Sha256::Sha256() noexcept
-    : state_{0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au, 0x510e527fu, 0x9b05688cu,
-             0x1f83d9abu, 0x5be0cd19u},
+    : state_{0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+             0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u},
       buffer_{},
       bit_len_(0),
       buffer_len_(0) {}
@@ -99,7 +99,9 @@ void Sha256::update(const void* data, std::size_t len) noexcept {
   }
 }
 
-void Sha256::update(std::string_view data) noexcept { update(data.data(), data.size()); }
+void Sha256::update(std::string_view data) noexcept {
+  update(data.data(), data.size());
+}
 
 std::string Sha256::hex() {
   // Append the 0x80 padding byte, then zeros up to a 56-byte boundary, then the
@@ -131,8 +133,7 @@ std::string Sha256::hex() {
   for (std::size_t i = 0; i < 8; ++i) {
     const std::uint32_t word = state_[i];
     for (std::size_t shift = 0; shift < 4; ++shift) {
-      const auto byte =
-          static_cast<unsigned char>((word >> (24u - shift * 8u)) & 0xffu);
+      const auto byte = static_cast<unsigned char>((word >> (24u - shift * 8u)) & 0xffu);
       out.push_back(kHexDigits[(byte >> 4) & 0x0f]);
       out.push_back(kHexDigits[byte & 0x0f]);
     }

@@ -1,7 +1,6 @@
 #include "broker_exec/intentlog/intent_log.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -54,8 +53,7 @@ struct TempLog {
 // system_clock resolution — ns on some, 100ns/us on others).
 TestClock clock_at_ticks(std::int64_t ticks) {
   using sc = std::chrono::system_clock;
-  return TestClock(std::chrono::steady_clock::time_point{},
-                   sc::time_point(sc::duration(ticks)));
+  return TestClock(std::chrono::steady_clock::time_point{}, sc::time_point(sc::duration(ticks)));
 }
 
 // The wall_ts_ns that append() will stamp for a given tick count — derived via
@@ -84,11 +82,9 @@ TEST_CASE("append N records, then replay rebuilds index and enumerates them",
   REQUIRE(empty.value().empty());
   REQUIRE(log.next_seq() == 1);
 
-  const std::vector<std::string> refs = {"strat-aaaa-0001", "strat-bbbb-0002",
-                                         "strat-cccc-0003"};
+  const std::vector<std::string> refs = {"strat-aaaa-0001", "strat-bbbb-0002", "strat-cccc-0003"};
   for (std::size_t i = 0; i < refs.size(); ++i) {
-    auto appended = log.append(IntentOp::PlaceOrder, refs[i],
-                               R"({"qty":1,"side":"BUY"})");
+    auto appended = log.append(IntentOp::PlaceOrder, refs[i], R"({"qty":1,"side":"BUY"})");
     REQUIRE(appended.has_value());
     const IntentRecord& rec = appended.value();
     REQUIRE(rec.seq == static_cast<std::int64_t>(i + 1));
@@ -116,8 +112,7 @@ TEST_CASE("append N records, then replay rebuilds index and enumerates them",
   REQUIRE(recs[2].prev_hash == recs[1].hash);
 }
 
-TEST_CASE("last_for returns the latest record for a repeated client_ref",
-          "[intentlog][index]") {
+TEST_CASE("last_for returns the latest record for a repeated client_ref", "[intentlog][index]") {
   TempLog tmp("repeat");
   TestClock clock = clock_at_ticks(42);
   auto opened = IntentLog::open(tmp.path, clock);
@@ -133,8 +128,7 @@ TEST_CASE("last_for returns the latest record for a repeated client_ref",
   REQUIRE(latest.value().op == IntentOp::Result);
 }
 
-TEST_CASE("tampering with a past record breaks the hash chain on replay",
-          "[intentlog][tamper]") {
+TEST_CASE("tampering with a past record breaks the hash chain on replay", "[intentlog][tamper]") {
   TempLog tmp("tamper");
   TestClock clock = clock_at_ticks(7);
 
@@ -154,8 +148,7 @@ TEST_CASE("tampering with a past record breaks the hash chain on replay",
     {
       std::ifstream in(tmp.path, std::ios::binary);
       REQUIRE(in.good());
-      contents.assign((std::istreambuf_iterator<char>(in)),
-                      std::istreambuf_iterator<char>());
+      contents.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     }
     // The first record's payload {"qty":5} is stored as an escaped JSON string,
     // so on disk it contains the literal bytes ":5}" (record 2 has ":9}"). Flip
@@ -274,19 +267,29 @@ constexpr std::string_view kReplacementChar = "\xEF\xBF\xBD";
 // A strategy name is the FIRST SEGMENT of every minted client_ref
 // (idempotency::make_client_ref), and a symbol travels inside payload_json
 // (idempotency::intent_payload_json) — so both reach this log as raw bytes.
-constexpr std::string_view kBadStrategyRef = "al\x80" "pha-1a2b3c4d-0001";
-constexpr std::string_view kBadStrategyRefCanonical = "al\xEF\xBF\xBD" "pha-1a2b3c4d-0001";
+constexpr std::string_view kBadStrategyRef =
+    "al\x80"
+    "pha-1a2b3c4d-0001";
+constexpr std::string_view kBadStrategyRefCanonical =
+    "al\xEF\xBF\xBD"
+    "pha-1a2b3c4d-0001";
 
 // A symbol inside payload_json, which is how a symbol actually reaches this log
 // (idempotency::intent_payload_json projects intent.symbol into it). NOTE the
 // literal concatenation: a RAW string literal does NOT process \x escapes, so the
 // ill-formed byte must come from an ordinary literal spliced between two raw ones.
-constexpr std::string_view kBadSymbolPayload = R"({"symbol":"NIFTY24)" "\xFF" R"(JUN"})";
-constexpr std::string_view kBadSymbolPayloadCanonical =
-    R"({"symbol":"NIFTY24)" "\xEF\xBF\xBD" R"(JUN"})";
-constexpr std::string_view kTruncatedSymbolPayload = R"({"symbol":"BANK)" "\xE2\x82" R"("})";
-constexpr std::string_view kTruncatedSymbolPayloadCanonical =
-    R"({"symbol":"BANK)" "\xEF\xBF\xBD" R"("})";
+constexpr std::string_view kBadSymbolPayload = R"({"symbol":"NIFTY24)"
+                                               "\xFF"
+                                               R"(JUN"})";
+constexpr std::string_view kBadSymbolPayloadCanonical = R"({"symbol":"NIFTY24)"
+                                                        "\xEF\xBF\xBD"
+                                                        R"(JUN"})";
+constexpr std::string_view kTruncatedSymbolPayload = R"({"symbol":"BANK)"
+                                                     "\xE2\x82"
+                                                     R"("})";
+constexpr std::string_view kTruncatedSymbolPayloadCanonical = R"({"symbol":"BANK)"
+                                                              "\xEF\xBF\xBD"
+                                                              R"("})";
 
 // Read every JSON line back off disk and hand out one parsed object per record,
 // so a test can assert that the BYTES IN THE FILE are the bytes we hashed.
@@ -360,16 +363,14 @@ TEST_CASE("IMP-17: ill-formed UTF-8 on the order hot path APPENDS and NEVER THRO
   // name — and payload_json, which is where a symbol travels).
   const AppendOutcome sym =
       append_guarded(log, IntentOp::PlaceOrder, "ref-symbol", kBadSymbolPayload);
-  const AppendOutcome trunc_ref =
-      append_guarded(log, IntentOp::ModifyOrder, kTruncatedRun, "{}");
+  const AppendOutcome trunc_ref = append_guarded(log, IntentOp::ModifyOrder, kTruncatedRun, "{}");
   const AppendOutcome trunc_payload =
       append_guarded(log, IntentOp::CancelOrder, "ref-trunc-payload", kTruncatedSymbolPayload);
   const AppendOutcome bad_lead_ref = append_guarded(log, IntentOp::Result, kInvalidLead, "{}");
   const AppendOutcome lone_payload =
       append_guarded(log, IntentOp::SquareOff, "ref-lone-payload", kLoneContinuation);
 
-  for (const AppendOutcome* o :
-       {&sym, &trunc_ref, &trunc_payload, &bad_lead_ref, &lone_payload}) {
+  for (const AppendOutcome* o : {&sym, &trunc_ref, &trunc_payload, &bad_lead_ref, &lone_payload}) {
     CHECK_FALSE(o->threw);  // (b) NO-THROW across the Result<T> boundary
     CHECK(o->ok);           // (a) NORMALISED AND RECORDED, never rejected
     CHECK(o->hash.size() == 64);
@@ -491,8 +492,8 @@ TEST_CASE("IMP-17: valid UTF-8 hashes BIT-IDENTICALLY — no existing record mov
 
   auto genesis = log.append(IntentOp::PlaceOrder, "ref-alpha", R"({"qty":1})");
   REQUIRE(genesis.has_value());
-  CHECK(genesis.value().client_ref == "ref-alpha");            // untouched
-  CHECK(genesis.value().payload_json == R"({"qty":1})");       // untouched
+  CHECK(genesis.value().client_ref == "ref-alpha");       // untouched
+  CHECK(genesis.value().payload_json == R"({"qty":1})");  // untouched
   CHECK(genesis.value().wall_ts_ns == 0);
   CHECK(genesis.value().hash == kGenesisAsciiHash);
 
@@ -501,10 +502,16 @@ TEST_CASE("IMP-17: valid UTF-8 hashes BIT-IDENTICALLY — no existing record mov
   // rewrites ill-formed sequences ONLY. (Spelled as hex escapes, never as literal
   // non-ASCII source characters, so the assertion cannot depend on this file's
   // encoding or on the compiler's execution charset.)
-  auto rupee = log.append(IntentOp::Result, "caf\xC3\xA9" "-1a2b3c4d-0002",
-                          R"({"exposure":")" "\xE2\x82\xB9" R"("})");
+  auto rupee = log.append(IntentOp::Result,
+                          "caf\xC3\xA9"
+                          "-1a2b3c4d-0002",
+                          R"({"exposure":")"
+                          "\xE2\x82\xB9"
+                          R"("})");
   REQUIRE(rupee.has_value());
-  CHECK(rupee.value().client_ref == "caf\xC3\xA9" "-1a2b3c4d-0002");
+  CHECK(rupee.value().client_ref ==
+        "caf\xC3\xA9"
+        "-1a2b3c4d-0002");
   CHECK(rupee.value().payload_json.find(kReplacementChar) == std::string::npos);
   CHECK(rupee.value().payload_json.find("\xE2\x82\xB9") != std::string::npos);
 
@@ -533,8 +540,8 @@ TEST_CASE("IMP-17: normalisation is IDEMPOTENT — the canonical form hashes the
   IntentLog raw = std::move(a.value());
   IntentLog pre = std::move(b.value());
 
-  auto ra = raw.append(IntentOp::PlaceOrder, std::string(kTruncatedRun),
-                       std::string(kBadSymbolPayload));
+  auto ra =
+      raw.append(IntentOp::PlaceOrder, std::string(kTruncatedRun), std::string(kBadSymbolPayload));
   auto rb = pre.append(IntentOp::PlaceOrder, std::string(kTruncatedRunCanonical),
                        std::string(kBadSymbolPayloadCanonical));
   REQUIRE(ra.has_value());
@@ -555,8 +562,7 @@ TEST_CASE("IMP-17: a genuine edit to a normalised record is STILL detected",
     REQUIRE(opened.has_value());
     IntentLog log = std::move(opened.value());
     REQUIRE(log.append(IntentOp::PlaceOrder, "ref-a", R"({"qty":5})").has_value());
-    REQUIRE(log.append(IntentOp::PlaceOrder, "ref-b", std::string(kLoneContinuation))
-                .has_value());
+    REQUIRE(log.append(IntentOp::PlaceOrder, "ref-b", std::string(kLoneContinuation)).has_value());
     REQUIRE(log.append(IntentOp::CancelOrder, "ref-c", "{}").has_value());
   }
 

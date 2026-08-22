@@ -1,7 +1,6 @@
 #include "broker_exec/lifecycle/lifecycle.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 #include <vector>
 
@@ -179,9 +178,10 @@ TEST_CASE("fold_parent_state: any child Rejected (no Unknown) -> ManualIntervent
   CHECK(life::fold_parent_state(children) == OrderState::ManualInterventionRequired);
 }
 
-TEST_CASE("fold_parent_state: mixed active/terminal -> PartiallyPlaced; mixed terminal-only "
-          "-> PartiallyFilled",
-          "[lifecycle]") {
+TEST_CASE(
+    "fold_parent_state: mixed active/terminal -> PartiallyPlaced; mixed terminal-only "
+    "-> PartiallyFilled",
+    "[lifecycle]") {
   // One filled, one still acknowledged (active) -> placement in progress.
   const std::vector<OrderState> in_progress{OrderState::Filled, OrderState::Acknowledged};
   CHECK(life::fold_parent_state(in_progress) == OrderState::PartiallyPlaced);

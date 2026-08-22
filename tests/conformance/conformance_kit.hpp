@@ -81,9 +81,8 @@ namespace broker_exec::conformance {
 // FakeBroker factory honors the FaultConfig; a real adapter ignores it (its faults
 // come from recorded fixtures) but still satisfies the same signature so Epic 2/6
 // reuse this kit verbatim.
-using BrokerFactory =
-    std::function<std::unique_ptr<ports::BrokerPort>(ports::ClockPort&,
-                                                     adapters::fake::FaultConfig)>;
+using BrokerFactory = std::function<std::unique_ptr<ports::BrokerPort>(
+    ports::ClockPort&, adapters::fake::FaultConfig)>;
 
 // The structured result of a full conformance run. `ok()` is the single PASS/FAIL
 // gate CI keys on; `failures` carry human-readable diagnostics for any scenario
@@ -91,8 +90,8 @@ using BrokerFactory =
 struct ConformanceReport {
   int scenarios_run = 0;
   int scenarios_passed = 0;
-  int duplicate_orders = 0;            // total duplicate broker orders across all scenarios
-  std::vector<std::string> failures;   // human-readable, one line per failed assertion
+  int duplicate_orders = 0;           // total duplicate broker orders across all scenarios
+  std::vector<std::string> failures;  // human-readable, one line per failed assertion
 
   // PASS iff every scenario passed AND not a single duplicate order was created.
   [[nodiscard]] bool ok() const {
@@ -135,9 +134,7 @@ class CountingAlertSink final : public ports::AlertSink {
   [[nodiscard]] std::size_t count() const noexcept { return count_; }
 
   // True iff EVERY escalation so far carried a non-empty client_ref.
-  [[nodiscard]] bool escalations_named_the_order() const noexcept {
-    return anonymous_count_ == 0;
-  }
+  [[nodiscard]] bool escalations_named_the_order() const noexcept { return anonymous_count_ == 0; }
   [[nodiscard]] const std::string& last_client_ref() const noexcept { return last_client_ref_; }
 
  private:
@@ -323,8 +320,7 @@ inline int count_broker_orders_for(ports::BrokerPort& broker, const std::string&
     std::error_code ec;
     const fs::path datadir =
         fs::temp_directory_path() /
-        ("broker_exec_conformance_" + scenario.name + "_" +
-         std::to_string(report.scenarios_run));
+        ("broker_exec_conformance_" + scenario.name + "_" + std::to_string(report.scenarios_run));
     fs::remove_all(datadir, ec);
     fs::create_directories(datadir, ec);
 
@@ -420,8 +416,9 @@ inline int count_broker_orders_for(ports::BrokerPort& broker, const std::string&
             // because the body is scrubbed and a ref interpolated there would be
             // redacted — which is the whole defect.
             if (!stack.alerts.escalations_named_the_order()) {
-              fail("a fail-closed UNKNOWN escalated ANONYMOUSLY: the alert carried no "
-                   "typed provenance, so it named no order");
+              fail(
+                  "a fail-closed UNKNOWN escalated ANONYMOUSLY: the alert carried no "
+                  "typed provenance, so it named no order");
             } else if (stack.alerts.last_client_ref() != client_ref) {
               fail("the fail-closed escalation named '" + stack.alerts.last_client_ref() +
                    "', not the signal that went UNKNOWN");

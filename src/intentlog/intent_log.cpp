@@ -4,13 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/domain/utf8.hpp"
 #include "broker_exec/errors/error.hpp"
@@ -179,17 +178,22 @@ std::string_view to_string(IntentOp op) noexcept {
 }
 
 std::optional<IntentOp> intent_op_from_string(std::string_view name) noexcept {
-  if (name == "place_order") return IntentOp::PlaceOrder;
-  if (name == "modify_order") return IntentOp::ModifyOrder;
-  if (name == "cancel_order") return IntentOp::CancelOrder;
-  if (name == "square_off") return IntentOp::SquareOff;
-  if (name == "result") return IntentOp::Result;
-  if (name == "child_slice") return IntentOp::ChildSlice;
+  if (name == "place_order")
+    return IntentOp::PlaceOrder;
+  if (name == "modify_order")
+    return IntentOp::ModifyOrder;
+  if (name == "cancel_order")
+    return IntentOp::CancelOrder;
+  if (name == "square_off")
+    return IntentOp::SquareOff;
+  if (name == "result")
+    return IntentOp::Result;
+  if (name == "child_slice")
+    return IntentOp::ChildSlice;
   return std::nullopt;
 }
 
-IntentLog::IntentLog(std::FILE* file, std::filesystem::path path,
-                     ports::ClockPort& clock) noexcept
+IntentLog::IntentLog(std::FILE* file, std::filesystem::path path, ports::ClockPort& clock) noexcept
     : file_(file), path_(std::move(path)), clock_(&clock) {}
 
 IntentLog::IntentLog(IntentLog&& other) noexcept
@@ -266,8 +270,7 @@ Result<IntentRecord> IntentLog::append(IntentOp op, std::string client_ref,
   record.payload_json = domain::canonical_text(payload_json);
 
   const auto wall = clock_->now_wall().time_since_epoch();
-  record.wall_ts_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(wall).count();
+  record.wall_ts_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wall).count();
 
   record.prev_hash = last_hash_.empty() ? std::string(kGenesis) : last_hash_;
   record.hash = compute_hash(record);
@@ -275,20 +278,20 @@ Result<IntentRecord> IntentLog::append(IntentOp op, std::string client_ref,
   const std::string line = to_json_line(record);
 
   if (std::fwrite(line.data(), 1, line.size(), file_) != line.size()) {
-    return fail(chain_error("intentlog: short write appending record seq " +
-                            std::to_string(record.seq)));
+    return fail(
+        chain_error("intentlog: short write appending record seq " + std::to_string(record.seq)));
   }
   // The single fsync on the hot path: flush the C buffer to the OS, then force
   // the OS write buffers to stable storage. The caller may socket-send only
   // after this returns successfully.
   if (std::fflush(file_) != 0) {
-    return fail(chain_error("intentlog: fflush failed for record seq " +
-                            std::to_string(record.seq)));
+    return fail(
+        chain_error("intentlog: fflush failed for record seq " + std::to_string(record.seq)));
   }
   const int fd = platform::portable_fileno(file_);
   if (fd < 0 || !platform::durable_sync(fd)) {
-    return fail(chain_error("intentlog: durable_sync failed for record seq " +
-                            std::to_string(record.seq)));
+    return fail(
+        chain_error("intentlog: durable_sync failed for record seq " + std::to_string(record.seq)));
   }
 
   // Durable — commit to in-memory state only now.

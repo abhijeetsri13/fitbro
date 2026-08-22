@@ -1,7 +1,6 @@
 #include "broker_exec/alerting/multi_channel_alert_sink.hpp"
 
 #include <nlohmann/json.hpp>
-
 #include <string>
 #include <string_view>
 #include <utility>
@@ -66,8 +65,7 @@ MultiChannelAlertSink::MultiChannelAlertSink(PostFn post, std::vector<AlertChann
                                              const ports::ClockPort& clock)
     : post_(std::move(post)), channels_(std::move(channels)), heartbeat_(clock) {}
 
-Result<ports::Ok> MultiChannelAlertSink::deliver(ports::AlertLevel level,
-                                                 const std::string& text) {
+Result<ports::Ok> MultiChannelAlertSink::deliver(ports::AlertLevel level, const std::string& text) {
   // No channel configured == cannot alert at all. Surface it as an Internal
   // wiring error rather than a silent success.
   if (channels_.empty()) {
@@ -93,16 +91,15 @@ Result<ports::Ok> MultiChannelAlertSink::deliver(ports::AlertLevel level,
   return fail(make_error(ErrorCategory::Network, "alert delivery failed on all channels"));
 }
 
-Result<ports::Ok> MultiChannelAlertSink::send(ports::AlertLevel level,
-                                              const std::string& message) {
+Result<ports::Ok> MultiChannelAlertSink::send(ports::AlertLevel level, const std::string& message) {
   // SCRUB FIRST: the in-memory message is not pre-scrubbed, so redact before any
   // body is built — no token-shaped run reaches any outbound payload (SEC-3).
   return deliver(level, domain::scrub(message));
 }
 
-Result<ports::Ok> MultiChannelAlertSink::send_with_context(
-    ports::AlertLevel level, const std::string& message,
-    const ports::AlertContext& provenance) {
+Result<ports::Ok> MultiChannelAlertSink::send_with_context(ports::AlertLevel level,
+                                                           const std::string& message,
+                                                           const ports::AlertContext& provenance) {
   // THE FREE-FORM BODY IS SCRUBBED IDENTICALLY to the send() path — same call,
   // same argument, no exemption, no relaxation. That is the whole point of
   // IMP-16: the ids do NOT ride inside `message`, so `message` never needs (and
@@ -149,9 +146,9 @@ Result<ports::Ok> MultiChannelAlertSink::send_test_alert() {
     return ports::ok();
   }
   // A test must verify EACH channel: any failure is a failed test.
-  return fail(make_error(ErrorCategory::Network,
-                         "test alert failed on " + std::to_string(failed) + " of " +
-                             std::to_string(channels_.size()) + " channels"));
+  return fail(make_error(ErrorCategory::Network, "test alert failed on " + std::to_string(failed) +
+                                                     " of " + std::to_string(channels_.size()) +
+                                                     " channels"));
 }
 
 void MultiChannelAlertSink::heartbeat() {

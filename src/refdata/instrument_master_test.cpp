@@ -1,7 +1,6 @@
 #include "broker_exec/refdata/instrument_master.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -233,8 +232,8 @@ TEST_CASE("a fetch failure leaves refresh failing and safe-start blocked", "[ref
   TempDir dir;
   TestClock clock = clock_at(2026, 6, 27);
   auto failing_fetcher = []() -> Result<std::string> {
-    return broker_exec::fail(broker_exec::errors::make_error(ErrorCategory::Network,
-                                                             "download failed"));
+    return broker_exec::fail(
+        broker_exec::errors::make_error(ErrorCategory::Network, "download failed"));
   };
   InstrumentMaster master(failing_fetcher, clock, dir.path, "kite", "NFO");
 
@@ -264,8 +263,9 @@ TEST_CASE("a fetch failure leaves refresh failing and safe-start blocked", "[ref
 // shape the private copy accepted must still be accepted, with the same value.
 TEST_CASE("tick_size is parsed by the shared fail-closed decimal parser", "[refdata][IMP-14]") {
   const auto csv_with_tick = [](const char* tick) {
-    return std::string("instrument_token,tradingsymbol,expiry,tick_size,lot_size,exchange\n"
-                       "256265,NIFTY26JUL24000CE,2026-07-30,") +
+    return std::string(
+               "instrument_token,tradingsymbol,expiry,tick_size,lot_size,exchange\n"
+               "256265,NIFTY26JUL24000CE,2026-07-30,") +
            tick + ",75,NFO\n";
   };
   const auto tick_paise_of = [&csv_with_tick](const char* tick) {
@@ -333,8 +333,7 @@ TEST_CASE("a malformed row yields a typed Error naming the row", "[refdata]") {
       "instrument_token,tradingsymbol,expiry,tick_size,lot_size,exchange\n"
       "256265,NIFTY26JUL24000CE,2026-07-30,0.05,75,NFO\n"
       "111111,BADROW,2026-07-30,0.05,abc,NFO\n";
-  const Result<std::vector<Instrument>> parsed =
-      broker_exec::refdata::parse_instruments_csv(bad);
+  const Result<std::vector<Instrument>> parsed = broker_exec::refdata::parse_instruments_csv(bad);
   REQUIRE_FALSE(parsed.has_value());
   CHECK(parsed.error().category == ErrorCategory::Validation);
   CHECK(parsed.error().message.find("row 3") != std::string::npos);

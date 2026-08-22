@@ -81,9 +81,9 @@ struct PlanSummary {
   // registered and never started — "never launched" is a down account, not a
   // healthy one.
   int accounts_down = 0;
-  int accounts_alarmed = 0;   // accounts with an unacknowledged absence alarm
-  int accounts_escalated = 0; // accounts the supervisor has stopped restarting
-  bool any_escalated = false; // "at least one account needs a human, now"
+  int accounts_alarmed = 0;    // accounts with an unacknowledged absence alarm
+  int accounts_escalated = 0;  // accounts the supervisor has stopped restarting
+  bool any_escalated = false;  // "at least one account needs a human, now"
 };
 
 class SupervisorPlan {

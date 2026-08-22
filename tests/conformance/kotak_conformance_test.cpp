@@ -24,9 +24,8 @@
 //
 // Cross-platform: C++20 standard library only. No OS APIs, no `#ifdef`, no float.
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <algorithm>
+#include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -34,14 +33,13 @@
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/fake/fake_broker.hpp"  // FaultConfig (the fault selector)
 #include "broker_exec/adapters/kotak/kotak_broker_adapter.hpp"
@@ -63,7 +61,6 @@
 #include "broker_exec/result.hpp"
 #include "broker_exec/runtime/unknown_resolver.hpp"
 #include "broker_exec/store/store.hpp"
-
 #include "conformance_kit.hpp"
 #include "recorded_kotak_server.hpp"
 
@@ -621,9 +618,9 @@ TEST_CASE("[conformance][kotak][money] prices round-trip as integer paise, never
 
 TEST_CASE("[conformance][kotak][money] the decimal->paise parser is fail-closed and overflow-safe",
           "[conformance][kotak][money]") {
+  using broker_exec::domain::paise_to_decimal;
   using broker_exec::domain::parse_decimal_paise;
   using broker_exec::domain::parse_int64;
-  using broker_exec::domain::paise_to_decimal;
 
   // Exact values.
   CHECK(parse_decimal_paise("1450.05") == std::optional<std::int64_t>{145005});
@@ -1044,8 +1041,8 @@ TEST_CASE("[conformance][kotak][IMP-11] SL sends a DISTINCT trigger and parses i
     REQUIRE(owner.server->place_bodies().size() == 1);
     const nlohmann::json sent =
         broker_exec::conformance::kotak_fixture::parse_jdata(owner.server->place_bodies().front());
-    CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "pr") == "119.00");   // the limit
-    CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "tp") == "120.50");   // the trigger
+    CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "pr") == "119.00");  // the limit
+    CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "tp") == "120.50");  // the trigger
     CHECK(broker_exec::conformance::kotak_fixture::jstr(sent, "pt") == "SL");
 
     auto orders = owner.adapter.fetch_orders();

@@ -1,8 +1,7 @@
 #include "broker_exec/cli/health_snapshot.hpp"
 
-#include <string>
-
 #include <nlohmann/json.hpp>
+#include <string>
 
 #include "broker_exec/domain/redaction.hpp"
 
@@ -63,8 +62,7 @@ bool is_live(const HealthSnapshot& snapshot, std::int64_t live_budget_ms) noexce
 bool is_ready(const HealthSnapshot& snapshot, std::int64_t live_budget_ms) noexcept {
   // Readiness is strictly stronger than liveness: live PLUS fully healthy.
   return is_live(snapshot, live_budget_ms) && snapshot.replay_clean &&
-         snapshot.session_state == session::SessionState::Healthy &&
-         snapshot.in_flight_count >= 0;
+         snapshot.session_state == session::SessionState::Healthy && snapshot.in_flight_count >= 0;
 }
 
 }  // namespace broker_exec::cli

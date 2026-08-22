@@ -7,13 +7,12 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/domain/redaction.hpp"
 #include "broker_exec/domain/utf8.hpp"
@@ -134,9 +133,12 @@ class Pkey {
     return false;
   }
   const auto nibble = [](char c) -> int {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= '0' && c <= '9')
+      return c - '0';
+    if (c >= 'a' && c <= 'f')
+      return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+      return c - 'A' + 10;
     return -1;
   };
   out.clear();
@@ -161,8 +163,7 @@ class Pkey {
   if (EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1) {
     return std::string{};
   }
-  if (!data.empty() &&
-      EVP_DigestUpdate(ctx.get(), as_u8(data.data()), data.size()) != 1) {
+  if (!data.empty() && EVP_DigestUpdate(ctx.get(), as_u8(data.data()), data.size()) != 1) {
     return std::string{};
   }
   std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
@@ -358,7 +359,8 @@ Result<LedgerEntry> Ledger::append(std::string payload, const ProvenanceContext&
   // crash after return cannot lose a record that we reported as written.
   std::FILE* fp = std::fopen(path_.string().c_str(), "ab");
   if (fp == nullptr) {
-    return fail(make_error(ErrorCategory::Internal, "ledger: failed to open ledger file for append"));
+    return fail(
+        make_error(ErrorCategory::Internal, "ledger: failed to open ledger file for append"));
   }
   const std::size_t written = std::fwrite(line.data(), 1, line.size(), fp);
   if (written != line.size() || std::fflush(fp) != 0) {
@@ -458,12 +460,11 @@ Result<ports::Ok> Ledger::load() {
     // type_error.302 on a wrong-type field (e.g. a payload that is a NUMBER),
     // which would escape our no-throw Result boundary. Require each field to be
     // present AND of the expected type; never let a json access throw.
-    const bool well_formed =
-        !parsed.is_discarded() && parsed.is_object() &&
-        parsed.contains("seq") && parsed["seq"].is_number_integer() &&
-        parsed.contains("prev_hash") && parsed["prev_hash"].is_string() &&
-        parsed.contains("payload") && parsed["payload"].is_string() &&
-        parsed.contains("hash") && parsed["hash"].is_string();
+    const bool well_formed = !parsed.is_discarded() && parsed.is_object() &&
+                             parsed.contains("seq") && parsed["seq"].is_number_integer() &&
+                             parsed.contains("prev_hash") && parsed["prev_hash"].is_string() &&
+                             parsed.contains("payload") && parsed["payload"].is_string() &&
+                             parsed.contains("hash") && parsed["hash"].is_string();
     if (!well_formed) {
       if (i == last_content) {
         // Torn trailing write: skip the single un-synced last record rather than
@@ -487,7 +488,9 @@ std::string Ledger::head_hash() const {
   return entries_.empty() ? std::string{} : entries_.back().hash;
 }
 
-std::size_t Ledger::size() const noexcept { return entries_.size(); }
+std::size_t Ledger::size() const noexcept {
+  return entries_.size();
+}
 
 Result<Ed25519KeyPair> Ledger::generate_keypair() {
   PkeyCtx ctx(EVP_PKEY_ED25519);
@@ -522,7 +525,8 @@ Result<std::vector<unsigned char>> Ledger::sign_head(
     return fail(make_error(ErrorCategory::Validation, "ledger empty, nothing to sign"));
   }
   if (private_key.size() != kEd25519KeyBytes) {
-    return fail(make_error(ErrorCategory::Validation, "ledger: Ed25519 private key must be 32 bytes"));
+    return fail(
+        make_error(ErrorCategory::Validation, "ledger: Ed25519 private key must be 32 bytes"));
   }
 
   Pkey pkey(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, private_key.data(),
@@ -555,10 +559,11 @@ Result<ports::Ok> Ledger::verify_head(std::string_view head_hash,
                                       const std::vector<unsigned char>& signature,
                                       const std::vector<unsigned char>& public_key) {
   if (public_key.size() != kEd25519KeyBytes) {
-    return fail(make_error(ErrorCategory::Validation, "ledger: Ed25519 public key must be 32 bytes"));
+    return fail(
+        make_error(ErrorCategory::Validation, "ledger: Ed25519 public key must be 32 bytes"));
   }
-  Pkey pkey(EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr, public_key.data(),
-                                        public_key.size()));
+  Pkey pkey(
+      EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr, public_key.data(), public_key.size()));
   if (!pkey) {
     return fail(crypto_error("ledger: Ed25519 public key import failed"));
   }
@@ -595,7 +600,8 @@ Result<ports::Ok> Ledger::write_public_key(const std::vector<unsigned char>& pub
   std::error_code ec;
   fs::create_directories(dir, ec);
   if (ec) {
-    return fail(make_error(ErrorCategory::Internal, "ledger: failed to create public-key directory"));
+    return fail(
+        make_error(ErrorCategory::Internal, "ledger: failed to create public-key directory"));
   }
   const fs::path file = dir / "ledger_public_key.hex";
   std::ofstream out(file, std::ios::binary | std::ios::trunc);
@@ -711,12 +717,12 @@ Result<ports::Ok> Ledger::verify_against_checkpoint(
   // field present AND of the expected type so no json access can throw across the
   // no-throw boundary. A malformed checkpoint -> Validation Error, never ok().
   const json parsed = json::parse(text, nullptr, false);
-  const bool well_formed =
-      !parsed.is_discarded() && parsed.is_object() &&
-      parsed.contains("entry_count") && parsed["entry_count"].is_number_integer() &&
-      parsed.contains("head_hash") && parsed["head_hash"].is_string() &&
-      parsed.contains("signature") && parsed["signature"].is_string() &&
-      parsed.contains("public_key") && parsed["public_key"].is_string();
+  const bool well_formed = !parsed.is_discarded() && parsed.is_object() &&
+                           parsed.contains("entry_count") &&
+                           parsed["entry_count"].is_number_integer() &&
+                           parsed.contains("head_hash") && parsed["head_hash"].is_string() &&
+                           parsed.contains("signature") && parsed["signature"].is_string() &&
+                           parsed.contains("public_key") && parsed["public_key"].is_string();
   if (!well_formed) {
     return fail(
         make_error(ErrorCategory::Validation, "ledger: checkpoint file malformed or unparseable"));

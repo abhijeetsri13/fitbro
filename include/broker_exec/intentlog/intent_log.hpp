@@ -80,13 +80,13 @@ inline constexpr int kSchemaVersion = 1;
 // disk, so a record round-trips byte-identically through replay().
 struct IntentRecord {
   int schema_version = kSchemaVersion;
-  std::int64_t seq = 0;       // monotonic, starts at 1
-  std::string client_ref;     // caller-provided (canonicalised); idempotency key (1.7)
+  std::int64_t seq = 0;    // monotonic, starts at 1
+  std::string client_ref;  // caller-provided (canonicalised); idempotency key (1.7)
   IntentOp op = IntentOp::PlaceOrder;
-  std::string payload_json;   // opaque JSON object as a string; caller-provided (canonicalised)
+  std::string payload_json;     // opaque JSON object as a string; caller-provided (canonicalised)
   std::int64_t wall_ts_ns = 0;  // wall-clock ns since epoch, from ClockPort
-  std::string prev_hash;      // hex SHA-256 of previous record's hash, or "GENESIS"
-  std::string hash;           // hex SHA-256 over this record's canonical content
+  std::string prev_hash;        // hex SHA-256 of previous record's hash, or "GENESIS"
+  std::string hash;             // hex SHA-256 over this record's canonical content
 };
 
 // The append-only, fsync-on-write, hash-chained intent log.
@@ -106,8 +106,7 @@ class IntentLog {
   // Open (creating the file if absent) at `path`; `clock` supplies append
   // timestamps and must outlive this log. Does NOT auto-replay — call replay()
   // on boot before append() to rebuild the index from any existing records.
-  [[nodiscard]] static Result<IntentLog> open(std::filesystem::path path,
-                                              ports::ClockPort& clock);
+  [[nodiscard]] static Result<IntentLog> open(std::filesystem::path path, ports::ClockPort& clock);
 
   // Append one intent. Normalises `client_ref` and `payload_json` to valid UTF-8
   // (IMP-17 — see the note at the top of this file), fills

@@ -1,7 +1,6 @@
 #include "broker_exec/options/margin_shock.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstddef>
 #include <optional>
 
@@ -62,7 +61,8 @@ struct AuditSpy {
 
 // ── AC-1: SPAN available, shocked margin within available => allowed ──────────
 
-TEST_CASE("AC-1 within: Supported, shock 400rs < available 500rs => WithinShockLimit, not blocked") {
+TEST_CASE(
+    "AC-1 within: Supported, shock 400rs < available 500rs => WithinShockLimit, not blocked") {
   AuditSpy audit;
   MarginShockSeams seams;
   seams.span_margin_source = [] {
@@ -87,7 +87,8 @@ TEST_CASE("AC-1 within: Supported, shock 400rs < available 500rs => WithinShockL
 
 // ── AC-1: SPAN available, shocked margin crosses available => blocked ─────────
 
-TEST_CASE("AC-1 crossing: Supported, shock 600rs > available 500rs => BlockedMarginShock, blocked") {
+TEST_CASE(
+    "AC-1 crossing: Supported, shock 600rs > available 500rs => BlockedMarginShock, blocked") {
   AuditSpy audit;
   MarginShockSeams seams;
   seams.span_margin_source = [] {
@@ -145,7 +146,8 @@ TEST_CASE("AC-1 boundary: shock 500rs == available 500rs => WithinShockLimit (st
 
 // ── AC-2: SPAN unavailable + net-short => fail closed (every unavailable trigger) ─
 
-TEST_CASE("AC-2 unavailable + net-short: Support::Unsupported => BlockedUnavailableNetShort, blocked") {
+TEST_CASE(
+    "AC-2 unavailable + net-short: Support::Unsupported => BlockedUnavailableNetShort, blocked") {
   AuditSpy audit;
   MarginShockSeams seams;
   // A source is wired in, but Unsupported gates SPAN off regardless: it must NOT
@@ -169,7 +171,9 @@ TEST_CASE("AC-2 unavailable + net-short: Support::Unsupported => BlockedUnavaila
   CHECK(audit.last->outcome == MarginShockOutcome::BlockedUnavailableNetShort);
 }
 
-TEST_CASE("AC-2 unavailable + net-short: Support::Unknown (fail-closed default) => BlockedUnavailableNetShort") {
+TEST_CASE(
+    "AC-2 unavailable + net-short: Support::Unknown (fail-closed default) => "
+    "BlockedUnavailableNetShort") {
   AuditSpy audit;
   MarginShockSeams seams;
   seams.span_margin_source = [] {
@@ -186,7 +190,9 @@ TEST_CASE("AC-2 unavailable + net-short: Support::Unknown (fail-closed default) 
   CHECK(audit.count == 1);
 }
 
-TEST_CASE("AC-2 unavailable + net-short: Supported but source returns Error => fail-closed block (cannot model)") {
+TEST_CASE(
+    "AC-2 unavailable + net-short: Supported but source returns Error => fail-closed block (cannot "
+    "model)") {
   AuditSpy audit;
   MarginShockSeams seams;
   seams.span_margin_source = [] { return source_error(); };
@@ -218,7 +224,9 @@ TEST_CASE("AC-2 unavailable + net-short: null span_margin_source => fail-closed 
 
 // ── AC-2: SPAN unavailable + NOT net-short => allowed (bounded risk) ──────────
 
-TEST_CASE("AC-2 unavailable + not net-short: Unsupported, net_short=false => AllowedUnavailableBounded, not blocked") {
+TEST_CASE(
+    "AC-2 unavailable + not net-short: Unsupported, net_short=false => AllowedUnavailableBounded, "
+    "not blocked") {
   AuditSpy audit;
   MarginShockSeams seams;  // null source => unavailable
   seams.audit = audit.seam();
@@ -329,8 +337,8 @@ TEST_CASE("AC-3 null audit seam does not crash on any path") {
 
   // Unavailable + net-short.
   seams.span_margin_source = nullptr;
-  const MarginShockResult blocked = evaluate_margin_shock(
-      Support::Unknown, inputs(domain::Money::from_rupees(500), true), seams);
+  const MarginShockResult blocked =
+      evaluate_margin_shock(Support::Unknown, inputs(domain::Money::from_rupees(500), true), seams);
   CHECK(blocked.outcome == MarginShockOutcome::BlockedUnavailableNetShort);
 
   // Unavailable + bounded.
@@ -342,7 +350,8 @@ TEST_CASE("AC-3 null audit seam does not crash on any path") {
 // ── to_string: stable names ───────────────────────────────────────────────────
 
 TEST_CASE("to_string: stable MarginShockOutcome names") {
-  CHECK(broker_exec::options::to_string(MarginShockOutcome::WithinShockLimit) == "WithinShockLimit");
+  CHECK(broker_exec::options::to_string(MarginShockOutcome::WithinShockLimit) ==
+        "WithinShockLimit");
   CHECK(broker_exec::options::to_string(MarginShockOutcome::BlockedMarginShock) ==
         "BlockedMarginShock");
   CHECK(broker_exec::options::to_string(MarginShockOutcome::BlockedUnavailableNetShort) ==

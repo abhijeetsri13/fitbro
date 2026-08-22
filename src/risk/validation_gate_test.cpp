@@ -1,7 +1,6 @@
 #include "broker_exec/risk/validation_gate.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -402,7 +401,7 @@ TEST_CASE("tick alignment is enforced for every price-bearing order type", "[ris
   SECTION("StopLoss TRIGGER price must be tick-aligned independently of the limit") {
     OrderIntent intent = make_entry_intent();
     intent.order_type = OrderType::StopLoss;
-    intent.price = Price::from_paise(10005);         // limit fine
+    intent.price = Price::from_paise(10005);          // limit fine
     intent.trigger_price = Price::from_paise(10003);  // trigger is not
     GateContext ctx = base_entry(intent, instrument);
     const Result<GateOutcome> r = gate.validate(ctx);
@@ -614,7 +613,8 @@ TEST_CASE("order-shape is NOT exit-exempt: a malformed protective order is still
   CHECK(ok.value() == GateOutcome::Allow);
 }
 
-TEST_CASE("an instrument with no exchange is rejected, naming the exchange check", "[risk][gate][AC1]") {
+TEST_CASE("an instrument with no exchange is rejected, naming the exchange check",
+          "[risk][gate][AC1]") {
   Instrument instrument = make_instrument();
   instrument.exchange = "";  // corrupt / unresolved instrument
   OrderIntent intent = make_entry_intent();

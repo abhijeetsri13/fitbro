@@ -20,12 +20,11 @@
 //
 // Cross-platform: C++20 standard library only. No OS APIs, no `#ifdef`.
 
+#include <nlohmann/json_fwd.hpp>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json_fwd.hpp>
 
 #include "broker_exec/adapters/kite/http_client.hpp"
 #include "broker_exec/errors/error.hpp"
@@ -38,10 +37,10 @@ namespace broker_exec::adapters::kite {
 // (Story 2.12) can throttle. Kite REST is non-paginated; where it sends
 // X-RateLimit-*/Retry-After we surface them, otherwise the fields stay empty.
 struct RateLimitInfo {
-  bool present = false;                       // any rate-limit/Retry-After header seen
-  std::optional<long> limit;                  // X-RateLimit-Limit
-  std::optional<long> remaining;              // X-RateLimit-Remaining
-  std::optional<long> retry_after_seconds;    // Retry-After (notably on a 429)
+  bool present = false;                     // any rate-limit/Retry-After header seen
+  std::optional<long> limit;                // X-RateLimit-Limit
+  std::optional<long> remaining;            // X-RateLimit-Remaining
+  std::optional<long> retry_after_seconds;  // Retry-After (notably on a 429)
 };
 
 // Map an HTTP/Kite error response to the typed taxonomy (the single Kite
@@ -70,8 +69,8 @@ class KiteRestClient {
                                                     const nlohmann::json& params);
 
   // ── Reads (idempotent) ──
-  [[nodiscard]] Result<nlohmann::json> orders();      // orderbook
-  [[nodiscard]] Result<nlohmann::json> trades();      // tradebook
+  [[nodiscard]] Result<nlohmann::json> orders();  // orderbook
+  [[nodiscard]] Result<nlohmann::json> trades();  // tradebook
   [[nodiscard]] Result<nlohmann::json> positions();
   [[nodiscard]] Result<nlohmann::json> holdings();
   [[nodiscard]] Result<nlohmann::json> margins(const std::string& segment);

@@ -1,8 +1,7 @@
 #include "broker_exec/session/safe_start.hpp"
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <array>
+#include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -31,10 +30,10 @@ using broker_exec::errors::ErrorCategory;
 using broker_exec::errors::make_error;
 using broker_exec::errors::SuggestedAction;
 using broker_exec::refdata::InstrumentMaster;
+using broker_exec::session::require_valid_strategy_names;
 using broker_exec::session::SafeCheck;
 using broker_exec::session::SafeStartContext;
 using broker_exec::session::SafeStartGate;
-using broker_exec::session::require_valid_strategy_names;
 using broker_exec::session::session_state_to_result;
 using broker_exec::session::SessionState;
 
@@ -135,7 +134,8 @@ struct TempDir {
   }
 };
 
-[[nodiscard]] std::chrono::system_clock::time_point wall_on(int year, unsigned month, unsigned day) {
+[[nodiscard]] std::chrono::system_clock::time_point wall_on(int year, unsigned month,
+                                                            unsigned day) {
   return std::chrono::system_clock::time_point(std::chrono::sys_days{
       std::chrono::year{year} / std::chrono::month{month} / std::chrono::day{day}});
 }
@@ -333,8 +333,7 @@ TEST_CASE("legacy-stop guard: TERMINAL trigger-less stops are history, not a blo
   // duplicated. Blocking on it would wedge the gate permanently on any database
   // that merely REMEMBERS a pre-upgrade stop — a guard that can never be
   // satisfied is one operators learn to bypass.
-  for (const OrderState state :
-       {OrderState::Filled, OrderState::Cancelled, OrderState::Rejected}) {
+  for (const OrderState state : {OrderState::Filled, OrderState::Cancelled, OrderState::Rejected}) {
     const std::vector<broker_exec::domain::Order> book = {
         order_row("old", OrderType::StopLoss, state, /*armed=*/false)};
     CHECK(broker_exec::session::require_no_legacy_stops(book).has_value());
@@ -378,12 +377,7 @@ TEST_CASE("strategy-name guard: valid names start", "[session][safe-start][IMP-1
   CHECK(require_valid_strategy_names({}).has_value());
 
   const std::vector<std::string> good = {
-      "alpha",
-      "S-1",
-      "momentum-v-2",
-      "atm-straddle-9-20",
-      "IRON_CONDOR",
-      "12345",
+      "alpha", "S-1", "momentum-v-2", "atm-straddle-9-20", "IRON_CONDOR", "12345",
   };
   CHECK(require_valid_strategy_names(good).has_value());
 }

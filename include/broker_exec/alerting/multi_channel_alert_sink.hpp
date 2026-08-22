@@ -51,9 +51,9 @@ class MultiChannelAlertSink final : public ports::AlertSink {
   // omitting empty fields. A context field that is not id-shaped is redacted; an
   // all-empty context appends nothing, leaving the body byte-identical to send().
   // Never throws.
-  [[nodiscard]] Result<ports::Ok> send_with_context(
-      ports::AlertLevel level, const std::string& message,
-      const ports::AlertContext& provenance) override;
+  [[nodiscard]] Result<ports::Ok> send_with_context(ports::AlertLevel level,
+                                                    const std::string& message,
+                                                    const ports::AlertContext& provenance) override;
 
   // Send a fixed self-test message to EVERY channel. ok() iff ALL channels
   // accepted (the test must prove each channel is wired). Never throws.

@@ -24,13 +24,12 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/fake/fake_broker.hpp"  // FaultConfig (the fault selector)
 #include "broker_exec/adapters/kite/http_client.hpp"
@@ -401,7 +400,7 @@ class RecordedKiteServer final : public HttpClient {
     std::string tag;
     std::string status;
     std::string qty;
-    std::string filled;      // executed quantity (see set_fill_model); TEXT, as Kite sends it
+    std::string filled;  // executed quantity (see set_fill_model); TEXT, as Kite sends it
     std::string price;
     std::string symbol;
     std::string side;        // Kite `transaction_type`: "BUY" / "SELL"
@@ -787,7 +786,7 @@ class RecordedKiteServer final : public HttpClient {
   mutable std::vector<Record> book_;
   mutable std::int64_t next_id_ = 1;
   mutable std::size_t request_count_ = 0;
-  mutable std::size_t place_count_ = 0;  // POST /orders/regular attempts (see place_count())
+  mutable std::size_t place_count_ = 0;      // POST /orders/regular attempts (see place_count())
   mutable std::size_t cancel_refusals_ = 0;  // terminal-cancel refusals (see cancel_refusals())
 };
 
@@ -822,12 +821,10 @@ struct OwningKiteAdapter final : broker_exec::ports::BrokerPort {
     return adapter.place(intent);
   }
   [[nodiscard]] Result<broker_exec::ports::BrokerAck> modify(
-      const std::string& broker_order_id,
-      const broker_exec::domain::OrderIntent& intent) override {
+      const std::string& broker_order_id, const broker_exec::domain::OrderIntent& intent) override {
     return adapter.modify(broker_order_id, intent);
   }
-  [[nodiscard]] Result<broker_exec::ports::Ok> cancel(
-      const std::string& broker_order_id) override {
+  [[nodiscard]] Result<broker_exec::ports::Ok> cancel(const std::string& broker_order_id) override {
     return adapter.cancel(broker_order_id);
   }
   [[nodiscard]] Result<broker_exec::ports::Ok> square_off(

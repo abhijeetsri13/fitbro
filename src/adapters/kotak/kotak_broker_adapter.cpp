@@ -5,14 +5,13 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iterator>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/square_off_exit.hpp"
 #include "broker_exec/domain/decimal_paise.hpp"
@@ -484,8 +483,8 @@ enum class StatusClass { Unrecognized, Working, Complete, Rejected, Cancelled };
 struct RawOrder {
   std::string order_id;
   std::string symbol;
-  std::string side;                        // folded to "B"/"S" (or an uncollidable fallback)
-  std::optional<std::int64_t> quantity;    // NULLOPT means "the field was absent", not zero
+  std::string side;                      // folded to "B"/"S" (or an uncollidable fallback)
+  std::optional<std::int64_t> quantity;  // NULLOPT means "the field was absent", not zero
   std::int64_t filled = 0;
   std::int64_t price_paise = 0;
   std::int64_t avg_paise = 0;
@@ -502,8 +501,8 @@ struct RawOrder {
   // opens a second one, and a segment we round-trip through our own inference is a
   // segment we may have guessed. Empty means "the report did not say"; the exit
   // then falls back to the same mapping a normal place uses.
-  std::string product;  // `prod` / `pc` / `pCode` — the product the position is in
-  std::string segment;  // `exSeg` / `es` — the exchange segment it actually sits on
+  std::string product;     // `prod` / `pc` / `pCode` — the product the position is in
+  std::string segment;     // `exSeg` / `es` — the exchange segment it actually sits on
   bool malformed = false;  // a field was PRESENT but unparseable -> fail this row closed
 };
 
@@ -513,8 +512,8 @@ struct RawOrder {
   raw.symbol = first_str(row, {"trdSym", "tsym", "sym", "trdSymbol"});
   raw.side = fold_side_code(first_str(row, {"trnsTp", "trnsTyp", "tt"}));
   raw.quantity = first_number(row, {"qty", "qt", "ordQty", "totQty"}, raw.malformed);
-  raw.filled = first_number(row, {"fldQty", "flQty", "fillQty", "filledQty"}, raw.malformed)
-                   .value_or(0);
+  raw.filled =
+      first_number(row, {"fldQty", "flQty", "fillQty", "filledQty"}, raw.malformed).value_or(0);
   raw.price_paise = first_paise(row, {"prc", "pr", "ordPrc"}, raw.malformed).value_or(0);
   raw.avg_paise =
       first_paise(row, {"avgPrc", "avgPrice", "fldPrc", "flPrc"}, raw.malformed).value_or(0);
@@ -590,8 +589,7 @@ void KotakBrokerAdapter::register_intent(const domain::OrderIntent& intent) {
   }
 }
 
-void KotakBrokerAdapter::anchor(const std::string& broker_order_id,
-                                const std::string& client_ref) {
+void KotakBrokerAdapter::anchor(const std::string& broker_order_id, const std::string& client_ref) {
   if (broker_order_id.empty() || client_ref.empty()) {
     return;
   }
@@ -606,11 +604,10 @@ void KotakBrokerAdapter::drop_pending(const std::string& client_ref) {
   if (client_ref.empty()) {
     return;
   }
-  pending_.erase(std::remove_if(pending_.begin(), pending_.end(),
-                                [&client_ref](const PendingIntent& p) {
-                                  return p.client_ref == client_ref;
-                                }),
-                 pending_.end());
+  pending_.erase(
+      std::remove_if(pending_.begin(), pending_.end(),
+                     [&client_ref](const PendingIntent& p) { return p.client_ref == client_ref; }),
+      pending_.end());
 }
 
 std::string KotakBrokerAdapter::ref_for_id(const std::string& broker_order_id) const {
@@ -645,9 +642,9 @@ Result<ports::BrokerAck> KotakBrokerAdapter::place(const domain::OrderIntent& in
     // Kotak said "Ok" but gave us no id. That is ambiguous, not successful, so the
     // registration STAYS: reconcile against broker truth rather than assuming
     // nothing happened.
-    return broker_exec::fail(errors::make_error(
-        errors::ErrorCategory::Unknown, "kotak: place acknowledged without an order number",
-        "KOTAK-PLACE-NOID"));
+    return broker_exec::fail(errors::make_error(errors::ErrorCategory::Unknown,
+                                                "kotak: place acknowledged without an order number",
+                                                "KOTAK-PLACE-NOID"));
   }
   anchor(order_id, intent.client_ref);
   return ports::BrokerAck{order_id, intent.client_ref};
@@ -708,8 +705,8 @@ Result<ports::Ok> KotakBrokerAdapter::square_off_banded(const std::string& broke
     return broker_exec::fail(payload.error());  // an unread book cannot size an exit
   }
   if (!payload.value().is_array()) {
-    return broker_exec::fail(reconcile_first_error(
-        "kotak: the order book payload was not an array", "KOTAK-SQUAREOFF-BOOKSHAPE"));
+    return broker_exec::fail(reconcile_first_error("kotak: the order book payload was not an array",
+                                                   "KOTAK-SQUAREOFF-BOOKSHAPE"));
   }
 
   std::vector<RawOrder> rows;
@@ -1264,8 +1261,8 @@ Result<ports::FundsSnapshot> KotakBrokerAdapter::fetch_funds() {
   bool malformed = false;
   const std::optional<std::int64_t> available =
       first_paise(body, {"Net", "net", "availableMargin", "AvailableMargin"}, malformed);
-  const std::optional<std::int64_t> used =
-      first_paise(body, {"MarginUsed", "marginUsed", "UtilizedMargin", "utilizedMargin"}, malformed);
+  const std::optional<std::int64_t> used = first_paise(
+      body, {"MarginUsed", "marginUsed", "UtilizedMargin", "utilizedMargin"}, malformed);
   if (malformed) {
     // A funds figure we cannot parse EXACTLY must not be reported as a number —
     // the freshness/margin gates would size real risk off it. Fail the read.

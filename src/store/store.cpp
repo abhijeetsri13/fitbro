@@ -112,16 +112,24 @@ constexpr std::array<std::string_view, kCurrentSchemaVersion> kMigrations = {kMi
                                                                              kMigration2};
 
 // Every table the schema owns, for reset()/rebuild (drop in any order — no FKs).
-constexpr std::array<std::string_view, 6> kTableNames = {"orders", "trades",     "positions",
+constexpr std::array<std::string_view, 6> kTableNames = {"orders", "trades",      "positions",
                                                          "funds",  "risk_events", "audit"};
 
 // ── Enum <-> stable text (the store cannot edit domain, so parse here) ──────
 // Encodes via domain::to_string (the NFR-8 contract names) and decodes back.
 
-std::string_view encode(domain::Side side) noexcept { return domain::to_string(side); }
-std::string_view encode(domain::OrderType type) noexcept { return domain::to_string(type); }
-std::string_view encode(domain::Product product) noexcept { return domain::to_string(product); }
-std::string_view encode(domain::OrderState state) noexcept { return domain::to_string(state); }
+std::string_view encode(domain::Side side) noexcept {
+  return domain::to_string(side);
+}
+std::string_view encode(domain::OrderType type) noexcept {
+  return domain::to_string(type);
+}
+std::string_view encode(domain::Product product) noexcept {
+  return domain::to_string(product);
+}
+std::string_view encode(domain::OrderState state) noexcept {
+  return domain::to_string(state);
+}
 
 domain::Side decode_side(std::string_view text) noexcept {
   return text == "SELL" ? domain::Side::Sell : domain::Side::Buy;
@@ -312,14 +320,15 @@ void Store::ConnectionDeleter::operator()(sqlite3* db) const noexcept {
   }
 }
 
-Store::Store(Connection db, int version) noexcept
-    : db_(std::move(db)), schema_version_(version) {}
+Store::Store(Connection db, int version) noexcept : db_(std::move(db)), schema_version_(version) {}
 
 Store::Store(Store&&) noexcept = default;
 Store& Store::operator=(Store&&) noexcept = default;
 Store::~Store() = default;
 
-int Store::schema_version() const noexcept { return schema_version_; }
+int Store::schema_version() const noexcept {
+  return schema_version_;
+}
 
 // Open the raw connection and apply the connection PRAGMAs. Shared by open(),
 // open_or_rebuild(), and reset()'s drop-recreate path. Private static member so
@@ -330,8 +339,8 @@ Result<Store::Connection> Store::open_connection(const std::filesystem::path& pa
   // ordinary paths both flow through unchanged. SQLITE_OPEN_CREATE makes a fresh
   // file when absent (the cold-start case).
   const std::string filename = path.string();
-  const int rc = sqlite3_open_v2(filename.c_str(), &raw,
-                                 SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
+  const int rc =
+      sqlite3_open_v2(filename.c_str(), &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
   Store::Connection db(raw);  // owns `raw` even on failure (sqlite3_open_v2 contract)
   if (rc != SQLITE_OK) {
     return fail(detail::sqlite_error(rc, "open database"));
@@ -380,8 +389,8 @@ Result<Store> Store::open(std::filesystem::path path) {
   }
   if (!consistent.value()) {
     // Half-migrated on the strict path: hard error (use open_or_rebuild to recover).
-    return fail(errors::make_error(errors::ErrorCategory::Internal,
-                                   "store: projection is half-migrated"));
+    return fail(
+        errors::make_error(errors::ErrorCategory::Internal, "store: projection is half-migrated"));
   }
 
   if (auto migrated = apply_migrations(handle, version.value()); !migrated) {
@@ -546,9 +555,8 @@ constexpr std::string_view kOrderColumns =
 }  // namespace
 
 Result<Ok> Store::insert_order(const domain::Order& order) {
-  auto stmt = prepare(db_.get(),
-                      "INSERT INTO orders (" + std::string(kOrderColumns) +
-                          ") VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13);");
+  auto stmt = prepare(db_.get(), "INSERT INTO orders (" + std::string(kOrderColumns) +
+                                     ") VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13);");
   if (!stmt) {
     return fail(stmt.error());
   }
@@ -569,16 +577,15 @@ Result<Ok> Store::insert_order(const domain::Order& order) {
 
 Result<Ok> Store::upsert_order(const domain::Order& order) {
   auto stmt = prepare(
-      db_.get(),
-      "INSERT INTO orders (" + std::string(kOrderColumns) +
-          ") VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) "
-          "ON CONFLICT(client_ref) DO UPDATE SET "
-          "symbol=excluded.symbol, side=excluded.side, quantity=excluded.quantity, "
-          "price_paise=excluded.price_paise, order_type=excluded.order_type, "
-          "product=excluded.product, strategy=excluded.strategy, state=excluded.state, "
-          "broker_order_id=excluded.broker_order_id, filled_qty=excluded.filled_qty, "
-          "avg_price_paise=excluded.avg_price_paise, "
-          "trigger_price_paise=excluded.trigger_price_paise;");
+      db_.get(), "INSERT INTO orders (" + std::string(kOrderColumns) +
+                     ") VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) "
+                     "ON CONFLICT(client_ref) DO UPDATE SET "
+                     "symbol=excluded.symbol, side=excluded.side, quantity=excluded.quantity, "
+                     "price_paise=excluded.price_paise, order_type=excluded.order_type, "
+                     "product=excluded.product, strategy=excluded.strategy, state=excluded.state, "
+                     "broker_order_id=excluded.broker_order_id, filled_qty=excluded.filled_qty, "
+                     "avg_price_paise=excluded.avg_price_paise, "
+                     "trigger_price_paise=excluded.trigger_price_paise;");
   if (!stmt) {
     return fail(stmt.error());
   }
@@ -592,9 +599,8 @@ Result<Ok> Store::upsert_order(const domain::Order& order) {
 }
 
 Result<std::optional<domain::Order>> Store::find_order(std::string_view client_ref) const {
-  auto stmt = prepare(db_.get(),
-                      "SELECT " + std::string(kOrderColumns) +
-                          " FROM orders WHERE client_ref = ?1;");
+  auto stmt = prepare(
+      db_.get(), "SELECT " + std::string(kOrderColumns) + " FROM orders WHERE client_ref = ?1;");
   if (!stmt) {
     return fail(stmt.error());
   }
@@ -613,8 +619,7 @@ Result<std::optional<domain::Order>> Store::find_order(std::string_view client_r
 
 Result<std::vector<domain::Order>> Store::all_orders() const {
   auto stmt = prepare(db_.get(),
-                      "SELECT " + std::string(kOrderColumns) +
-                          " FROM orders ORDER BY client_ref;");
+                      "SELECT " + std::string(kOrderColumns) + " FROM orders ORDER BY client_ref;");
   if (!stmt) {
     return fail(stmt.error());
   }
@@ -743,8 +748,8 @@ Result<std::optional<domain::Position>> Store::find_position(std::string_view sy
 }
 
 Result<std::vector<domain::Position>> Store::all_positions() const {
-  auto stmt = prepare(db_.get(),
-                      "SELECT symbol, net_qty, avg_price_paise FROM positions ORDER BY symbol;");
+  auto stmt =
+      prepare(db_.get(), "SELECT symbol, net_qty, avg_price_paise FROM positions ORDER BY symbol;");
   if (!stmt) {
     return fail(stmt.error());
   }
@@ -791,10 +796,9 @@ Result<Ok> Store::upsert_funds(const Funds& funds) {
 }
 
 Result<std::optional<Funds>> Store::find_funds(std::string_view account) const {
-  auto stmt = prepare(
-      db_.get(),
-      "SELECT account, available_paise, used_margin_paise, fetched_at_epoch_ms "
-      "FROM funds WHERE account = ?1;");
+  auto stmt = prepare(db_.get(),
+                      "SELECT account, available_paise, used_margin_paise, fetched_at_epoch_ms "
+                      "FROM funds WHERE account = ?1;");
   if (!stmt) {
     return fail(stmt.error());
   }

@@ -123,8 +123,7 @@ BasketResult execute_basket(const std::vector<BasketLeg>& legs, const BasketConf
                             const BasketSeams& seams, ports::AlertSink& alerts) {
   BasketResult result;
   result.tracked_as_single_unit = config.track_as_single_unit;
-  result.basket_id =
-      config.basket_id.empty() ? fallback_basket_id(legs.size()) : config.basket_id;
+  result.basket_id = config.basket_id.empty() ? fallback_basket_id(legs.size()) : config.basket_id;
 
   // ── Step 1: PRE-FLIGHT, fail-closed BEFORE any placement ──────────────────
   // A missing placer fails closed exactly like an ill-formed graph: we never
@@ -140,8 +139,8 @@ BasketResult execute_basket(const std::vector<BasketLeg>& legs, const BasketConf
     // Report every leg as skipped: nothing was sent.
     result.legs.reserve(legs.size());
     for (const BasketLeg& leg : legs) {
-      result.legs.push_back(
-          LegResult{leg.leg_id, LegStatus::SkippedUnmetDependency, "", "basket blocked pre-flight"});
+      result.legs.push_back(LegResult{leg.leg_id, LegStatus::SkippedUnmetDependency, "",
+                                      "basket blocked pre-flight"});
     }
     return result;
   }

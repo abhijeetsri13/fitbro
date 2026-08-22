@@ -108,15 +108,23 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y clang-format clang-tidy ninja-build
+      - run: sudo apt-get update && sudo apt-get install -y clang-tidy ninja-build
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Sources are all tracked / add_subdirectory resolves
         run: bash scripts/check-sources-tracked.sh
 
-      - name: clang-format check
+      # clang-format's output is NOT stable across major versions, so an
+      # apt-installed formatter makes the gate depend on the runner image: a
+      # correctly-formatted tree can fail, and a green CI can turn red with no
+      # commit at all. Pin the exact version (the PyPI wheel ships an identical
+      # binary on Linux/macOS/Windows) so this check and a developer's local run
+      # are byte-for-byte the same tool. Keep in step with docs/conventions.md.
+      - name: clang-format check (pinned)
         run: |
+          pip install "clang-format==17.0.6"
+          clang-format --version
           mapfile -t files < <(find include src tests -type f \( -name '*.cpp' -o -name '*.hpp' \) 2>/dev/null)
           if [ ${#files[@]} -gt 0 ]; then clang-format --dry-run --Werror "${files[@]}"; fi
       - name: Generate compile_commands.json

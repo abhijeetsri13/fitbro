@@ -22,7 +22,6 @@
 // std::ifstream to inspect the durable log. C++20 stdlib only.
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -46,9 +45,8 @@ namespace {
 struct TempDataDir {
   fs::path path;
   explicit TempDataDir(const std::string& tag)
-      : path(fs::temp_directory_path() /
-             ("broker_exec_sigkill_" + tag + "_" +
-              std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
+      : path(fs::temp_directory_path() / ("broker_exec_sigkill_" + tag + "_" +
+                                          std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
     std::error_code ec;
     fs::remove_all(path, ec);
     fs::create_directories(path, ec);

@@ -35,9 +35,13 @@ std::string format_paise(std::int64_t paise) {
 
 }  // namespace
 
-std::string Money::to_string() const { return format_paise(paise_); }
+std::string Money::to_string() const {
+  return format_paise(paise_);
+}
 
-std::string Price::to_string() const { return format_paise(paise_); }
+std::string Price::to_string() const {
+  return format_paise(paise_);
+}
 
 Price Price::round_to_tick(Price tick) const noexcept {
   const std::int64_t t = tick.paise_;
@@ -63,6 +67,8 @@ Price Price::round_to_tick(Price tick) const noexcept {
   return Price::from_paise(-rounded);
 }
 
-std::string Quantity::to_string() const { return std::to_string(value_); }
+std::string Quantity::to_string() const {
+  return std::to_string(value_);
+}
 
 }  // namespace broker_exec::domain

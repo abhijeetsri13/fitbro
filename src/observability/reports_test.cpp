@@ -1,12 +1,10 @@
 #include "broker_exec/observability/reports.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
+#include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/observability/audit_event.hpp"
 
@@ -441,7 +439,7 @@ TEST_CASE("reports are byte-identical across permuted input orderings (AC-3)") {
   AuditEvent rejected_b = make_event(EventType::OrderRejected, "b");
   AuditEvent placed_c = make_event(EventType::OrderPlaced, "c", "alpha");
 
-  const std::vector<AuditEvent> order1 = {placed_a, ack_a,     filled_a, recon_a,
+  const std::vector<AuditEvent> order1 = {placed_a, ack_a,      filled_a, recon_a,
                                           placed_b, rejected_b, placed_c};
   const std::vector<AuditEvent> order2 = {placed_c, placed_b, rejected_b, recon_a,
                                           filled_a, ack_a,    placed_a};

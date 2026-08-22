@@ -1,7 +1,6 @@
 #include "broker_exec/config/config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -101,9 +100,9 @@ TEST_CASE("valid TOML loads into a typed Config and env overrides win over the f
   CHECK(cfg.logging.level == LogLevel::Info);
 
   // Overridden fields take the env value, not the file value (env WINS).
-  CHECK(cfg.engine.mode == RunProfile::Live);          // file said "paper"
-  CHECK(cfg.broker.timeout_ms == 1500);                // file said 4000
-  CHECK(cfg.risk.max_open_positions == 3);             // file said 10
+  CHECK(cfg.engine.mode == RunProfile::Live);  // file said "paper"
+  CHECK(cfg.broker.timeout_ms == 1500);        // file said 4000
+  CHECK(cfg.risk.max_open_positions == 3);     // file said 10
 }
 
 TEST_CASE("an invalid enum value fails fast with an Error naming the field", "[config]") {
@@ -279,8 +278,9 @@ TEST_CASE("env overrides win over the file for every field (AC-3, all fields)", 
   CHECK(cfg.logging.level == LogLevel::Debug);
 }
 
-TEST_CASE("one binary, config-only: the same TOML + two env profile sets yield two distinct Configs",
-          "[config]") {
+TEST_CASE(
+    "one binary, config-only: the same TOML + two env profile sets yield two distinct Configs",
+    "[config]") {
   const TempToml file("one_binary", kValidToml);
 
   // Paper profile: small book, conservative.
@@ -325,8 +325,7 @@ TEST_CASE("defaults + env only (no file) load when required fields come from env
 }
 
 TEST_CASE("a missing TOML file is reported as an error naming the path", "[config]") {
-  const fs::path missing =
-      fs::temp_directory_path() / "broker_exec_config_does_not_exist_zzz.toml";
+  const fs::path missing = fs::temp_directory_path() / "broker_exec_config_does_not_exist_zzz.toml";
   std::error_code ec;
   fs::remove(missing, ec);
 

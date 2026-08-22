@@ -11,7 +11,9 @@ namespace {
 // The ascending integer severity of a posture. Centralizes the single explicit
 // enum->int cast so the `std::max` compare stays /WX-clean (no implicit
 // enum->int in arithmetic) and the ordering lives in exactly one place.
-[[nodiscard]] int severity(Posture p) noexcept { return static_cast<int>(p); }
+[[nodiscard]] int severity(Posture p) noexcept {
+  return static_cast<int>(p);
+}
 
 // The operator alert level for a degraded posture, by severity. Normal never
 // reaches here (the caller only alerts when p != Normal).
@@ -112,7 +114,9 @@ Posture PostureCoordinator::evaluate(const std::vector<DetectorSignal>& active,
   return result;
 }
 
-bool PostureCoordinator::allows_entries(Posture p) noexcept { return p == Posture::Normal; }
+bool PostureCoordinator::allows_entries(Posture p) noexcept {
+  return p == Posture::Normal;
+}
 
 bool PostureCoordinator::allows_risk_reducing_exits(Posture p) noexcept {
   return p != Posture::Panic;
@@ -124,9 +128,9 @@ Result<ports::Ok> PostureCoordinator::require_entry_allowed(Posture p) {
   }
   // RiskRejected's baseline action is ReconcileFirst; the posture chokepoint must
   // halt the strategy, so set BlockStrategy explicitly (composes with Story 2.8).
-  errors::Error err = errors::make_error(
-      errors::ErrorCategory::RiskRejected,
-      "posture " + std::string(to_string(p)) + " blocks new entries");
+  errors::Error err =
+      errors::make_error(errors::ErrorCategory::RiskRejected,
+                         "posture " + std::string(to_string(p)) + " blocks new entries");
   err.action = errors::SuggestedAction::BlockStrategy;
   return fail(std::move(err));
 }

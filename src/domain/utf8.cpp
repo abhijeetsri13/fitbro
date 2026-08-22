@@ -22,12 +22,17 @@ namespace {
 // integral promotion would otherwise make every comparison against an unsigned
 // literal a signed/unsigned mismatch under MSVC /W4 and -Wextra.)
 [[nodiscard]] std::size_t utf8_sequence_length(unsigned lead) noexcept {
-  if (lead < 0x80U) return 1;   // ASCII
-  if (lead < 0xC2U) return 0;   // 0x80-0xBF continuation, 0xC0/0xC1 overlong
-  if (lead < 0xE0U) return 2;
-  if (lead < 0xF0U) return 3;
-  if (lead < 0xF5U) return 4;
-  return 0;                     // 0xF5-0xFF: beyond U+10FFFF
+  if (lead < 0x80U)
+    return 1;  // ASCII
+  if (lead < 0xC2U)
+    return 0;  // 0x80-0xBF continuation, 0xC0/0xC1 overlong
+  if (lead < 0xE0U)
+    return 2;
+  if (lead < 0xF0U)
+    return 3;
+  if (lead < 0xF5U)
+    return 4;
+  return 0;  // 0xF5-0xFF: beyond U+10FFFF
 }
 
 // The inclusive range the SECOND byte of a sequence led by `lead` may take. It is

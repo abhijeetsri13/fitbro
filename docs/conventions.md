@@ -31,6 +31,25 @@ Windows (MSVC), and macOS (clang). To keep it that way:
   (POSIX `fsync` / Windows `_commit`). Anything needing on-disk durability uses
   it — do not call `fsync`/`FlushFileBuffers` directly.
 
+## Formatting
+
+- `clang-format` is **pinned to 17.0.6** and CI enforces it with `--Werror`. The
+  formatter's output changes between major versions, so an unpinned one makes the
+  gate depend on whichever version the runner image ships. Install the exact same
+  binary locally:
+
+  ```bash
+  pip install "clang-format==17.0.6"
+  clang-format -i $(find include src tests -type f \( -name '*.cpp' -o -name '*.hpp' \))
+  ```
+
+  Bump the version in `.github/workflows/ci.yml` and here together, never apart.
+
+- Every first-party source must be **tracked by git**. `scripts/check-sources-tracked.sh`
+  (run in the lint job) fails the build if a file under `src/`, `include/` or `tests/`
+  is untracked, or if an `add_subdirectory()` path is missing from the checkout — an
+  unanchored `.gitignore` pattern once hid the whole `secrets` module this way.
+
 ## Money / prices
 
 - **No `double`/`float` in any money or price path** (lint + review enforced).
