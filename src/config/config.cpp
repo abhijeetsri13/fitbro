@@ -179,13 +179,59 @@ std::optional<Error> scan_secrets(const toml::table& table, const std::string& p
   return std::nullopt;
 }
 
+// The TOML type a node actually holds, spelled for an operator. Naming it is not
+// decoration: "must be an integer" alone is a riddle in front of
+// `max_order_value_paise = 2.5e5`, which looks numeric to the eye — the message has
+// to say WHICH character made it the wrong type.
+[[nodiscard]] std::string_view toml_type_name(toml::node_type type) noexcept {
+  switch (type) {
+    case toml::node_type::none:
+      return "nothing";
+    case toml::node_type::table:
+      return "a table";
+    case toml::node_type::array:
+      return "an array";
+    case toml::node_type::string:
+      return "a string";
+    case toml::node_type::integer:
+      return "an integer";
+    case toml::node_type::floating_point:
+      return "a floating-point value";
+    case toml::node_type::boolean:
+      return "a boolean";
+    case toml::node_type::date:
+      return "a date";
+    case toml::node_type::time:
+      return "a time";
+    case toml::node_type::date_time:
+      return "a date-time";
+  }
+  return "a value of an unknown type";
+}
+
 [[nodiscard]] std::optional<Error> apply_int64(const toml::table& table, const EnvLookup& env,
                                                std::string_view section, std::string_view field,
                                                std::int64_t& out) {
   if (auto node = table[section][field]) {
-    auto value = node.value<std::int64_t>();
+    // value_exact<T>(), NOT value<T>(). toml++ documents value<T>() as PERMISSIVE
+    // retrieval: a boolean node hands back 0/1 and a whole-valued float hands back
+    // its truncation, both silently, so this branch would report "must be an
+    // integer" while accepting neither. That is not pedantry — `timeout_ms = true`
+    // becomes a 1, survives validate()'s `<= 0` test, and configures a 1 ms broker
+    // timeout, so every order resolves to UNKNOWN: the exact ambiguity this library
+    // exists to prevent, out of a file the loader called valid. And
+    // `max_order_value_paise = 2.5e5` would put a double in a paise field, against
+    // the binding no-float money rule. value_exact<T>() reads a node ONLY when it
+    // IS a TOML integer, which makes the file layer agree with the env layer below
+    // (std::from_chars, which has always rejected "true" and "5000.0").
+    //
+    // Only the integer path was lossy: the string helpers call value<std::string>(),
+    // which toml++ routes through the same exact-retrieval branch — there is no
+    // fuzzy conversion to a string — so they already fail closed on a wrong type.
+    auto value = node.value_exact<std::int64_t>();
     if (!value) {
-      return field_error(section, field, "must be an integer");
+      return field_error(section, field,
+                         "must be an integer, not " + std::string(toml_type_name(node.type())));
     }
     out = *value;
   }
