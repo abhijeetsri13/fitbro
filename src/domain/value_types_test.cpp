@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
+#include <limits>
 #include <string>
 
 #include "broker_exec/domain/domain.hpp"
@@ -80,6 +81,45 @@ TEST_CASE("Price::round_to_tick rounds half-up to the nearest tick", "[domain][p
   // Non-positive tick is a no-op (validated upstream at the gate).
   REQUIRE(Price::from_paise(103).round_to_tick(Price::from_paise(0)) == Price::from_paise(103));
   REQUIRE(Price::from_paise(103).round_to_tick(Price::from_paise(-5)) == Price::from_paise(103));
+}
+
+TEST_CASE("Price::round_to_tick is total over the int64 range", "[domain][price]") {
+  constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  const Price tick5 = Price::from_paise(5);
+  const Price tick10 = Price::from_paise(10);
+
+  // Price::from_paise puts no bound on its argument, so every int64 below is a
+  // legal Price. These used to be signed-overflow UB: on a sanitizer build the
+  // process aborted, and on a wrapping build the sign of the answer flipped.
+
+  // INT64_MIN negated is not representable. Its rounded magnitude (2^63 taken up
+  // to the next multiple of 5) does not fit an int64 either, so the price comes
+  // back untouched — un-rounded, and therefore still rejected by the tick gate.
+  REQUIRE(Price::from_paise(kMin).round_to_tick(tick5) == Price::from_paise(kMin));
+
+  // Positive end: at tick 4 the rounded value is exactly 2^63, one past
+  // INT64_MAX. Refuse it; do not wrap it into a negative price.
+  REQUIRE(Price::from_paise(kMax).round_to_tick(Price::from_paise(4)) == Price::from_paise(kMax));
+
+  // Where the rounded value DOES fit it is still computed exactly, even though
+  // the intermediate `value + tick/2` steps past INT64_MAX to get there.
+  REQUIRE(Price::from_paise(kMax).round_to_tick(tick5) == Price::from_paise(9223372036854775805));
+
+  // The negative branch overflowed on `magnitude + bias` too, for magnitudes that
+  // are themselves perfectly representable: |INT64_MIN + 3| + 4 exceeds INT64_MAX.
+  REQUIRE(Price::from_paise(kMin + 3).round_to_tick(tick10) ==
+          Price::from_paise(-9223372036854775800));
+
+  // A magnitude of exactly 2^63 IS a valid int64 as a negative, so INT64_MIN at
+  // a tick it already divides by comes back as itself — refusal is reserved for
+  // magnitudes that genuinely do not fit, not applied to the whole edge.
+  REQUIRE(Price::from_paise(kMin).round_to_tick(Price::from_paise(4)) == Price::from_paise(kMin));
+
+  // A tick wider than the value: -2^63 sits one paise past -(2^63 - 1), so it
+  // rounds to that single available multiple rather than collapsing to zero.
+  REQUIRE(Price::from_paise(kMin).round_to_tick(Price::from_paise(kMax)) ==
+          Price::from_paise(-9223372036854775807));
 }
 
 TEST_CASE("Quantity is a strong integer with arithmetic and comparisons", "[domain][quantity]") {
