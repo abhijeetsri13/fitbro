@@ -50,6 +50,19 @@ Windows (MSVC), and macOS (clang). To keep it that way:
   is untracked, or if an `add_subdirectory()` path is missing from the checkout — an
   unanchored `.gitignore` pattern once hid the whole `secrets` module this way.
 
+## Aggregates and designated initializers
+
+- **Every member of a struct that anyone designated-initializes must carry an explicit
+  default member initializer** (`{}` at minimum). C++20 designated initializers are meant to
+  name a subset of fields, but clang's `-Wmissing-field-initializers` fires for any omitted
+  member that has no default member initializer, and the project builds with `-Werror`.
+- MSVC does not implement that warning. A Windows developer sees a clean build while Linux
+  and macOS do not build at all, so this class of break is invisible until CI — and it has
+  already cost three separate CI round-trips (#8, #45, #51), because clang reports only the
+  *first* uninitialized member per site.
+- Prefer a named factory (`make_error(...)`) over aggregate-initializing a type at a call
+  site. `errors::Error` is constructed that way for exactly this reason.
+
 ## Money / prices
 
 - **No `double`/`float` in any money or price path** (lint + review enforced).
