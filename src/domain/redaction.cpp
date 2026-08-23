@@ -22,9 +22,13 @@ namespace {
   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
 }
 
-[[nodiscard]] bool is_upper_letter(char c) noexcept { return c >= 'A' && c <= 'Z'; }
+[[nodiscard]] bool is_upper_letter(char c) noexcept {
+  return c >= 'A' && c <= 'Z';
+}
 
-[[nodiscard]] bool is_digit(char c) noexcept { return c >= '0' && c <= '9'; }
+[[nodiscard]] bool is_digit(char c) noexcept {
+  return c >= '0' && c <= '9';
+}
 
 // A hex digit in EITHER case. Used only by the provenance-id shape rule: every
 // id this library mints is built from hex runs (a sha256 sig8, a v4 UUID's five
@@ -41,7 +45,9 @@ namespace {
   return is_letter(c) || is_digit(c) || c == '_' || c == '-';
 }
 
-[[nodiscard]] bool is_alnum(char c) noexcept { return is_letter(c) || is_digit(c); }
+[[nodiscard]] bool is_alnum(char c) noexcept {
+  return is_letter(c) || is_digit(c);
+}
 
 // The provenance-id charset: the token chars PLUS '#', which is what joins a
 // slicer child (`<parent>#<k>`) and an IMP-13 square-off exit (`<parent>#X`) to
@@ -88,8 +94,7 @@ namespace {
 // public_token; the api_key/api-key/apikey trio is spelled out because the
 // separators differ. Mirrors the config loader's secret denylist intent.
 constexpr std::array<std::string_view, 9> kSensitiveKeyNeedles = {
-    "token", "secret", "password", "api_key", "api-key",
-    "apikey", "mpin",   "totp",     "bearer"};
+    "token", "secret", "password", "api_key", "api-key", "apikey", "mpin", "totp", "bearer"};
 
 [[nodiscard]] bool key_is_sensitive(std::string_view key) noexcept {
   for (std::string_view needle : kSensitiveKeyNeedles) {
@@ -271,8 +276,7 @@ std::string scrub(std::string_view text) {
       // MPIN/TOTP: a 4–8 digit run in an auth context. Pure-digit runs only, so
       // mixed ids are handled above and long numeric ids/timestamps are left be.
       const std::size_t len = j - i;
-      if (len >= 4 && len <= 8 && run_is_all_digits(text, i, j) &&
-          auth_context_before(text, i)) {
+      if (len >= 4 && len <= 8 && run_is_all_digits(text, i, j) && auth_context_before(text, i)) {
         out.append(kRedactionMarker);
         i = j;
         continue;
@@ -356,7 +360,9 @@ namespace {
 // '#' that is_provenance_id_char adds is excluded because idempotency's
 // is_child_ref/parent_of key on it, so a '#' in a name would make a PARENT ref
 // parse as a CHILD of a truncated parent.
-[[nodiscard]] bool is_strategy_name_char(char c) noexcept { return is_token_char(c); }
+[[nodiscard]] bool is_strategy_name_char(char c) noexcept {
+  return is_token_char(c);
+}
 
 // The FIRST '-'/'_'-separated segment of `name` that is neither all-letters nor
 // all-hex (V5), or an empty view when every segment is homogeneous. Deliberately

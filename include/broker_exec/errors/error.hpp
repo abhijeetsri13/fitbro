@@ -83,6 +83,17 @@ struct Error {
 [[nodiscard]] Error make_error(ErrorCategory category, std::string message,
                                std::string broker_code = {});
 
+// Same, but with the suggested action stated explicitly — for the cases the
+// comment above anticipates, where context makes the category's default action
+// wrong (a schema too new to understand is Internal, but retrying it is futile).
+//
+// Prefer this over aggregate-initializing `Error` at a call site. A designated
+// initializer that stops before `broker_code` is a hard error under clang's
+// `-Wmissing-field-initializers -Werror` while MSVC says nothing, so that shape
+// breaks the Linux and macOS builds while a Windows developer sees a clean one.
+[[nodiscard]] Error make_error(ErrorCategory category, SuggestedAction action, std::string message,
+                               std::string broker_code = {});
+
 // ── The single broker-text parsing point ──────────────────────────────────
 // Strategy/runtime code never parses raw broker responses. These two entry
 // points are the ONLY place that maps a raw transport/broker error into the

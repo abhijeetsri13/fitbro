@@ -15,7 +15,9 @@ namespace {
 // A kill is "broad" if it blocks every strategy regardless of scope. Only a
 // Strategy kill is scope-specific; all other types stop the whole account/broker
 // and therefore block any strategy.
-[[nodiscard]] bool is_broad(KillType type) noexcept { return type != KillType::Strategy; }
+[[nodiscard]] bool is_broad(KillType type) noexcept {
+  return type != KillType::Strategy;
+}
 
 // Reject a malformed/mis-scoped kill before it can take effect. Only a Strategy
 // kill is per-target — it is meaningless without a scope (the strategy id its
@@ -59,7 +61,9 @@ bool operator==(const KillCommand& lhs, const KillCommand& rhs) noexcept {
   return lhs.type == rhs.type && lhs.scope == rhs.scope;
 }
 
-bool operator!=(const KillCommand& lhs, const KillCommand& rhs) noexcept { return !(lhs == rhs); }
+bool operator!=(const KillCommand& lhs, const KillCommand& rhs) noexcept {
+  return !(lhs == rhs);
+}
 
 void KillState::apply(const KillCommand& cmd) {
   // Idempotent: an equal (type, scope) command already in the active set is a
@@ -75,9 +79,13 @@ bool KillState::panic_active() const noexcept {
                      [](const KillCommand& c) noexcept { return c.type == KillType::Panic; });
 }
 
-bool KillState::any_active() const noexcept { return !active_.empty(); }
+bool KillState::any_active() const noexcept {
+  return !active_.empty();
+}
 
-bool KillState::blocks_entries() const noexcept { return any_active(); }
+bool KillState::blocks_entries() const noexcept {
+  return any_active();
+}
 
 bool KillState::blocks_strategy(std::string_view strategy) const {
   for (const KillCommand& c : active_) {
@@ -89,7 +97,9 @@ bool KillState::blocks_strategy(std::string_view strategy) const {
   return false;
 }
 
-bool KillState::allows_risk_reducing_exits() const noexcept { return !panic_active(); }
+bool KillState::allows_risk_reducing_exits() const noexcept {
+  return !panic_active();
+}
 
 Posture KillState::posture() const noexcept {
   if (panic_active()) {
@@ -99,7 +109,7 @@ Posture KillState::posture() const noexcept {
 }
 
 KillController::KillController(std::function<bool(std::string_view)> authenticate,
-                              std::function<Result<ports::Ok>(const KillCommand&)> persist)
+                               std::function<Result<ports::Ok>(const KillCommand&)> persist)
     : authenticate_(std::move(authenticate)), persist_(std::move(persist)) {}
 
 Result<ports::Ok> KillController::submit(const KillCommand& cmd, std::string_view auth_token) {

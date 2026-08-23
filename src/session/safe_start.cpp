@@ -139,15 +139,15 @@ Result<ports::Ok> require_no_legacy_stops(const std::vector<domain::Order>& orde
 
   // Redaction-safe: a count and a client_ref (an id the operator needs in order to
   // act), never a price or a quantity.
-  Error e = make_error(
-      ErrorCategory::Validation,
-      "projection holds " + std::to_string(count) +
-          " working stop order(s) with no trigger price — these were placed by a "
-          "pre-IMP-11 binary, which stored the stop level in `price`. Their signal "
-          "signatures have changed, so restart dedupe cannot recognize them and they "
-          "could be placed a SECOND time. Flatten or cancel every outstanding stop "
-          "before deploying (see docs/upgrade-imp-11-stops.md). First: " +
-          (first_ref.empty() ? std::string("<no client_ref>") : first_ref));
+  Error e =
+      make_error(ErrorCategory::Validation,
+                 "projection holds " + std::to_string(count) +
+                     " working stop order(s) with no trigger price — these were placed by a "
+                     "pre-IMP-11 binary, which stored the stop level in `price`. Their signal "
+                     "signatures have changed, so restart dedupe cannot recognize them and they "
+                     "could be placed a SECOND time. Flatten or cancel every outstanding stop "
+                     "before deploying (see docs/upgrade-imp-11-stops.md). First: " +
+                     (first_ref.empty() ? std::string("<no client_ref>") : first_ref));
   // Validation's default action is DoNotRetry; this must HALT the runtime, and the
   // fix is a human one, so state BlockStrategy explicitly.
   e.action = SuggestedAction::BlockStrategy;
@@ -174,15 +174,15 @@ Result<ports::Ok> require_valid_strategy_names(const std::vector<std::string>& n
   // Redaction-safe by construction: explain_invalid_strategy_name sanitises and
   // truncates the echoed name, so nothing here can carry an arbitrary byte or an
   // arbitrary length into an alert body.
-  Error e = make_error(
-      ErrorCategory::Validation,
-      std::to_string(count) + " of " + std::to_string(names.size()) +
-          " configured strategy name(s) would make every client_ref they mint "
-          "unloggable — an alert or ledger entry about such an order reads "
-          "client_ref=***REDACTED*** and cannot be linked to the store or the intent "
-          "log. Fix the name(s) in configuration before trading; renaming changes the "
-          "signal signature, so do it BETWEEN sessions with no working orders. First: " +
-          first_reason);
+  Error e =
+      make_error(ErrorCategory::Validation,
+                 std::to_string(count) + " of " + std::to_string(names.size()) +
+                     " configured strategy name(s) would make every client_ref they mint "
+                     "unloggable — an alert or ledger entry about such an order reads "
+                     "client_ref=***REDACTED*** and cannot be linked to the store or the intent "
+                     "log. Fix the name(s) in configuration before trading; renaming changes the "
+                     "signal signature, so do it BETWEEN sessions with no working orders. First: " +
+                     first_reason);
   // Validation's default action is DoNotRetry; this must HALT the runtime, and the
   // fix is a human one, so state BlockStrategy explicitly.
   e.action = SuggestedAction::BlockStrategy;

@@ -2,13 +2,13 @@
 
 #include <cctype>
 #include <charconv>
+#include <cstddef>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/kite/http_client.hpp"
 #include "broker_exec/domain/redaction.hpp"
@@ -56,6 +56,76 @@ namespace {
     out += url_encode(it->is_string() ? it->get<std::string>() : it->dump());
   }
   return out;
+}
+
+// ── THE PATH-SEGMENT GATE: A BROKER-SUPPLIED ID IS NOT A URL (IMP-23) ───────
+//
+// `order_id` reaches the mutations below straight out of broker JSON — the
+// adapter's `json_str(row, "order_id")` on an orderbook row, `extract_order_id()`
+// on a place ack — and nothing between there and the wire constrained what it
+// was. It was then spliced into the request path by raw concatenation, and
+// neither layer beneath us treats a path as opaque: cpr percent-encodes only
+// `request.query`, never `request.path`, and libcurl reads `?`/`#` as delimiters
+// and performs RFC 3986 dot-segment removal on the rest. So an id of
+// `250101000000001?variety=amo` cancelled a DIFFERENT order (`250101000000001`)
+// and reported success, and an id of `../../session/token` turned the cancel into
+// `DELETE /session/token` — Kite's logout endpoint — killing the trading session
+// mid-day. Both fire from square_off's own cancel, i.e. from the emergency exit.
+//
+// TWO LAYERS, AND THE ORDER MATTERS:
+//   1. REFUSE anything that is not id-shaped, BEFORE any request is issued. An id
+//      we do not recognize is one we will not act on: the adapter above states
+//      the threat model outright ("Kite payloads are attacker-shaped"), and the
+//      dispatcher already hardens this SAME value for the intent-log sink. Two
+//      sinks, one threat, and the unhardened one was the wire.
+//   2. PERCENT-ENCODE the segment we do send. Redundant against layer 1, which
+//      admits only bytes `url_encode` passes through unchanged (a real 15-digit
+//      Kite id is therefore byte-identical), and kept exactly so that widening
+//      the charset later cannot silently re-open the splice.
+//
+// WHY NOT `domain::is_provenance_id_shape`: it requires TWO OR MORE separated
+// segments so that a bare pasted credential cannot survive it — and a Kite order
+// id is ONE unbroken run of digits, which it would refuse outright. The CHARSET
+// is the part worth sharing, and the charset is the part that matters here.
+[[nodiscard]] bool is_path_id_shape(std::string_view value) noexcept {
+  // Kite ids are 15-16 digits. The bound is loose (a broker may widen its id
+  // format) but finite: a multi-kilobyte "id" is not an id, and it would be
+  // spliced into a URL.
+  static constexpr std::size_t kMaxPathIdChars = 64;
+  if (value.empty() || value.size() > kMaxPathIdChars) {
+    return false;
+  }
+  for (const unsigned char c : value) {
+    if (std::isalnum(c) == 0 && c != '-' && c != '_') {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Validate + encode ONE path segment, or refuse the whole request.
+//
+// Validation/DoNotRetry is the honest verdict, and it does NOT contradict
+// map_http_error's "a failure that may have left a live order MUST reconcile":
+// that doctrine governs requests the BROKER answered. This one never reaches the
+// wire, so it cannot have left anything live, and repeating it with the same
+// bytes cannot succeed — the id itself is what needs an operator.
+//
+// The offending value is deliberately NOT echoed into the message: it is
+// unvalidated broker text on its way to a log sink.
+[[nodiscard]] Result<std::string> encoded_path_segment(std::string_view value,
+                                                       std::string_view what, std::string code) {
+  if (!is_path_id_shape(value)) {
+    std::string message = "kite: the ";
+    message += what;
+    message +=
+        " is not id-shaped ([A-Za-z0-9_-], 1-64 bytes); it was NOT spliced into a request URL "
+        "path and nothing was sent";
+    return broker_exec::fail(errors::make_error(errors::ErrorCategory::Validation,
+                                                errors::SuggestedAction::DoNotRetry,
+                                                std::move(message), std::move(code)));
+  }
+  return url_encode(value);
 }
 
 // Parse a header value as a non-negative long, leaving `out` unset on failure.
@@ -181,7 +251,32 @@ errors::Error map_http_error(const HttpResponse& resp) {
   }
   // Genuine client-input rejections (only when not one of the live-order classes
   // above): fix the request, do not repeat it.
-  if (error_type == "InputException" || (error_type.empty() && (status == 400 || status == 422))) {
+  //
+  // A VERDICT WE ACTUALLY READ IS REQUIRED BEFORE DoNotRetry (IMP-25). The second
+  // disjunct used to be `error_type.empty()` — which is true precisely when the
+  // body could NOT be parsed as a Kite envelope (see the discard above). So a 400
+  // whose verdict we could not read was treated as MORE definitive than one we
+  // could: a readable-but-unrecognized error falls to BrokerRejected/ReconcileFirst
+  // below, while an UNREADABLE one earned DoNotRetry — the one action that tells
+  // the dispatcher the order is dead and no reconcile is owed. That inverts the
+  // doctrine stated 50 lines above, and the 404 arm's own reasoning: we refused to
+  // abandon a possibly-live order there on strictly BETTER evidence than this.
+  //
+  // The shape is reachable: a proxy/WAF/load balancer forwards `POST
+  // /orders/regular`, the gateway ACCEPTS the order, and the response is then
+  // replaced with an HTML or empty 400 page. `json::parse` discards it, so neither
+  // `error_type` nor `message` survives, and the intent was marked terminally
+  // Rejected over an order working at the broker — which the UnknownResolver then
+  // skips (it resolves only UNKNOWN), the lifecycle absorbs (terminal), and the
+  // manual-intervention detector excludes on the premise that a rejected order did
+  // not change the position.
+  //
+  // Requiring a `message` keeps every genuine Kite 400 here — Kite always sends the
+  // envelope, and its InputException is matched outright by the first disjunct —
+  // and routes "the broker answered and we could not read it" to the
+  // Unknown/ReconcileFirst arm at the bottom, where an ambiguous mutation belongs.
+  if (error_type == "InputException" ||
+      (!raw_message.empty() && (status == 400 || status == 422))) {
     return build(errors::ErrorCategory::Validation, errors::SuggestedAction::DoNotRetry,
                  "kite: request rejected as invalid");
   }
@@ -288,11 +383,20 @@ Result<json> KiteRestClient::place_order(const json& params) {
 }
 
 Result<json> KiteRestClient::modify_order(const std::string& order_id, const json& params) {
-  return request_json(HttpRequest::Method::Put, "/orders/regular/" + order_id, form_encode(params));
+  auto segment = encoded_path_segment(order_id, "broker order id", "KITE-MODIFY-BADORDERID");
+  if (!segment) {
+    return broker_exec::fail(segment.error());
+  }
+  return request_json(HttpRequest::Method::Put, "/orders/regular/" + segment.value(),
+                      form_encode(params));
 }
 
 Result<json> KiteRestClient::cancel_order(const std::string& order_id, const json& params) {
-  return request_json(HttpRequest::Method::Delete, "/orders/regular/" + order_id,
+  auto segment = encoded_path_segment(order_id, "broker order id", "KITE-CANCEL-BADORDERID");
+  if (!segment) {
+    return broker_exec::fail(segment.error());
+  }
+  return request_json(HttpRequest::Method::Delete, "/orders/regular/" + segment.value(),
                       form_encode(params));
 }
 
@@ -313,7 +417,14 @@ Result<json> KiteRestClient::holdings() {
 }
 
 Result<json> KiteRestClient::margins(const std::string& segment) {
-  return request_json(HttpRequest::Method::Get, "/user/margins/" + segment, std::string{});
+  // THE SIBLING SPLICE, closed for the same reason. This one is safe only by
+  // accident of its single caller passing the literal "equity"; the guard is what
+  // keeps it safe when a second caller passes something it read somewhere.
+  auto encoded = encoded_path_segment(segment, "margins segment", "KITE-MARGINS-BADSEGMENT");
+  if (!encoded) {
+    return broker_exec::fail(encoded.error());
+  }
+  return request_json(HttpRequest::Method::Get, "/user/margins/" + encoded.value(), std::string{});
 }
 
 Result<std::string> KiteRestClient::instruments() {

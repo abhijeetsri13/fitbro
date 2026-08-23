@@ -4,13 +4,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/domain/utf8.hpp"
 #include "broker_exec/errors/error.hpp"
@@ -158,6 +159,17 @@ void append_framed(std::string& out, std::string_view value) {
   return line;
 }
 
+// Push everything buffered for `file` all the way to stable storage. Used on
+// the append hot path and by replay()'s tail repair, so that a repair we have
+// already returned to the caller cannot itself be lost to the next power cut.
+[[nodiscard]] bool flush_and_sync(std::FILE* file) {
+  if (file == nullptr || std::fflush(file) != 0) {
+    return false;
+  }
+  const int fd = platform::portable_fileno(file);
+  return fd >= 0 && platform::durable_sync(fd);
+}
+
 }  // namespace
 
 std::string_view to_string(IntentOp op) noexcept {
@@ -179,17 +191,22 @@ std::string_view to_string(IntentOp op) noexcept {
 }
 
 std::optional<IntentOp> intent_op_from_string(std::string_view name) noexcept {
-  if (name == "place_order") return IntentOp::PlaceOrder;
-  if (name == "modify_order") return IntentOp::ModifyOrder;
-  if (name == "cancel_order") return IntentOp::CancelOrder;
-  if (name == "square_off") return IntentOp::SquareOff;
-  if (name == "result") return IntentOp::Result;
-  if (name == "child_slice") return IntentOp::ChildSlice;
+  if (name == "place_order")
+    return IntentOp::PlaceOrder;
+  if (name == "modify_order")
+    return IntentOp::ModifyOrder;
+  if (name == "cancel_order")
+    return IntentOp::CancelOrder;
+  if (name == "square_off")
+    return IntentOp::SquareOff;
+  if (name == "result")
+    return IntentOp::Result;
+  if (name == "child_slice")
+    return IntentOp::ChildSlice;
   return std::nullopt;
 }
 
-IntentLog::IntentLog(std::FILE* file, std::filesystem::path path,
-                     ports::ClockPort& clock) noexcept
+IntentLog::IntentLog(std::FILE* file, std::filesystem::path path, ports::ClockPort& clock) noexcept
     : file_(file), path_(std::move(path)), clock_(&clock) {}
 
 IntentLog::IntentLog(IntentLog&& other) noexcept
@@ -198,6 +215,7 @@ IntentLog::IntentLog(IntentLog&& other) noexcept
       clock_(other.clock_),
       next_seq_(other.next_seq_),
       last_hash_(std::move(other.last_hash_)),
+      torn_tail_(other.torn_tail_),
       index_(std::move(other.index_)) {
   other.file_ = nullptr;
   other.clock_ = nullptr;
@@ -213,6 +231,7 @@ IntentLog& IntentLog::operator=(IntentLog&& other) noexcept {
     clock_ = other.clock_;
     next_seq_ = other.next_seq_;
     last_hash_ = std::move(other.last_hash_);
+    torn_tail_ = other.torn_tail_;
     index_ = std::move(other.index_);
     other.file_ = nullptr;
     other.clock_ = nullptr;
@@ -234,6 +253,38 @@ Result<IntentLog> IntentLog::open(std::filesystem::path path, ports::ClockPort& 
   if (file == nullptr) {
     return fail(chain_error("intentlog: failed to open log file for append: " + path.string()));
   }
+
+  // ── THE DIRECTORY ENTRY IS PART OF THE DURABILITY PROMISE (IMP-14) ─────────
+  //
+  // append() fsyncs the file DESCRIPTOR and the dispatcher treats that return as
+  // licence to hit the broker socket. On POSIX that fsync commits the file's
+  // CONTENTS but NOT the parent directory entry that names a newly created file.
+  // On a fresh data dir the first record can therefore be durable while the file
+  // is not: after a power cut intent.log is absent or zero-length, replay() sees
+  // no file, reports the empty-boot state, IdempotencyIndex::rebuild_from_log
+  // rebuilds nothing — and every order that is live at the exchange is
+  // un-enumerable and its signal re-fires into a SECOND live order.
+  //
+  // One sync of the containing directory, here, closes that. Once per open() is
+  // enough: the entry only has to be CREATED durably, and every later append goes
+  // to a name that is already committed. This is off the hot path (boot only), so
+  // it costs nothing per order. Windows is an honest no-op inside the seam
+  // (durable.hpp) — NTFS journals the metadata and _commit already covers it.
+  //
+  // An empty parent_path() means a bare relative filename, whose directory is the
+  // CWD; ask for "." rather than "" so the sync is actually performed instead of
+  // silently failing on an unopenable empty path.
+  const std::filesystem::path parent = path.parent_path();
+  const std::filesystem::path dir = parent.empty() ? std::filesystem::path(".") : parent;
+  if (!platform::durable_sync_directory(dir)) {
+    // FAIL CLOSED. Handing back a log whose name may not survive a crash would be
+    // handing back append()'s durability promise without the durability. Better a
+    // refused boot than an order we cannot enumerate afterwards.
+    std::fclose(file);
+    return fail(chain_error("intentlog: durable_sync_directory failed for the log's directory: " +
+                            dir.string()));
+  }
+
   return IntentLog(file, std::move(path), clock);
 }
 
@@ -266,8 +317,7 @@ Result<IntentRecord> IntentLog::append(IntentOp op, std::string client_ref,
   record.payload_json = domain::canonical_text(payload_json);
 
   const auto wall = clock_->now_wall().time_since_epoch();
-  record.wall_ts_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(wall).count();
+  record.wall_ts_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wall).count();
 
   record.prev_hash = last_hash_.empty() ? std::string(kGenesis) : last_hash_;
   record.hash = compute_hash(record);
@@ -275,20 +325,16 @@ Result<IntentRecord> IntentLog::append(IntentOp op, std::string client_ref,
   const std::string line = to_json_line(record);
 
   if (std::fwrite(line.data(), 1, line.size(), file_) != line.size()) {
-    return fail(chain_error("intentlog: short write appending record seq " +
-                            std::to_string(record.seq)));
+    return fail(
+        chain_error("intentlog: short write appending record seq " + std::to_string(record.seq)));
   }
   // The single fsync on the hot path: flush the C buffer to the OS, then force
   // the OS write buffers to stable storage. The caller may socket-send only
-  // after this returns successfully.
-  if (std::fflush(file_) != 0) {
-    return fail(chain_error("intentlog: fflush failed for record seq " +
-                            std::to_string(record.seq)));
-  }
-  const int fd = platform::portable_fileno(file_);
-  if (fd < 0 || !platform::durable_sync(fd)) {
-    return fail(chain_error("intentlog: durable_sync failed for record seq " +
-                            std::to_string(record.seq)));
+  // after this returns successfully. The directory entry that names this file was
+  // committed once, in open() (IMP-14), so the record's path is durable too.
+  if (!flush_and_sync(file_)) {
+    return fail(
+        chain_error("intentlog: durable_sync failed for record seq " + std::to_string(record.seq)));
   }
 
   // Durable — commit to in-memory state only now.
@@ -299,12 +345,25 @@ Result<IntentRecord> IntentLog::append(IntentOp op, std::string client_ref,
 }
 
 Result<std::vector<IntentRecord>> IntentLog::replay() {
+  // Every replay reports its own tail state; a repair from a previous call must
+  // never be read as a fact about this one.
+  torn_tail_ = TornTail{};
   std::vector<IntentRecord> records;
 
   std::FILE* in = std::fopen(path_.string().c_str(), "rb");
   if (in == nullptr) {
-    // No file yet ⇒ nothing to replay; an empty index is the correct boot state.
-    return records;
+    // "ABSENT" AND "PRESENT BUT UNREADABLE" ARE NOT THE SAME BOOT STATE (IMP-14).
+    // Only the first one means "nothing was ever written here". Treating an
+    // unreadable existing log as an empty one hands rebuild_from_log an empty
+    // index while the records naming live orders sit right there on disk — the
+    // exact silent-duplicate path. So: absent ⇒ empty boot; anything else, up to
+    // and including "the filesystem would not tell us", ⇒ refuse.
+    std::error_code ec;
+    if (!std::filesystem::exists(path_, ec) && !ec) {
+      return records;
+    }
+    return fail(chain_error("intentlog: log file exists but could not be opened for replay: " +
+                            path_.string()));
   }
 
   // Read the whole file, then split on '\n'. Records are single JSON lines with
@@ -323,10 +382,26 @@ Result<std::vector<IntentRecord>> IntentLog::replay() {
   std::int64_t expected_seq = 1;
   std::string prev_hash(kGenesis);
 
+  // Set when the FINAL chunk parsed and verified but its newline never made it to
+  // disk. That record is genuine and is kept — but the file must still be repaired
+  // before anyone appends to it (see the repair block after the loop).
+  bool tail_missing_newline = false;
+
   std::size_t pos = 0;
   while (pos < contents.size()) {
+    const std::size_t line_start = pos;
     std::size_t eol = contents.find('\n', pos);
-    if (eol == std::string::npos) {
+    // ── THE ONE CHUNK ELIGIBLE FOR TORN-WRITE LENIENCY (IMP-13) ──────────────
+    //
+    // append() writes each record with its terminating newline in a SINGLE
+    // fwrite, so an UNTERMINATED chunk can only be the residue of a write that
+    // never completed — a crash or power loss between fwrite/fflush and
+    // durable_sync. `find` returning npos also proves nothing follows it, so this
+    // is necessarily the last chunk in the file. Both halves matter: a malformed
+    // line that IS terminated, or that has data after it, was written whole and
+    // then damaged, which is tampering or corruption and stays FATAL below.
+    const bool unterminated = (eol == std::string::npos);
+    if (unterminated) {
       eol = contents.size();
     }
     std::string_view line(contents.data() + pos, eol - pos);
@@ -337,6 +412,41 @@ Result<std::vector<IntentRecord>> IntentLog::replay() {
 
     json parsed = json::parse(line, /*cb=*/nullptr, /*allow_exceptions=*/false);
     if (parsed.is_discarded() || !parsed.is_object()) {
+      if (unterminated) {
+        // ── TORN TAIL: DISCARD THE FRAGMENT, KEEP THE VERIFIED PREFIX ─────────
+        //
+        // The fragment is provably safe to drop: append() had not returned, so
+        // dispatch() never reached run_pre_send_barrier() or the broker send, and
+        // no order exists for it. Failing the WHOLE replay over it — what this
+        // used to do — throws away records 1..N-1, which DO name live orders, and
+        // bricks every subsequent boot identically; the operator's only way out
+        // is to move the log aside, and an empty idempotency index then re-places
+        // every signal. The prefix is hash-chain-verified at this point, so
+        // returning it is not a tolerance, it is the whole verified truth.
+        //
+        // Truncate to `line_start`, the byte after the last newline, so the file
+        // ends on a record boundary again. Without this the NEXT append() would
+        // be glued onto the fragment and the log would become unreplayable for
+        // good — the recoverable failure turned into the permanent one.
+        std::error_code ec;
+        std::filesystem::resize_file(path_, static_cast<std::uintmax_t>(line_start), ec);
+        if (ec) {
+          return fail(chain_error("intentlog: could not truncate a torn trailing record at byte " +
+                                  std::to_string(line_start) + ": " + ec.message()));
+        }
+        // "ab" writes at end-of-file per write, so the append cursor follows the
+        // truncation. Sync so the repair itself survives the next power cut.
+        if (!flush_and_sync(file_)) {
+          return fail(
+              chain_error("intentlog: durable_sync failed after truncating a torn "
+                          "trailing record at byte " +
+                          std::to_string(line_start)));
+        }
+        torn_tail_.repaired = true;
+        torn_tail_.discarded_bytes = static_cast<std::uint64_t>(line.size());
+        torn_tail_.truncated_to = static_cast<std::uint64_t>(line_start);
+        break;  // nothing can follow an unterminated chunk
+      }
       return fail(chain_error("intentlog: malformed JSON at record index " +
                               std::to_string(records.size())));
     }
@@ -376,11 +486,39 @@ Result<std::vector<IntentRecord>> IntentLog::replay() {
                               " (hash mismatch — record tampered)"));
     }
 
+    // A complete, chain-verified record whose trailing newline was lost. A torn
+    // write cannot produce a syntactically complete object AND a matching hash, so
+    // this is a real record that simply lost its last byte — keep it (dropping a
+    // verified intent would make a possibly-sent order un-enumerable) and repair
+    // the separator after the loop. Note this branch is unreachable for a record
+    // that FAILED verification: those still fall through to the fatal returns
+    // above, terminated or not, because only a PARSE failure is torn-write
+    // evidence.
+    if (unterminated) {
+      tail_missing_newline = true;
+    }
+
     prev_hash = record.hash;
     ++expected_seq;
     index_[record.client_ref] = record;
     records.push_back(std::move(record));
   }
+
+  if (tail_missing_newline) {
+    // Restore the record separator the crash swallowed. Nothing is discarded here
+    // — `records` already carries the last record — but without the newline the
+    // next append() would concatenate onto it and produce one unparseable line,
+    // permanently breaking replay for a log that is otherwise fully intact.
+    if (file_ == nullptr || std::fputc('\n', file_) == EOF || !flush_and_sync(file_)) {
+      return fail(
+          chain_error("intentlog: could not restore the missing record separator on the "
+                      "final line of " +
+                      path_.string()));
+    }
+    torn_tail_.repaired = true;
+    torn_tail_.truncated_to = static_cast<std::uint64_t>(contents.size() + 1);
+  }
+  torn_tail_.records_kept = static_cast<std::int64_t>(records.size());
 
   // Rebuild the append cursor from the verified tail.
   if (!records.empty()) {

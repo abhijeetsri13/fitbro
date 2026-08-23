@@ -39,14 +39,16 @@
 // synchronous; correctness over speed.
 //
 // CROSS-PLATFORM: C++20 standard library only (<functional>, <string>,
-// <string_view>, <optional>). No OS APIs, no `#ifdef`, no floating point. All
-// durability/time is delegated to injected ports (IntentLog/ClockPort), all
-// money/price is exact integer paise via the domain types.
+// <string_view>, <unordered_set>, <optional>). No OS APIs, no `#ifdef`, no
+// floating point. All durability/time is delegated to injected ports
+// (IntentLog/ClockPort), all money/price is exact integer paise via the domain
+// types.
 
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 #include "broker_exec/domain/types.hpp"
 #include "broker_exec/idempotency/idempotency.hpp"
@@ -87,7 +89,12 @@ class Dispatcher {
 
   // PLACE a new order idempotently.
   //   1. reserve(): if the signal was already submitted -> return the EXISTING
-  //      order and perform ZERO broker sends (the duplicate-submit guard).
+  //      order and perform ZERO broker sends (the duplicate-submit guard). A
+  //      reservation whose row the projection does not have is UNKNOWN — UNLESS
+  //      this process failed to make that order's PlaceOrder intent durable (see
+  //      unsent_refs_), in which case nothing was recorded and nothing was sent,
+  //      and the reserved ref is RESUMED through record -> send rather than
+  //      reported as a possibly-live order that no store row backs.
   //   2. else: append a PlaceOrder intent (using the canonical
   //      idempotency::intent_payload_json so restart-dedup works), which FSYNCs,
   //      then run pre_send_barrier(), then broker.place():
@@ -128,9 +135,12 @@ class Dispatcher {
   // Install a barrier invoked AFTER the intent record is fsync'd but BEFORE the
   // broker send, on every mutation. Production leaves it empty (the default is a
   // no-op). Story 1.12's SIGKILL durability harness installs a hook here that
-  // kills the process at exactly this point to prove durability precedes the
-  // send; the fsync-before-send test in dispatcher_test.cpp installs a hook that
-  // reads the on-disk intent log and asserts the record is already present.
+  // kills the process at exactly this point to prove the record precedes the
+  // send; the record-before-send test in dispatcher_test.cpp installs a hook that
+  // reads the intent-log file and asserts the record is already there. NOTE what
+  // neither one can see: a file read is answered by the OS page cache, so both
+  // pin the ORDERING (record, then send) and NOT the fsync — counting that needs
+  // a durability seam inside intentlog. See the comment on that test.
   void set_pre_send_barrier(std::function<void()> barrier);
 
  private:
@@ -164,6 +174,23 @@ class Dispatcher {
   idempotency::UuidGenerator& uuids_;
   lifecycle::LifecycleEngine& fsm_;
   ports::ClockPort& clock_;
+
+  // Client refs this process RESERVED but whose PlaceOrder intent never became
+  // durable — log_.append() returned an Error, which happens strictly BEFORE the
+  // barrier and before broker_.place(), so nothing was recorded and nothing was
+  // sent. reserve() registers signature -> ref in the idempotency index before we
+  // have written anything, and that index has no unregister, so WITHOUT this set
+  // a failed append leaves the signal bound to a ref that exists in no log record
+  // and no store row: every later attempt is answered with a SYNTHESIZED Unknown
+  // order that UnknownResolver (which enumerates store rows) can never see or
+  // clear — the signal is un-placeable for the life of the process while the
+  // strategy is told it may be holding a position it never opened.
+  // A ref enters ONLY on an append failure and leaves the instant an append for it
+  // succeeds, before any send, so membership means exactly: provably never
+  // recorded, provably never sent. Single-threaded/synchronous dispatch (NFR-2) is
+  // what makes that reading airtight — nothing can send in between.
+  std::unordered_set<std::string> unsent_refs_;
+
   std::function<void()> pre_send_barrier_;  // no-op until installed
 };
 

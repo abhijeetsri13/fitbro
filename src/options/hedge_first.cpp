@@ -16,6 +16,25 @@ namespace {
   return std::string(errors::to_string(err.category));
 }
 
+// Is this Error AMBIGUOUS about whether the order reached the exchange?
+//
+// The SAME rule as `Dispatcher::is_reconcile_first` (src/runtime/dispatcher.cpp)
+// and as basket.cpp's copy: a ReconcileFirst action, or a Timeout / Network /
+// Unknown category, means the order MAY be live at the exchange. It is duplicated
+// rather than called because `options` depends inward on `ports` + `errors` only
+// and must never link `runtime` (the boundary cmake/HexagonalBoundary.cmake
+// enforces) — the same reason `error_tag` is re-declared per TU here. KEEP ALL
+// THREE IN SYNC: a category that becomes reconcile-first in the dispatcher must
+// become ambiguous here too.
+[[nodiscard]] bool is_ambiguous(const errors::Error& err) noexcept {
+  if (err.action == errors::SuggestedAction::ReconcileFirst) {
+    return true;
+  }
+  return err.category == errors::ErrorCategory::Timeout ||
+         err.category == errors::ErrorCategory::Network ||
+         err.category == errors::ErrorCategory::Unknown;
+}
+
 }  // namespace
 
 std::string_view to_string(HedgeFirstOutcome outcome) noexcept {
@@ -30,6 +49,8 @@ std::string_view to_string(HedgeFirstOutcome outcome) noexcept {
       return "ShortPlacementFailed";
     case HedgeFirstOutcome::NakedShortRemediated:
       return "NakedShortRemediated";
+    case HedgeFirstOutcome::ShortAmbiguousReconcileRequired:
+      return "ShortAmbiguousReconcileRequired";
   }
   return "Unknown";
 }
@@ -47,6 +68,11 @@ HedgeFirstResult execute_hedge_first(const HedgeFirstSeams& seams, ports::AlertS
   }
   auto hedge_ack = seams.place_hedge();
   if (!hedge_ack) {
+    // An ambiguous hedge outcome is deliberately NOT split out here: the short is
+    // never sent on this path, so no risk position can exist and there is no
+    // safety claim for a caller to act on — at worst a stray protective long is
+    // left at the broker for reconciliation to find. Contrast Step 3, where the
+    // same ambiguity would invite the caller to remove a LIVE hedge.
     result.outcome = HedgeFirstOutcome::HedgePlacementFailed;
     result.detail = "hedge placement failed: " + error_tag(hedge_ack.error());
     return result;
@@ -75,9 +101,11 @@ HedgeFirstResult execute_hedge_first(const HedgeFirstSeams& seams, ports::AlertS
   }
 
   // ── Step 3: place the short (reached ONLY with a confirmed hedge) ──────────
-  // Null seam or an Error -> ShortPlacementFailed. The hedge stands: a lone long
-  // hedge is SAFE (not naked), so NO Critical alert and NO emergency action. The
-  // hedge order id is returned so the caller can keep/close it.
+  // Null seam or a DEFINITIVE rejection -> ShortPlacementFailed. The hedge stands:
+  // a lone long hedge is SAFE (not naked), so NO Critical alert and NO emergency
+  // action, and the hedge order id is returned so the caller can keep/close it.
+  // An AMBIGUOUS Error takes the branch below instead — that safety claim is only
+  // true when the short's absence is PROVEN.
   if (!seams.place_short) {
     result.outcome = HedgeFirstOutcome::ShortPlacementFailed;
     result.detail = "short placement seam not configured (hedge stands)";
@@ -85,6 +113,31 @@ HedgeFirstResult execute_hedge_first(const HedgeFirstSeams& seams, ports::AlertS
   }
   auto short_ack = seams.place_short();
   if (!short_ack) {
+    // AMBIGUOUS IS NOT REJECTED. `ShortPlacementFailed` is a SAFETY CLAIM — it
+    // tells the caller a lone long hedge stands and it is safe to keep or CLOSE
+    // it. On a Timeout/Network/Unknown the short MAY already be live at the
+    // exchange, and a caller acting on that claim closes the hedge over a live
+    // short: the naked position this module exists to prevent. Only a definitive
+    // broker verdict earns the claim.
+    if (is_ambiguous(short_ack.error())) {
+      result.outcome = HedgeFirstOutcome::ShortAmbiguousReconcileRequired;
+      result.detail = "short placement AMBIGUOUS, short MAY be LIVE (no order id): " +
+                      error_tag(short_ack.error()) + "; hedge LEFT in place, reconcile first";
+      // The emergency action is deliberately NOT run: it is a square-off/cancel
+      // that would remove the HEDGE — the one move that could turn an unproven
+      // short into a naked one — and we hold no order id to target the short with
+      // anyway. Nothing is naked right now, so the correct action is to leave the
+      // book exactly as it is and escalate. Alert last, Result swallowed and
+      // wrapped, same best-effort discipline as AC-3 below.
+      try {
+        (void)alerts.send(ports::AlertLevel::Critical,
+                          "SHORT AMBIGUOUS: short placement outcome is UNKNOWN and the short may "
+                          "be LIVE at the broker; the hedge was LEFT in place - do NOT close it "
+                          "before reconciling");
+      } catch (...) {  // NOLINT(bugprone-empty-catch): alerting is strictly best-effort
+      }
+      return result;
+    }
     result.outcome = HedgeFirstOutcome::ShortPlacementFailed;
     result.detail = "short placement failed (hedge stands): " + error_tag(short_ack.error());
     return result;
@@ -116,10 +169,9 @@ HedgeFirstResult execute_hedge_first(const HedgeFirstSeams& seams, ports::AlertS
   if (seams.emergency_action) {
     auto emergency = seams.emergency_action();
     result.emergency_action_ran = emergency.has_value();
-    result.detail = emergency.has_value()
-                        ? "naked short remediated: emergency action ran"
-                        : "naked short: emergency action returned error: " +
-                              error_tag(emergency.error());
+    result.detail = emergency.has_value() ? "naked short remediated: emergency action ran"
+                                          : "naked short: emergency action returned error: " +
+                                                error_tag(emergency.error());
   } else {
     result.emergency_action_ran = false;
     result.detail = "naked short: no emergency action configured; operator alerted";

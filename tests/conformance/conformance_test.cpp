@@ -11,13 +11,11 @@
 // Cross-platform: C++20 standard library only. No OS APIs, no `#ifdef`.
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <memory>
 
 #include "broker_exec/adapters/fake/fake_broker.hpp"
 #include "broker_exec/ports/broker_port.hpp"
 #include "broker_exec/ports/clock_port.hpp"
-
 #include "conformance_kit.hpp"
 
 namespace conf = broker_exec::conformance;
@@ -29,8 +27,7 @@ namespace {
 // shape an Epic-2/6 adapter factory will take (minus the FaultConfig, which a real
 // adapter ignores in favor of its recorded fixtures).
 conf::BrokerFactory fake_factory() {
-  return [](broker_exec::ports::ClockPort& clock,
-            broker_exec::adapters::fake::FaultConfig fault)
+  return [](broker_exec::ports::ClockPort& clock, broker_exec::adapters::fake::FaultConfig fault)
              -> std::unique_ptr<broker_exec::ports::BrokerPort> {
     return std::make_unique<broker_exec::adapters::fake::FakeBroker>(clock, fault);
   };
@@ -42,10 +39,18 @@ TEST_CASE("conformance: the full fault matrix produces zero duplicate orders",
           "[conformance][fault-matrix][zero-duplicate]") {
   const conf::ConformanceReport report = conf::run_conformance(fake_factory());
 
-  // Surface every failure line so a regression names the exact scenario+property.
-  for (const std::string& f : report.failures) {
-    UNSCOPED_INFO("conformance failure: " << f);
-  }
+  // Scoped, so the reason survives to whichever assertion below actually fires.
+  INFO("conformance failures:" << conf::failure_digest(report.failures));
+  INFO("conformance SETUP failures:" << conf::failure_digest(report.setup_failures));
+
+  // Setup first. A scenario that could not create its data directory proved
+  // nothing about the library, and saying so before the property assertions stops
+  // a broken runner reading as a broken zero-duplicate guarantee (#44).
+  CHECK(report.setup_failures.empty());
+
+  // Named next: the most specific statement of what actually went wrong, so it is
+  // the assertion a reader sees before the arithmetic ones.
+  CHECK(report.failures.empty());
 
   // Every scenario in the matrix ran.
   CHECK(report.scenarios_run > 0);
@@ -59,8 +64,7 @@ TEST_CASE("conformance: the full fault matrix produces zero duplicate orders",
   CHECK(report.ok());
 }
 
-TEST_CASE("conformance: every scenario in the matrix is exercised",
-          "[conformance][fault-matrix]") {
+TEST_CASE("conformance: every scenario in the matrix is exercised", "[conformance][fault-matrix]") {
   const conf::ConformanceReport report = conf::run_conformance(fake_factory());
   // The matrix covers the control + every FaultConfig knob (drop_ack,
   // ack_lost_but_placed, rate_limit, duplicate_fill, out_of_order, delay_ack):

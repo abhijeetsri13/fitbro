@@ -1,7 +1,6 @@
 #include "broker_exec/supervisor/supervisor_plan.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <string>
 #include <vector>
@@ -213,8 +212,7 @@ TEST_CASE("an escalated account is never eligible for restart", "[supervisor][pl
   CHECK_FALSE(plan.may_restart("alpha", at(100000)));
 }
 
-TEST_CASE("may_restart is false for an unknown or cleanly stopped account",
-          "[supervisor][plan]") {
+TEST_CASE("may_restart is false for an unknown or cleanly stopped account", "[supervisor][plan]") {
   SupervisorPlan plan(kCfg);
   CHECK_FALSE(plan.may_restart("never-seen", at(10)));
 
@@ -269,8 +267,8 @@ TEST_CASE("the plan summary rolls the fleet up for the operator", "[supervisor][
   summary = plan.summary();
   CHECK(summary.accounts_down == 0);
 
-  plan.on_exit("alpha", 1, at(1));                          // down, restarting
-  plan.on_exit("beta", kExitFailClosedNeedsHuman, at(2));   // down, escalated + alarmed
+  plan.on_exit("alpha", 1, at(1));                         // down, restarting
+  plan.on_exit("beta", kExitFailClosedNeedsHuman, at(2));  // down, escalated + alarmed
 
   summary = plan.summary();
   CHECK(summary.accounts_total == 3);
@@ -307,8 +305,7 @@ TEST_CASE("an unregistered account that exits is adopted, never silently dropped
   CHECK(plan.summary().accounts_total == 1);
 }
 
-TEST_CASE("an EMPTY account id fails closed and creates no registry entry",
-          "[supervisor][plan]") {
+TEST_CASE("an EMPTY account id fails closed and creates no registry entry", "[supervisor][plan]") {
   SupervisorPlan plan(kCfg);
 
   const SupervisorDecision d = plan.on_exit("", 1, at(0));

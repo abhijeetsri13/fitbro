@@ -40,9 +40,8 @@
 //
 // Cross-platform: C++20 standard library only. No OS APIs, no `#ifdef`, no float.
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <algorithm>
+#include <catch2/catch_test_macros.hpp>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -60,7 +59,6 @@
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/ports/broker_port.hpp"
 #include "broker_exec/result.hpp"
-
 #include "portable_strategy.hpp"
 #include "recorded_kite_server.hpp"
 #include "recorded_kotak_server.hpp"
@@ -90,11 +88,8 @@ struct Substrate {
     d.kite_http = &kite_server;
     d.kite_secrets = &secrets;
     d.kotak_http = &kotak_server;
-    d.kotak_session =
-        [bundle = broker_exec::conformance::kotak_fixture::make_bundle()]()
-        -> broker_exec::Result<broker_exec::adapters::kotak::KotakSessionBundle> {
-      return bundle;
-    };
+    d.kotak_session = [bundle = broker_exec::conformance::kotak_fixture::make_bundle()]()
+        -> broker_exec::Result<broker_exec::adapters::kotak::KotakSessionBundle> { return bundle; };
     return d;
   }
 };
@@ -182,14 +177,12 @@ TEST_CASE("portability: the SAME strategy produces the SAME outcome on both brok
   // ── Run A ──────────────────────────────────────────────────────────────
   auto broker_a = comp::make_broker(config_for("kite"), deps, options);
   REQUIRE(broker_a.has_value());
-  const portable::StrategyOutcome outcome_a =
-      portable::run(broker_a.value().broker(), params);
+  const portable::StrategyOutcome outcome_a = portable::run(broker_a.value().broker(), params);
 
   // ── Run B — the ONLY difference is the string on the next line ─────────
   auto broker_b = comp::make_broker(config_for("kotak"), deps, options);
   REQUIRE(broker_b.has_value());
-  const portable::StrategyOutcome outcome_b =
-      portable::run(broker_b.value().broker(), params);
+  const portable::StrategyOutcome outcome_b = portable::run(broker_b.value().broker(), params);
 
   // THE HEADLINE ASSERTION. Not "both succeeded" — the whole decision path,
   // compared as one value.
@@ -271,8 +264,9 @@ TEST_CASE("portability: the composed assembly reports which broker it is, and th
   CHECK(b.value().capability_override_in_effect());
 }
 
-TEST_CASE("portability: broker order-id FORMATS differ, which is exactly why the outcome omits them",
-          "[portability][ac1]") {
+TEST_CASE(
+    "portability: broker order-id FORMATS differ, which is exactly why the outcome omits them",
+    "[portability][ac1]") {
   // The equality assertion in the AC-1 test is "modulo broker order-id formats".
   // This test makes that caveat concrete rather than leaving it as prose: the two
   // brokers really do mint differently-shaped ids for the same strategy action.

@@ -2,10 +2,9 @@
 
 #include <chrono>
 #include <cstddef>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
-
-#include <nlohmann/json.hpp>
 
 namespace broker_exec::observability {
 

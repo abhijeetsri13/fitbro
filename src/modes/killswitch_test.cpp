@@ -1,7 +1,6 @@
 #include "broker_exec/modes/killswitch.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <functional>
 #include <string>
 #include <string_view>
@@ -31,8 +30,8 @@ class MemoryStore {
  public:
   broker_exec::Result<ports::Ok> persist(const KillCommand& cmd) {
     if (fail_) {
-      return broker_exec::fail(broker_exec::errors::make_error(
-          ErrorCategory::Internal, "store unavailable"));
+      return broker_exec::fail(
+          broker_exec::errors::make_error(ErrorCategory::Internal, "store unavailable"));
     }
     saved_.push_back(cmd);
     return ports::ok();
@@ -49,7 +48,9 @@ class MemoryStore {
 };
 
 // A fake authenticator: the operator secret is "op-secret".
-[[nodiscard]] bool fake_authenticate(std::string_view token) { return token == "op-secret"; }
+[[nodiscard]] bool fake_authenticate(std::string_view token) {
+  return token == "op-secret";
+}
 
 // Build a controller wired to `store` with the fake authenticator.
 [[nodiscard]] KillController make_controller(MemoryStore& store) {
@@ -154,8 +155,7 @@ TEST_CASE("submit with a bad token is rejected — nothing persisted or enqueued
   CHECK(controller.drain().empty());
 }
 
-TEST_CASE("submit fails closed when persist fails — not enqueued (AC-3)",
-          "[modes][killswitch]") {
+TEST_CASE("submit fails closed when persist fails — not enqueued (AC-3)", "[modes][killswitch]") {
   MemoryStore store;
   store.set_fail(true);
   KillController controller = make_controller(store);

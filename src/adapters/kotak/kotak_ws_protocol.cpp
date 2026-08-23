@@ -1,12 +1,11 @@
 #include "broker_exec/adapters/kotak/kotak_ws_protocol.hpp"
 
 #include <cstddef>
+#include <nlohmann/json.hpp>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/result.hpp"
@@ -133,9 +132,8 @@ Result<std::vector<KotakSubscription>> parse_subscription_frame(std::string_view
   std::size_t begin = 0;
   while (begin <= scrips.size()) {
     const std::size_t end = scrips.find('&', begin);
-    const std::string_view entry =
-        std::string_view(scrips).substr(begin, end == std::string::npos ? std::string::npos
-                                                                        : end - begin);
+    const std::string_view entry = std::string_view(scrips).substr(
+        begin, end == std::string::npos ? std::string::npos : end - begin);
     const std::size_t bar = entry.find('|');
     if (bar == std::string_view::npos || bar == 0 || bar + 1 == entry.size()) {
       return broker_exec::fail(errors::make_error(

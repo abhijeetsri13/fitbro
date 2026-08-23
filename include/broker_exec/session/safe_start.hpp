@@ -115,8 +115,7 @@ class SafeStartGate {
 // Wire it as: strategy_name_check = [&] {
 //   return session::require_valid_strategy_names(config.strategies.names);
 // };
-[[nodiscard]] Result<ports::Ok> require_valid_strategy_names(
-    const std::vector<std::string>& names);
+[[nodiscard]] Result<ports::Ok> require_valid_strategy_names(const std::vector<std::string>& names);
 
 // ── The IMP-11 legacy-stop guard ────────────────────────────────────────────
 //
@@ -150,8 +149,7 @@ class SafeStartGate {
 //   if (!rows) return broker_exec::fail(std::move(rows.error()));  // fail closed
 //   return session::require_no_legacy_stops(rows.value());
 // };
-[[nodiscard]] Result<ports::Ok> require_no_legacy_stops(
-    const std::vector<domain::Order>& orders);
+[[nodiscard]] Result<ports::Ok> require_no_legacy_stops(const std::vector<domain::Order>& orders);
 
 // True iff `order` is the fingerprint above: a WORKING stop with no trigger.
 // Exposed so a caller can log/enumerate the offenders it must clear.

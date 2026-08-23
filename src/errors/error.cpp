@@ -149,6 +149,11 @@ Error make_error(ErrorCategory category, std::string message, std::string broker
   return Error{category, default_action_for(category), std::move(message), std::move(broker_code)};
 }
 
+Error make_error(ErrorCategory category, SuggestedAction action, std::string message,
+                 std::string broker_code) {
+  return Error{category, action, std::move(message), std::move(broker_code)};
+}
+
 Error classify_http(int status, std::string_view body) {
   // We map on the HTTP status first (the broker-neutral transport signal) and
   // use the body only as a refinement hint. The body is NEVER stored on the

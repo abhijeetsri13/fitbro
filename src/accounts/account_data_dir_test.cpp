@@ -1,7 +1,6 @@
 #include "broker_exec/accounts/account_data_dir.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -102,33 +101,39 @@ TEST_CASE("account ids are LOWERCASE ONLY: 'AB' and 'ab' would be one directory"
 
 TEST_CASE("account id validation is fail-closed: an id is a NAME, not a path", "[accounts]") {
   const std::vector<std::string> rejected{
-      "",                                     // empty
+      "",                                         // empty
       std::string(kMaxAccountIdLength + 1, 'a'),  // overlong
-      "..",                                   // parent traversal
-      ".",                                    // current dir
-      "../evil",                              // traversal with separator
-      "..\\evil",                             // Windows traversal
-      "a/b",                                  // POSIX separator
-      "a\\b",                                 // Windows separator
-      "/abs",                                 // absolute POSIX
-      "C:",                                   // drive letter
-      "C:/x",                                 // drive-qualified path
-      "acct.1",                               // dot (would create an extension)
-      "acct 1",                               // space
-      "acct\t1",                              // control character
-      std::string("acct\0hidden", 11),        // embedded NUL
-      "acct*",                                // wildcard
-      "acct?",                                // wildcard
-      "acct|pipe",                            // shell metacharacter
-      "acct:stream",                          // NTFS alternate data stream
-      "acct\"q",                              // quote
-      "~",                                    // home expansion
-      "$HOME",                                // env expansion
-      "%APPDATA%",                            // Windows env expansion
-      "acct\n",                               // newline (log injection)
-      "con",  "nul",  "aux", "com1", "lpt9",  // Windows reserved device names
-      "CON",  "Nul",                          // ...and their uppercase spellings
-      "AB",   "Acct1",                        // uppercase: one directory on NTFS/APFS
+      "..",                                       // parent traversal
+      ".",                                        // current dir
+      "../evil",                                  // traversal with separator
+      "..\\evil",                                 // Windows traversal
+      "a/b",                                      // POSIX separator
+      "a\\b",                                     // Windows separator
+      "/abs",                                     // absolute POSIX
+      "C:",                                       // drive letter
+      "C:/x",                                     // drive-qualified path
+      "acct.1",                                   // dot (would create an extension)
+      "acct 1",                                   // space
+      "acct\t1",                                  // control character
+      std::string("acct\0hidden", 11),            // embedded NUL
+      "acct*",                                    // wildcard
+      "acct?",                                    // wildcard
+      "acct|pipe",                                // shell metacharacter
+      "acct:stream",                              // NTFS alternate data stream
+      "acct\"q",                                  // quote
+      "~",                                        // home expansion
+      "$HOME",                                    // env expansion
+      "%APPDATA%",                                // Windows env expansion
+      "acct\n",                                   // newline (log injection)
+      "con",
+      "nul",
+      "aux",
+      "com1",
+      "lpt9",  // Windows reserved device names
+      "CON",
+      "Nul",  // ...and their uppercase spellings
+      "AB",
+      "Acct1",  // uppercase: one directory on NTFS/APFS
   };
 
   for (const std::string& id : rejected) {
@@ -146,8 +151,7 @@ TEST_CASE("create rejects an invalid id and an empty data root", "[accounts]") {
   CHECK_FALSE(AccountDataDir::create(fs::path{}, "acct1").has_value());
 }
 
-TEST_CASE("the layout puts every per-account file inside one id-derived directory",
-          "[accounts]") {
+TEST_CASE("the layout puts every per-account file inside one id-derived directory", "[accounts]") {
   const TempDir dir;
   Result<AccountDataDir> account = AccountDataDir::create(dir.path, "acct1");
   REQUIRE(account.has_value());
@@ -157,8 +161,8 @@ TEST_CASE("the layout puts every per-account file inside one id-derived director
   CHECK(a.root() == dir.path / "acct1");
   CHECK(a.root().parent_path() == dir.path);  // EXACTLY one id-derived level
 
-  for (const fs::path& p : {a.intent_log(), a.store_db(), a.token_store(), a.ledger(),
-                            a.kill_journal()}) {
+  for (const fs::path& p :
+       {a.intent_log(), a.store_db(), a.token_store(), a.ledger(), a.kill_journal()}) {
     INFO("path = " << p.string());
     CHECK(contains(a.root(), p));
   }
@@ -247,8 +251,7 @@ TEST_CASE("the SAME id yields the SAME tree", "[accounts]") {
 TEST_CASE("ensure() is idempotent and invokes the permission seam", "[accounts]") {
   const TempDir dir;
   PermsSpy spy;
-  Result<AccountDataDir> account =
-      AccountDataDir::create(dir.path / "data", "acct1", spy_fn(spy));
+  Result<AccountDataDir> account = AccountDataDir::create(dir.path / "data", "acct1", spy_fn(spy));
   REQUIRE(account.has_value());
 
   REQUIRE(account.value().ensure().has_value());
@@ -275,8 +278,7 @@ TEST_CASE("ensure() FAILS CLOSED when permissions cannot be tightened", "[accoun
   CHECK(ensured.error().category == ErrorCategory::Internal);
 }
 
-TEST_CASE("ensure() reports an error when a non-directory blocks the account path",
-          "[accounts]") {
+TEST_CASE("ensure() reports an error when a non-directory blocks the account path", "[accounts]") {
   const TempDir dir;
   // A regular FILE sitting exactly where the account directory must go.
   const fs::path blocker = dir.path / "acct1";

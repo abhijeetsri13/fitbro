@@ -177,8 +177,8 @@ namespace broker_exec::idempotency {
 // (Secondary, pre-existing and true of all ten checks: nothing in this repo builds
 // a SafeStartContext outside tests, so the cold-boot gate has no production caller
 // yet either.)
-[[nodiscard]] std::string make_client_ref(std::string_view strategy,
-                                          std::string_view signature_hex, std::string_view uuid);
+[[nodiscard]] std::string make_client_ref(std::string_view strategy, std::string_view signature_hex,
+                                          std::string_view uuid);
 
 // Deterministic child slice ref: "<parent>#<k>" with k >= 1 (k < 1 is clamped to
 // 1). Re-deriving a child for the same (parent, k) is bit-identical — the basis

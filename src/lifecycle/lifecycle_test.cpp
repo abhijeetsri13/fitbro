@@ -1,7 +1,6 @@
 #include "broker_exec/lifecycle/lifecycle.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 #include <vector>
 
@@ -149,8 +148,124 @@ TEST_CASE("apply: illegal transition is refused (NoChange), order left untouched
   CHECK(outcome == life::ApplyOutcome::NoChange);
   CHECK(o.state == OrderState::Created);
   CHECK(o.filled_qty == Quantity::of(0));
-  // The key is still recorded so a later equal/higher key is consistent.
-  CHECK(engine.last_key(ref) == 1);
+  // The key is NOT recorded: it is the high-water mark of what was APPLIED, not
+  // of what was seen. See the test below for what recording it would cost.
+  CHECK(engine.last_key(ref) == std::nullopt);
+}
+
+TEST_CASE("apply: a refused view neither canonicalizes nor raises the ordering high-water mark",
+          "[lifecycle]") {
+  life::LifecycleEngine engine;
+  Order o = order_in(OrderState::Created);
+  const std::string ref = o.intent.client_ref;
+
+  // BOUNDARY of the working-order canonicalization below: before the order has
+  // reached the broker, `Sent` still means the forward edge it means on the happy
+  // path (PendingSend -> Sent). It is NOT rewritten into Acknowledged, so
+  // Created -> Sent stays the illegal jump it has always been.
+  CHECK(engine.apply(o, view(ref, OrderState::Sent, 10, 50)) == life::ApplyOutcome::NoChange);
+  CHECK(o.state == OrderState::Created);
+  CHECK(o.filled_qty == Quantity::of(0));
+
+  // And the key of a view the machine never believed must not become the
+  // high-water mark — otherwise this legal, lower-keyed view, which carries real
+  // broker truth, is dropped as stale and one refusal silently costs us the next
+  // good observation as well.
+  CHECK(engine.last_key(ref) == std::nullopt);
+  CHECK(engine.apply(o, view(ref, OrderState::Validated, 3)) == life::ApplyOutcome::Applied);
+  CHECK(o.state == OrderState::Validated);
+  CHECK(engine.last_key(ref) == 3);
+}
+
+// ── Adapter spellings of "still working at the broker" ──────────────────────
+//
+// The Kite adapter maps EVERY working broker status (OPEN, TRIGGER PENDING,
+// MODIFY PENDING, ...) onto OrderState::Sent and publishes it carrying the row's
+// filled_quantity. Read literally that is a backward jump out of every state a
+// live order is actually held in, so the table refused it and the fill, the
+// average price and the broker order id it carried were all discarded — for the
+// entire working life of the order, with no alert anywhere.
+
+TEST_CASE("apply: a working-order view on an Acknowledged order records the fill", "[lifecycle]") {
+  life::LifecycleEngine engine;
+  Order o = order_in(OrderState::Acknowledged);
+  const std::string ref = o.intent.client_ref;
+
+  // The exact production pairing: the dispatcher stores a placed order as
+  // Acknowledged, then Kite reports it "OPEN" with filled_quantity 50. The view
+  // means "still working, 50 done" -> PartiallyFilled/50. Leaving filled_qty at 0
+  // here is what let a shrink-to-30 modify past modifyguard and cancel the
+  // working remainder of a real 50-lot position.
+  REQUIRE(engine.apply(o, view(ref, OrderState::Sent, 7, 50)) == life::ApplyOutcome::Applied);
+  CHECK(o.state == OrderState::PartiallyFilled);
+  CHECK(o.filled_qty == Quantity::of(50));
+  CHECK(o.broker_order_id == "BRK-1");
+}
+
+TEST_CASE("apply: a working-order view with no fill holds Acknowledged and still lands the id",
+          "[lifecycle]") {
+  life::LifecycleEngine engine;
+  Order o = order_in(OrderState::Acknowledged);
+  const std::string ref = o.intent.client_ref;
+  REQUIRE(o.broker_order_id.empty());
+
+  // filled_quantity 0 -> the canonical working state is Acknowledged, a self
+  // transition. The broker order id and average price in the same view are still
+  // real new information and must not be thrown out with the state.
+  CHECK(engine.apply(o, view(ref, OrderState::Sent, 7, 0)) == life::ApplyOutcome::Applied);
+  CHECK(o.state == OrderState::Acknowledged);
+  CHECK(o.broker_order_id == "BRK-1");
+  CHECK(o.filled_qty == Quantity::of(0));
+}
+
+TEST_CASE("apply: a working-order view advances the fill on an already-partial order",
+          "[lifecycle]") {
+  life::LifecycleEngine engine;
+  Order o = order_in(OrderState::PartiallyFilled);
+  o.filled_qty = Quantity::of(50);
+  const std::string ref = o.intent.client_ref;
+
+  // Kite keeps reporting "OPEN" as the remainder works off, so the same refusal
+  // froze filled_qty at whatever the last believed view said.
+  CHECK(engine.apply(o, view(ref, OrderState::Sent, 8, 80)) == life::ApplyOutcome::Applied);
+  CHECK(o.state == OrderState::PartiallyFilled);
+  CHECK(o.filled_qty == Quantity::of(80));
+}
+
+TEST_CASE("apply: a working-order view resolves an Unknown order instead of pinning it",
+          "[lifecycle]") {
+  life::LifecycleEngine engine;
+
+  // UnknownResolver::adopt ignores apply's return value, so an UNKNOWN order
+  // whose broker truth is a live working order could never be resolved: the
+  // engine stayed in the UNKNOWN pause, blocking every non-risk-reducing entry.
+  Order idle = order_in(OrderState::Unknown, "alpha-1234abcd-idle");
+  CHECK(engine.apply(idle, view(idle.intent.client_ref, OrderState::Sent, 9, 0)) ==
+        life::ApplyOutcome::Applied);
+  CHECK(idle.state == OrderState::Acknowledged);
+
+  Order partial = order_in(OrderState::Unknown, "alpha-1234abcd-part");
+  CHECK(engine.apply(partial, view(partial.intent.client_ref, OrderState::Sent, 9, 30)) ==
+        life::ApplyOutcome::Applied);
+  CHECK(partial.state == OrderState::PartiallyFilled);
+  CHECK(partial.filled_qty == Quantity::of(30));
+}
+
+TEST_CASE("apply: a working-order view is never read as Filled, from Reconciled either",
+          "[lifecycle]") {
+  life::LifecycleEngine engine;
+  Order o = order_in(OrderState::Reconciled);
+  o.intent.quantity = Quantity::of(50);
+  const std::string ref = o.intent.client_ref;
+
+  // The whole order quantity reported as filled while the broker STILL calls the
+  // order working. The canonical state is PartiallyFilled, never the terminal,
+  // absorbing Filled: that sink has to come from the broker saying so, not from
+  // our own arithmetic, because nothing ever moves an order back out of it.
+  CHECK(engine.apply(o, view(ref, OrderState::Sent, 4, 50)) == life::ApplyOutcome::Applied);
+  CHECK(o.state == OrderState::PartiallyFilled);
+  CHECK_FALSE(life::is_terminal(o.state));
+  CHECK(o.filled_qty == Quantity::of(50));
 }
 
 TEST_CASE("apply: a no-key order with no prior view applies the first view", "[lifecycle]") {
@@ -179,9 +294,10 @@ TEST_CASE("fold_parent_state: any child Rejected (no Unknown) -> ManualIntervent
   CHECK(life::fold_parent_state(children) == OrderState::ManualInterventionRequired);
 }
 
-TEST_CASE("fold_parent_state: mixed active/terminal -> PartiallyPlaced; mixed terminal-only "
-          "-> PartiallyFilled",
-          "[lifecycle]") {
+TEST_CASE(
+    "fold_parent_state: mixed active/terminal -> PartiallyPlaced; mixed terminal-only "
+    "-> PartiallyFilled",
+    "[lifecycle]") {
   // One filled, one still acknowledged (active) -> placement in progress.
   const std::vector<OrderState> in_progress{OrderState::Filled, OrderState::Acknowledged};
   CHECK(life::fold_parent_state(in_progress) == OrderState::PartiallyPlaced);

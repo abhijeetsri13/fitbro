@@ -2,13 +2,12 @@
 
 #include <cctype>
 #include <charconv>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/kotak/kotak_errors.hpp"
 #include "broker_exec/adapters/kotak/kotak_session.hpp"

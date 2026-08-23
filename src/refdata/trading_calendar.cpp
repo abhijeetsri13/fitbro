@@ -5,13 +5,12 @@
 #include <fstream>
 #include <ios>
 #include <iterator>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/errors/error.hpp"
 
@@ -118,8 +117,9 @@ Result<CalendarData> parse_calendar_json(std::string_view doc) {
       // Reject a malformed date verbatim: an unparseable entry would never match a
       // real local date, silently letting the bot TRADE on a typo'd holiday.
       if (!parse_iso_date(entry).has_value()) {
-        return make_error(ErrorCategory::Validation, std::string("calendar: '") + key +
-                                                         "' has invalid ISO date \"" + entry + "\"");
+        return make_error(
+            ErrorCategory::Validation,
+            std::string("calendar: '") + key + "' has invalid ISO date \"" + entry + "\"");
       }
       out.insert(std::move(entry));
     }
@@ -188,7 +188,9 @@ TradingCalendar::LocalNow TradingCalendar::local_now() const {
   return LocalNow{to_iso(ymd), minute_of_day};
 }
 
-std::string TradingCalendar::today_local() const { return local_now().iso_date; }
+std::string TradingCalendar::today_local() const {
+  return local_now().iso_date;
+}
 
 std::filesystem::path TradingCalendar::cache_file_for(const std::string& iso_date) const {
   return cache_dir_ / (broker_ + "_calendar_" + iso_date + ".json");
@@ -271,13 +273,15 @@ Result<ports::Ok> TradingCalendar::load_cached_for(const std::string& iso_date) 
 Result<ports::Ok> TradingCalendar::require_fresh() const {
   if (!loaded_ || cache_date_ != today_local()) {
     // DataStale defaults to SuggestedAction::BlockStrategy: safe-start halts.
-    return fail(make_error(ErrorCategory::DataStale,
-                           "calendar is stale or undownloaded; trading blocked"));
+    return fail(
+        make_error(ErrorCategory::DataStale, "calendar is stale or undownloaded; trading blocked"));
   }
   return ports::ok();
 }
 
-bool TradingCalendar::is_fresh() const { return require_fresh().has_value(); }
+bool TradingCalendar::is_fresh() const {
+  return require_fresh().has_value();
+}
 
 bool TradingCalendar::is_trading_day(const std::string& iso_date) const {
   // A working-day special session always wins (a session declared on a weekend

@@ -20,6 +20,14 @@
 // risk. It is NOT an emergency; no Critical alert, no emergency action. Only a
 // LIVE short whose hedge later fails (NakedShortRemediated) triggers AC-3.
 //
+// BUT THAT COROLLARY NEEDS THE SHORT'S ABSENCE PROVEN. A Timeout/Network/Unknown
+// on `place_short` is NOT proof the short does not exist (BrokerPort: "a Timeout
+// may mean the order reached the exchange"), and "a lone hedge is safe, keep or
+// close it" is a SAFETY CLAIM a caller acts on — closing the hedge over a short
+// that IS live opens the naked position this module exists to prevent. So an
+// ambiguous short outcome is ShortAmbiguousReconcileRequired, never
+// ShortPlacementFailed: hedge LEFT alone, Critical alert, reconcile first.
+//
 // ALERTING IS BEST-EFFORT (mirrors health::Watchdog): the AlertSink::send Result
 // is swallowed so a dead alert channel can never derail or block the safety
 // outcome. The emergency action runs even if the alert send returned an Error.
@@ -49,19 +57,29 @@ namespace broker_exec::options {
 //   HedgeUnconfirmed      — the hedge was placed but not confirmed (or the
 //                           confirmation check errored); the short was NEVER sent
 //                           (AC-2, fail-closed). The caller decides on the hedge.
-//   ShortPlacementFailed  — hedge is live but the short placement failed: SAFE (a
-//                           lone long hedge is not naked). No remediation; the
-//                           hedge order id is returned so the caller can keep/close
-//                           it.
+//   ShortPlacementFailed  — hedge is live and the short was DEFINITIVELY rejected
+//                           (the broker gave a verdict): SAFE (a lone long hedge is
+//                           not naked). No remediation; the hedge order id is
+//                           returned so the caller can keep/close it.
 //   NakedShortRemediated  — the short is live but the hedge could not be proven
 //                           live afterwards: AC-3 fired (Critical alert + the
 //                           configured emergency action ran).
+//   ShortAmbiguousReconcileRequired
+//                         — hedge is live and the short's placement outcome is
+//                           AMBIGUOUS (ReconcileFirst action, or Timeout/Network/
+//                           Unknown category): the short MAY be live and no order id
+//                           for it was ever acked. Distinct from ShortPlacementFailed
+//                           precisely because that outcome makes a safety claim
+//                           ("keep or close the hedge") which is FALSE here. Critical
+//                           alert, hedge LEFT in place, emergency action NOT run —
+//                           it would remove the hedge. Reconcile before deciding.
 enum class HedgeFirstOutcome {
   HedgedShortLive,
   HedgePlacementFailed,
   HedgeUnconfirmed,
   ShortPlacementFailed,
-  NakedShortRemediated
+  NakedShortRemediated,
+  ShortAmbiguousReconcileRequired
 };
 
 // Stable, log/serialization-friendly outcome names (NFR-8 observability contract).
@@ -91,7 +109,9 @@ struct HedgeFirstSeams {
   // Confirm the hedge is filled/live. true == confirmed; false / Error / null ==
   // NOT confirmed (fail-closed) and the short is never sent.
   std::function<Result<bool>(const std::string& hedge_order_id)> confirm_hedge;
-  // Place the naked-risk short — reached ONLY after the hedge is confirmed.
+  // Place the naked-risk short — reached ONLY after the hedge is confirmed. An
+  // AMBIGUOUS Error here is NOT a rejection: the short may already be live, so it
+  // yields ShortAmbiguousReconcileRequired rather than ShortPlacementFailed.
   std::function<Result<ports::BrokerAck>()> place_short;
   // Post-short re-verification that the hedge is STILL live (AC-3). true == live;
   // false / Error / null == cannot prove live (fail-closed) -> remediation.
@@ -106,8 +126,12 @@ struct HedgeFirstSeams {
 //   1. place_hedge   — Error / null seam -> HedgePlacementFailed (short NEVER sent).
 //   2. confirm_hedge — Error / false / null seam -> HedgeUnconfirmed (short NEVER
 //                      sent; an error checking confirmation counts as NOT confirmed).
-//   3. place_short   — Error / null seam -> ShortPlacementFailed (hedge stands; SAFE
-//                      — no Critical alert, no emergency action).
+//   3. place_short   — null seam / a DEFINITIVE rejection -> ShortPlacementFailed
+//                      (hedge stands; SAFE — no Critical alert, no emergency
+//                      action). An AMBIGUOUS Error -> ShortAmbiguousReconcileRequired:
+//                      the short may be LIVE, so a Critical alert is sent (Result
+//                      swallowed), the hedge is LEFT in place and emergency_action is
+//                      NOT run — running it would remove the hedge.
 //   4. recheck_hedge_live — true -> HedgedShortLive (terminal success). false /
 //                      Error / null seam -> AC-3: a Critical alert is sent (Result
 //                      swallowed) AND emergency_action runs (its Result swallowed

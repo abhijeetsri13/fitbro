@@ -1,7 +1,6 @@
 #include "broker_exec/protection/stop_supervisor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -17,12 +16,12 @@ using broker_exec::Result;
 using broker_exec::domain::Money;
 using broker_exec::domain::OrderState;
 using broker_exec::domain::Side;
+using broker_exec::ports::AlertLevel;
 using broker_exec::protection::evaluate_protection;
 using broker_exec::protection::PriceBand;
 using broker_exec::protection::ProtectionState;
 using broker_exec::protection::ProtectiveStop;
 using broker_exec::protection::StopInputs;
-using broker_exec::ports::AlertLevel;
 
 namespace ports = broker_exec::ports;
 namespace errors = broker_exec::errors;
@@ -158,8 +157,9 @@ TEST_CASE("protected: the protective exit flattened the position (qty 0) => Clos
   CHECK(alerts.count() == 0);
 }
 
-TEST_CASE("FAIL-OPEN GUARD: a Filled flag while the position is STILL exposed re-arms (live "
-          "position wins over the order flag)") {
+TEST_CASE(
+    "FAIL-OPEN GUARD: a Filled flag while the position is STILL exposed re-arms (live "
+    "position wins over the order flag)") {
   // The HIGH defect the review caught: a stale/leftover/residual Filled flag must
   // NOT close an exposed (non-zero) crossed position — that would leave it naked.
   for (const bool known : {true, false}) {
@@ -184,7 +184,9 @@ TEST_CASE("FAIL-OPEN GUARD: a Filled flag while the position is STILL exposed re
 
 // ── THE CORE CASE: GTT fired-but-unfilled drives a re-arm for EACH failure. ──
 
-TEST_CASE("RE-ARM: long, trigger crossed, protective order Rejected => ReArmNeeded Sell exit + Critical") {
+TEST_CASE(
+    "RE-ARM: long, trigger crossed, protective order Rejected => ReArmNeeded Sell exit + "
+    "Critical") {
   SpyAlertSink alerts;
   ProtectiveStop stop = long_stop(/*qty=*/75);
 
@@ -198,8 +200,8 @@ TEST_CASE("RE-ARM: long, trigger crossed, protective order Rejected => ReArmNeed
 
   CHECK(d.state == ProtectionState::ReArmNeeded);
   CHECK(d.emit_exit);
-  CHECK(d.exit.side == Side::Sell);       // long exits Sell
-  CHECK(d.exit.qty == 75);                // abs(position_qty)
+  CHECK(d.exit.side == Side::Sell);  // long exits Sell
+  CHECK(d.exit.qty == 75);           // abs(position_qty)
   CHECK(d.exit.symbol == stop.symbol);
   CHECK(d.alert);
   CHECK(alerts.count() == 1);
@@ -283,7 +285,7 @@ TEST_CASE("RE-ARM: every fired-but-unfilled state drives a re-arm") {
     SpyAlertSink alerts;
     StopInputs in;
     in.trigger_crossed = true;
-    in.protective_order_known = false;             // never placed
+    in.protective_order_known = false;  // never placed
     in.protective_order_state = OrderState::Unknown;
     in.band = wide_band();
     const auto d = evaluate_protection(stop, in, alerts);
@@ -315,7 +317,9 @@ TEST_CASE("RE-ARM: short position exits Buy with abs(qty)") {
 
 // ── Band-aware clamp (the LPP/circuit fix). ──
 
-TEST_CASE("band clamp: long exit (Sell) with protective_limit BELOW band.lower => clamped UP to band.lower") {
+TEST_CASE(
+    "band clamp: long exit (Sell) with protective_limit BELOW band.lower => clamped UP to "
+    "band.lower") {
   SpyAlertSink alerts;
   ProtectiveStop stop = long_stop(/*qty=*/25);
   stop.protective_limit = Money::from_rupees(80);  // below the band floor
@@ -333,10 +337,12 @@ TEST_CASE("band clamp: long exit (Sell) with protective_limit BELOW band.lower =
   CHECK(d.exit.limit_price == Money::from_rupees(90));  // clamped up into the band
 }
 
-TEST_CASE("band clamp: short exit (Buy) with protective_limit ABOVE band.upper => clamped DOWN to band.upper") {
+TEST_CASE(
+    "band clamp: short exit (Buy) with protective_limit ABOVE band.upper => clamped DOWN to "
+    "band.upper") {
   SpyAlertSink alerts;
-  ProtectiveStop stop = long_stop(/*qty=*/-25);          // short
-  stop.protective_limit = Money::from_rupees(130);       // above the band ceiling
+  ProtectiveStop stop = long_stop(/*qty=*/-25);     // short
+  stop.protective_limit = Money::from_rupees(130);  // above the band ceiling
 
   StopInputs in;
   in.trigger_crossed = true;
@@ -351,8 +357,9 @@ TEST_CASE("band clamp: short exit (Buy) with protective_limit ABOVE band.upper =
   CHECK(d.exit.limit_price == Money::from_rupees(110));  // clamped down into the band
 }
 
-TEST_CASE("inverted band (lower>upper) is treated as unusable: emit unclamped + Critical, not an "
-          "edge price the exchange would still reject") {
+TEST_CASE(
+    "inverted band (lower>upper) is treated as unusable: emit unclamped + Critical, not an "
+    "edge price the exchange would still reject") {
   SpyAlertSink alerts;
   ProtectiveStop stop = long_stop(/*qty=*/25);
   stop.protective_limit = Money::from_rupees(99);
@@ -390,7 +397,9 @@ TEST_CASE("band clamp: a protective limit already inside the band is left unchan
 
 // ── Band unknown (fail-closed for the price, NOT for the protection). ──
 
-TEST_CASE("band unknown (valid==false): still EMITS the exit (unclamped) + Critical alert noting band unknown") {
+TEST_CASE(
+    "band unknown (valid==false): still EMITS the exit (unclamped) + Critical alert noting band "
+    "unknown") {
   SpyAlertSink alerts;
   ProtectiveStop stop = long_stop(/*qty=*/30);
   stop.protective_limit = Money::from_rupees(99);
@@ -414,7 +423,9 @@ TEST_CASE("band unknown (valid==false): still EMITS the exit (unclamped) + Criti
 
 // ── A throwing alert sink must never derail the protective decision. ──
 
-TEST_CASE("throwing alert sink: evaluate_protection still returns the ReArmNeeded decision with emit_exit") {
+TEST_CASE(
+    "throwing alert sink: evaluate_protection still returns the ReArmNeeded decision with "
+    "emit_exit") {
   ThrowingAlertSink alerts;
   ProtectiveStop stop = long_stop(/*qty=*/55);
 
@@ -453,7 +464,8 @@ TEST_CASE("failing alert sink (returns Error) does not suppress the protective d
 
 // ── Fail-closed Unprotected for an unformable exit (qty overflow). ──
 
-TEST_CASE("Unprotected: INT64_MIN qty cannot form a valid exit => Unprotected + Critical, no emit") {
+TEST_CASE(
+    "Unprotected: INT64_MIN qty cannot form a valid exit => Unprotected + Critical, no emit") {
   SpyAlertSink alerts;
   ProtectiveStop stop = long_stop();
   stop.position_qty = INT64_MIN;  // negation overflows -> magnitude stays non-positive
@@ -465,7 +477,7 @@ TEST_CASE("Unprotected: INT64_MIN qty cannot form a valid exit => Unprotected + 
   const auto d = evaluate_protection(stop, in, alerts);
 
   CHECK(d.state == ProtectionState::Unprotected);
-  CHECK_FALSE(d.emit_exit);   // cannot ship an exit with a bad quantity
+  CHECK_FALSE(d.emit_exit);  // cannot ship an exit with a bad quantity
   CHECK(d.alert);
   CHECK(alerts.count() == 1);
   CHECK(alerts.last_level() == AlertLevel::Critical);

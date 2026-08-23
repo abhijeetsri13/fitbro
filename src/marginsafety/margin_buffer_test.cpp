@@ -1,7 +1,6 @@
 #include "broker_exec/marginsafety/margin_buffer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 
 #include "broker_exec/domain/money.hpp"
@@ -65,7 +64,8 @@ TEST_CASE("single-leg 5% buffer: api 100rs => effective 105rs; 110rs sufficient,
 
 // ── buffer rounds UP (fail-closed): the bps cushion is the CEIL, never the floor ─
 
-TEST_CASE("bps cushion rounds UP: api 1.01rs (101 paise) @ 500bps => effective 107 paise, not 106") {
+TEST_CASE(
+    "bps cushion rounds UP: api 1.01rs (101 paise) @ 500bps => effective 107 paise, not 106") {
   const MarginSafetyConfig cfg = cfg_bps(500);
 
   // 101 paise * 500 / 10000 = 5.05 paise. Floor would give 5 (effective 106);
@@ -88,7 +88,7 @@ TEST_CASE("multi-leg trusted: base == api (netted figure), used_worst_case == fa
   const MarginSafetyConfig cfg = cfg_bps(500);
 
   MarginInputs in;
-  in.api_required = domain::Money::from_rupees(120);      // netted basket quote
+  in.api_required = domain::Money::from_rupees(120);       // netted basket quote
   in.summed_leg_margin = domain::Money::from_rupees(200);  // summed (ignored here)
   in.available = domain::Money::from_rupees(1000);
   in.is_multi_leg = true;
@@ -116,8 +116,8 @@ TEST_CASE("multi-leg untrusted: base == summed worst case, worst_case+boundary f
   in.benefit_trusted = false;
 
   const MarginSafetyResult r = evaluate_margin(in, cfg);
-  CHECK(r.base_required == domain::Money::from_rupees(200));        // worst case
-  CHECK(r.effective_required == domain::Money::from_rupees(210));   // +5%
+  CHECK(r.base_required == domain::Money::from_rupees(200));       // worst case
+  CHECK(r.effective_required == domain::Money::from_rupees(210));  // +5%
   CHECK(r.used_worst_case == true);
   CHECK(r.boundary_flagged == true);
   CHECK(r.verdict == MarginVerdict::InsufficientBlocked);
@@ -164,7 +164,8 @@ TEST_CASE("flat cushion adds on top of bps cushion") {
 
 // ── require_margin_ok: gate adapter, redaction-safe ───────────────────────────
 
-TEST_CASE("require_margin_ok: Sufficient => ok(); InsufficientBlocked => RiskRejected/BlockStrategy") {
+TEST_CASE(
+    "require_margin_ok: Sufficient => ok(); InsufficientBlocked => RiskRejected/BlockStrategy") {
   const MarginSafetyConfig cfg = cfg_bps(500);
 
   MarginInputs in;
@@ -245,7 +246,7 @@ TEST_CASE("to_string: stable MarginVerdict names") {
 
 TEST_CASE("a NEGATIVE flat_buffer is clamped to 0 (never shrinks the requirement)") {
   MarginSafetyConfig cfg;
-  cfg.buffer_bps = 0;  // isolate the flat cushion
+  cfg.buffer_bps = 0;                                 // isolate the flat cushion
   cfg.flat_buffer = domain::Money::from_paise(-100);  // a negative cushion must NOT shrink
 
   MarginInputs in;
@@ -269,7 +270,7 @@ TEST_CASE("multi-leg with DEFAULTED benefit_trusted uses the worst case (fail-cl
   in.available = domain::Money::from_rupees(130);          // covers 120 but NOT 200
 
   const MarginSafetyResult r = evaluate_margin(in, cfg);
-  CHECK(r.used_worst_case);                                    // defaulted to worst case
+  CHECK(r.used_worst_case);  // defaulted to worst case
   CHECK(r.base_required == domain::Money::from_rupees(200));
-  CHECK(r.blocked);                                            // 130 < 200 -> blocked
+  CHECK(r.blocked);  // 130 < 200 -> blocked
 }

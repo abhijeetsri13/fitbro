@@ -124,14 +124,14 @@ bool any_risk_limit_armed(const risk::RiskLimits& limits) noexcept {
   // added to RiskLimits and forgotten here would make this function claim
   // "nothing armed" for a limit that IS armed, which is the fail-open direction.
   // A reviewer can diff this list against the struct in one glance.
-  return limits.daily_loss_limit_paise != 0 ||          //
-         limits.max_open_positions != 0 ||              //
-         limits.max_account_margin_paise != 0 ||        //
-         limits.max_order_value_paise != 0 ||           //
-         limits.block_market_orders ||                  //
-         limits.max_slippage_bps != 0 ||                //
-         limits.max_lots_per_strategy != 0 ||           //
-         limits.max_lots_per_instrument != 0 ||         //
+  return limits.daily_loss_limit_paise != 0 ||    //
+         limits.max_open_positions != 0 ||        //
+         limits.max_account_margin_paise != 0 ||  //
+         limits.max_order_value_paise != 0 ||     //
+         limits.block_market_orders ||            //
+         limits.max_slippage_bps != 0 ||          //
+         limits.max_lots_per_strategy != 0 ||     //
+         limits.max_lots_per_instrument != 0 ||   //
          limits.strategy_daily_loss_limit_paise != 0;
 }
 
@@ -303,9 +303,9 @@ modes::Posture EngineAssembly::evaluate_posture_for_strategy(std::string_view st
   // Deriving the floor from the unscoped `posture()` instead would promote every
   // Strategy kill into an account-wide freeze, which is precisely the isolation
   // a scoped kill exists to provide.
-  const modes::Posture operator_floor =
-      deps_.kill_state->blocks_strategy(strategy) ? deps_.kill_state->posture()
-                                                  : modes::Posture::Normal;
+  const modes::Posture operator_floor = deps_.kill_state->blocks_strategy(strategy)
+                                            ? deps_.kill_state->posture()
+                                            : modes::Posture::Normal;
   return deps_.posture->evaluate(deps_.detector_signals(), operator_floor);
 }
 
@@ -358,13 +358,13 @@ StageResult EngineAssembly::preflight_entry(const domain::OrderIntent& intent,
   // band would every one of them be validated against a DIFFERENT contract, so
   // the gate would return Allow having checked nothing that applies.
   if (intent.symbol != ctx.instrument.symbol) {
-    return failed(stage::kInstrument,
-                  stage_error(stage::kInstrument, ErrorCategory::Validation,
-                              SuggestedAction::DoNotRetry,
-                              "resolved instrument '" + ctx.instrument.symbol +
-                                  "' does not match the intent's symbol '" + intent.symbol +
-                                  "' — lot, tick, freeze and band would all be checked against the "
-                                  "wrong contract"));
+    return failed(
+        stage::kInstrument,
+        stage_error(stage::kInstrument, ErrorCategory::Validation, SuggestedAction::DoNotRetry,
+                    "resolved instrument '" + ctx.instrument.symbol +
+                        "' does not match the intent's symbol '" + intent.symbol +
+                        "' — lot, tick, freeze and band would all be checked against the "
+                        "wrong contract"));
   }
 
   // ── risk-limits (silence is not a declaration) ───────────────────────────
@@ -372,14 +372,14 @@ StageResult EngineAssembly::preflight_entry(const domain::OrderIntent& intent,
   // gate will happily call and that will always say ok(). From the outside the
   // guard looks wired and green. Refuse it unless the caller says it meant it.
   if (!options_.declares_no_risk_limits && !any_risk_limit_armed(ctx.risk_limits)) {
-    return failed(stage::kRiskLimits,
-                  stage_error(stage::kRiskLimits, ErrorCategory::Validation,
-                              SuggestedAction::DoNotRetry,
-                              "PreflightInputs::risk_limits arms NOTHING (every field is at its "
-                              "'off' sentinel), so the risk check would be handed to the gate and "
-                              "pass for every order at every size and every loss. If this "
-                              "component's risk is genuinely enforced upstream, set "
-                              "EngineOptions::declares_no_risk_limits = true."));
+    return failed(
+        stage::kRiskLimits,
+        stage_error(stage::kRiskLimits, ErrorCategory::Validation, SuggestedAction::DoNotRetry,
+                    "PreflightInputs::risk_limits arms NOTHING (every field is at its "
+                    "'off' sentinel), so the risk check would be handed to the gate and "
+                    "pass for every order at every size and every loss. If this "
+                    "component's risk is genuinely enforced upstream, set "
+                    "EngineOptions::declares_no_risk_limits = true."));
   }
 
   // ── margin: the QUOTE (an input the gate's funds check is sized against) ──
@@ -391,12 +391,12 @@ StageResult EngineAssembly::preflight_entry(const domain::OrderIntent& intent,
   {
     auto quoted = deps_.margin_inputs(intent);
     if (!quoted) {
-      return failed(stage::kMargin,
-                    stage_error(stage::kMargin, ErrorCategory::DataStale,
-                                SuggestedAction::BlockStrategy,
-                                "the broker margin quote could not be obtained (" +
-                                    std::string(errors::to_string(quoted.error().category)) + ": " +
-                                    quoted.error().message + ")"));
+      return failed(
+          stage::kMargin,
+          stage_error(stage::kMargin, ErrorCategory::DataStale, SuggestedAction::BlockStrategy,
+                      "the broker margin quote could not be obtained (" +
+                          std::string(errors::to_string(quoted.error().category)) + ": " +
+                          quoted.error().message + ")"));
     }
     margin = std::move(quoted.value());
   }
@@ -406,13 +406,13 @@ StageResult EngineAssembly::preflight_entry(const domain::OrderIntent& intent,
   // (zero plus five percent is still zero), so it is refused outright. There is
   // no entry that genuinely blocks no margin.
   if (margin.api_required.paise() <= 0) {
-    return failed(stage::kMargin,
-                  stage_error(stage::kMargin, ErrorCategory::DataStale,
-                              SuggestedAction::BlockStrategy,
-                              "margin quote absent or non-positive (api_required " +
-                                  margin.api_required.to_string() +
-                                  ") — a zero requirement would pass the funds check against any "
-                                  "balance; refusing rather than sizing an entry against nothing"));
+    return failed(
+        stage::kMargin,
+        stage_error(stage::kMargin, ErrorCategory::DataStale, SuggestedAction::BlockStrategy,
+                    "margin quote absent or non-positive (api_required " +
+                        margin.api_required.to_string() +
+                        ") — a zero requirement would pass the funds check against any "
+                        "balance; refusing rather than sizing an entry against nothing"));
   }
 
   // ── gate ─────────────────────────────────────────────────────────────────
@@ -478,8 +478,7 @@ StageResult EngineAssembly::preflight_entry(const domain::OrderIntent& intent,
   // the caller hears the store's real Error rather than a fabricated
   // "already seen".
   if (probe_error) {
-    return failed(stage::kDuplicateProbe,
-                  staged(stage::kDuplicateProbe, std::move(*probe_error)));
+    return failed(stage::kDuplicateProbe, staged(stage::kDuplicateProbe, std::move(*probe_error)));
   }
   if (!gated) {
     return failed(stage::kGate, staged(stage::kGate, std::move(gated.error())));
@@ -503,23 +502,23 @@ StageResult EngineAssembly::preflight_entry(const domain::OrderIntent& intent,
     // Unreachable today: both calls derive from the same branch. If the two ever
     // diverge, BLOCK — a refused entry is the safe direction, and a blocked
     // verdict that silently passed would be the worst possible reconciliation.
-    return failed(stage::kPriceBand,
-                  stage_error(stage::kPriceBand, ErrorCategory::Validation,
-                              SuggestedAction::DoNotRetry,
-                              "entry is out of band (verdict " +
-                                  std::string(priceband::to_string(outcome.band.verdict)) + ")"));
+    return failed(
+        stage::kPriceBand,
+        stage_error(stage::kPriceBand, ErrorCategory::Validation, SuggestedAction::DoNotRetry,
+                    "entry is out of band (verdict " +
+                        std::string(priceband::to_string(outcome.band.verdict)) + ")"));
   }
   // The configurable half of the band posture: priceband deliberately lets an
   // UNKNOWN band through (a feed outage must not freeze trading), which is right
   // for a liquid book and wrong for one where out-of-band rejection is the norm.
   // ENTRIES ONLY — the exit chain never consults this.
   if (options_.block_entry_on_unknown_band && outcome.band_unvalidated) {
-    return failed(stage::kPriceBand,
-                  stage_error(stage::kPriceBand, ErrorCategory::DataStale,
-                              SuggestedAction::BlockStrategy,
-                              "the circuit/LPP band is unavailable or malformed and this engine is "
-                              "configured to refuse UNVALIDATED entry prices "
-                              "(EngineOptions::block_entry_on_unknown_band)"));
+    return failed(
+        stage::kPriceBand,
+        stage_error(stage::kPriceBand, ErrorCategory::DataStale, SuggestedAction::BlockStrategy,
+                    "the circuit/LPP band is unavailable or malformed and this engine is "
+                    "configured to refuse UNVALIDATED entry prices "
+                    "(EngineOptions::block_entry_on_unknown_band)"));
   }
 
   // ── margin (buffered requirement vs a FRESH FundsView, fail-closed) ──────
@@ -557,21 +556,20 @@ StageResult EngineAssembly::preflight_exit(const domain::OrderIntent& intent,
   // that cannot answer honestly should not be forced to. Absent => the claim is a
   // documented caller assertion (see the header's trust-boundary section).
   if (deps_.is_reducing && !deps_.is_reducing(intent)) {
-    return failed(stage::kExitClass,
-                  stage_error(stage::kExitClass, ErrorCategory::Validation,
-                              SuggestedAction::DoNotRetry,
-                              "preflight_exit was called for an intent that does NOT reduce "
-                              "exposure. The exit chain waives the duplicate, UNKNOWN-pause, "
-                              "entry-cutoff, funds and margin stages and clamps instead of "
-                              "blocking out of band; an opening order must go through "
-                              "preflight_entry"));
+    return failed(
+        stage::kExitClass,
+        stage_error(stage::kExitClass, ErrorCategory::Validation, SuggestedAction::DoNotRetry,
+                    "preflight_exit was called for an intent that does NOT reduce "
+                    "exposure. The exit chain waives the duplicate, UNKNOWN-pause, "
+                    "entry-cutoff, funds and margin stages and clamps instead of "
+                    "blocking out of band; an opening order must go through "
+                    "preflight_entry"));
   }
   return exit_chain(intent, ctx, PreflightOutcome{});
 }
 
 StageResult EngineAssembly::exit_chain(const domain::OrderIntent& intent,
-                                       const PreflightInputs& ctx,
-                                       PreflightOutcome outcome) const {
+                                       const PreflightInputs& ctx, PreflightOutcome outcome) const {
   // NOTE THE ABSENCES, they are the design: there is no engine-mode refusal (an
   // ExitOnly assembly exists precisely to run this), no duplicate probe, no
   // UNKNOWN-pause, no entry cutoff, no funds check, no margin stage and no
@@ -589,12 +587,12 @@ StageResult EngineAssembly::exit_chain(const domain::OrderIntent& intent,
   // closes this gate, Panic, is broad and blocks every strategy anyway.
   const modes::Posture posture = evaluate_posture_for_strategy(intent.strategy);
   if (!modes::PostureCoordinator::allows_risk_reducing_exits(posture)) {
-    return failed(stage::kPosture,
-                  stage_error(stage::kPosture, ErrorCategory::RiskRejected,
-                              SuggestedAction::SquareOff,
-                              "posture " + std::string(modes::to_string(posture)) +
-                                  " closes the normal exit gate; the emergency engine drives the "
-                                  "cancel + square-off OUT OF BAND"));
+    return failed(
+        stage::kPosture,
+        stage_error(stage::kPosture, ErrorCategory::RiskRejected, SuggestedAction::SquareOff,
+                    "posture " + std::string(modes::to_string(posture)) +
+                        " closes the normal exit gate; the emergency engine drives the "
+                        "cancel + square-off OUT OF BAND"));
   }
 
   // ── session ──────────────────────────────────────────────────────────────
@@ -620,13 +618,13 @@ StageResult EngineAssembly::exit_chain(const domain::OrderIntent& intent,
   // important here: an exit checked against the wrong contract is a protective
   // leg whose lot, tick and band were all validated against something else.
   if (intent.symbol != ctx.instrument.symbol) {
-    return failed(stage::kInstrument,
-                  stage_error(stage::kInstrument, ErrorCategory::Validation,
-                              SuggestedAction::DoNotRetry,
-                              "resolved instrument '" + ctx.instrument.symbol +
-                                  "' does not match the intent's symbol '" + intent.symbol +
-                                  "' — lot, tick, freeze and band would all be checked against the "
-                                  "wrong contract"));
+    return failed(
+        stage::kInstrument,
+        stage_error(stage::kInstrument, ErrorCategory::Validation, SuggestedAction::DoNotRetry,
+                    "resolved instrument '" + ctx.instrument.symbol +
+                        "' does not match the intent's symbol '" + intent.symbol +
+                        "' — lot, tick, freeze and band would all be checked against the "
+                        "wrong contract"));
   }
 
   // ── gate, as a risk-reducing op ──────────────────────────────────────────

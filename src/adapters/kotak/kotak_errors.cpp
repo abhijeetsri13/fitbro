@@ -3,11 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/kotak/kotak_transport.hpp"
 #include "broker_exec/brokerreason/rejection_classifier.hpp"
@@ -27,11 +27,19 @@ namespace {
   if (value.is_string()) {
     return value.get<std::string>();
   }
-  if (value.is_number_integer()) {
-    return std::to_string(value.get<long long>());
-  }
+  // Unsigned is checked FIRST, exactly as the sibling `json_str` in
+  // kotak_broker_adapter.cpp does: nlohmann's is_number_integer() is true for
+  // unsigned values too (it is `number_integer || number_unsigned`), so testing
+  // it first made this branch DEAD for every unsigned value and read the uint64
+  // storage through a signed get<> — a silent, unchecked narrowing. Every
+  // positive JSON integer literal parses as number_unsigned, so a fault code
+  // above INT64_MAX rendered as "-1" and was stamped onto `broker_code` as if it
+  // were the broker's own answer.
   if (value.is_number_unsigned()) {
-    return std::to_string(value.get<unsigned long long>());
+    return std::to_string(value.get<std::uint64_t>());
+  }
+  if (value.is_number_integer()) {
+    return std::to_string(value.get<std::int64_t>());
   }
   if (value.is_boolean()) {
     return value.get<bool>() ? "true" : "false";
@@ -83,7 +91,9 @@ namespace {
          c == '-';
 }
 
-[[nodiscard]] bool is_digit_char(char c) noexcept { return c >= '0' && c <= '9'; }
+[[nodiscard]] bool is_digit_char(char c) noexcept {
+  return c >= '0' && c <= '9';
+}
 
 // ── Kotak-specific pre-redaction ─────────────────────────────────────────────
 //
@@ -179,15 +189,14 @@ constexpr std::array<std::string_view, 5> kKotakSecretKeys = {"sid", "auth", "hs
 // therefore ALSO requires session-ish co-phrasing. An HTTP 401/403 remains
 // sufficient on its own.
 constexpr std::array<std::string_view, 8> kSessionCoPhrases = {
-    "session",      "expired",      "re-login",    "relogin",
-    "login again",  "log in again", "unauthorized", "invalid credentials"};
+    "session",     "expired",      "re-login",     "relogin",
+    "login again", "log in again", "unauthorized", "invalid credentials"};
 
 [[nodiscard]] bool has_session_co_phrase(std::string_view message) {
   const std::string lowered = to_lower_ascii(message);
-  return std::any_of(kSessionCoPhrases.begin(), kSessionCoPhrases.end(),
-                     [&lowered](std::string_view phrase) {
-                       return lowered.find(phrase) != std::string::npos;
-                     });
+  return std::any_of(
+      kSessionCoPhrases.begin(), kSessionCoPhrases.end(),
+      [&lowered](std::string_view phrase) { return lowered.find(phrase) != std::string::npos; });
 }
 
 // Fill the envelope from a JSON OBJECT (the array case is unwrapped by the
@@ -364,8 +373,7 @@ errors::Error map_kotak_error(const HttpResponse& response) {
 
   // The broker message is UNTRUSTED: redact Kotak's own sid/auth artifacts and
   // then scrub, before it can reach any Error/log.
-  const std::string scrubbed =
-      env.message.empty() ? std::string{} : scrub_broker_text(env.message);
+  const std::string scrubbed = env.message.empty() ? std::string{} : scrub_broker_text(env.message);
 
   const auto build = [&](errors::ErrorCategory category, errors::SuggestedAction action,
                          std::string_view fallback) {
@@ -388,8 +396,7 @@ errors::Error map_kotak_error(const HttpResponse& response) {
   // session. Demote such a match unless the text really reads like a session
   // failure; it then falls through to the fail-closed branches below.
   brokerreason::RejectReason reason = classification.reason;
-  if (reason == brokerreason::RejectReason::SessionExpired &&
-      !has_session_co_phrase(env.message)) {
+  if (reason == brokerreason::RejectReason::SessionExpired && !has_session_co_phrase(env.message)) {
     reason = brokerreason::RejectReason::Unknown;
   }
 
@@ -401,8 +408,7 @@ errors::Error map_kotak_error(const HttpResponse& response) {
   // "throttled" is NOT a safe retry (that re-places the order), and a 503 whose
   // body says "token expired" is NOT a re-auth (that orphans the order). The
   // body of a failing gateway is a hint; the status is the fact.
-  if (status >= 500 || status <= 0 ||
-      reason == brokerreason::RejectReason::Indeterminate) {
+  if (status >= 500 || status <= 0 || reason == brokerreason::RejectReason::Indeterminate) {
     return build(errors::ErrorCategory::Network, errors::SuggestedAction::ReconcileFirst,
                  "kotak: broker/transport error; reconcile required");
   }

@@ -1,10 +1,10 @@
 #include "broker_exec/adapters/kite/cpr_http_client.hpp"
 
+#include <cpr/cpr.h>
+
 #include <chrono>
 #include <string>
 #include <utility>
-
-#include <cpr/cpr.h>
 
 #include "broker_exec/adapters/kite/http_client.hpp"
 #include "broker_exec/errors/error.hpp"
@@ -63,6 +63,29 @@ Result<HttpResponse> CprHttpClient::send(const HttpRequest& request) const {
   if (!request.body.empty()) {
     session.SetBody(cpr::Body{request.body});
   }
+
+  // ── REFUSE REDIRECTS ──────────────────────────────────────────────────────
+  // A default-constructed cpr::Session enables CURLOPT_FOLLOWLOCATION with
+  // MAXREDIRS=50 and CURLOPT_POSTREDIR=CURL_REDIR_POST_ALL (cpr/redirect.h). For
+  // a GET that is merely surprising; for the POST that places an order it is a
+  // duplicate-order machine — libcurl re-sends the body on every hop, so one
+  // place() could put up to 50 orders on the wire while the intent log recorded
+  // a single send. The duplicate would be created BELOW dispatch()'s
+  // record -> fsync -> send -> record chokepoint, invisible to the idempotency
+  // reservation that exists to prevent exactly this.
+  //
+  // Following a redirect would also hand the live access token to whatever host
+  // the Location names: the Kite credential travels in a custom Authorization
+  // header, and libcurl forwards custom headers across a redirect regardless of
+  // CURLOPT_UNRESTRICTED_AUTH (which only governs its own CURLOPT_USERPWD).
+  //
+  // A broker REST API has no reason to redirect an order. A 3xx therefore stays
+  // a 3xx: the rest client rejects any non-2xx, and classify_http has no 3xx
+  // branch, so it lands on Unknown/ReconcileFirst — the order goes UNKNOWN and is
+  // reconciled against broker truth. Fail-closed is the right answer to a
+  // response we do not understand.
+  session.SetRedirect(cpr::Redirect{/*maximum=*/0L, /*follow=*/false,
+                                    /*cont_send_cred=*/false, cpr::PostRedirectFlags::NONE});
 
   // Build the timeout from a chrono duration so the int64 ms value is not
   // brace-narrowed into cpr::Timeout's int32 overload.

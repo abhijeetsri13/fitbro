@@ -1,7 +1,6 @@
 #include "broker_exec/brokerreason/rejection_classifier.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 #include <string_view>
 
@@ -20,7 +19,7 @@ using broker_exec::errors::SuggestedAction;
 namespace {
 
 struct RejectCase {
-  std::string_view raw;       // a REAL-shaped broker rejection string
+  std::string_view raw;  // a REAL-shaped broker rejection string
   RejectReason reason;
   RetryPosture posture;
   bool should_alert;
@@ -49,8 +48,8 @@ constexpr RejectCase kRejectCases[] = {
     {"instrument is illiquid", RejectReason::Illiquid, RetryPosture::DoNotRetry, true},
 
     // Session / auth — ReconcileFirst, alert.
-    {"Token is invalid or has expired", RejectReason::SessionExpired,
-     RetryPosture::ReconcileFirst, true},
+    {"Token is invalid or has expired", RejectReason::SessionExpired, RetryPosture::ReconcileFirst,
+     true},
     {"401 Unauthorized", RejectReason::SessionExpired, RetryPosture::ReconcileFirst, true},
     {"Invalid `api_key` or `access_token`", RejectReason::SessionExpired,
      RetryPosture::ReconcileFirst, true},
@@ -81,8 +80,7 @@ constexpr RejectCase kRejectCases[] = {
     // Generic RMS block — DoNotRetry, alert.
     {"RMS rejected: not allowed to trade this scrip", RejectReason::RmsBlock,
      RetryPosture::DoNotRetry, true},
-    {"Your account is blocked for trading", RejectReason::RmsBlock, RetryPosture::DoNotRetry,
-     true},
+    {"Your account is blocked for trading", RejectReason::RmsBlock, RetryPosture::DoNotRetry, true},
 
     // FAIL-CLOSED: empty + gibberish ⇒ Unknown / DoNotRetry / alert.
     {"", RejectReason::Unknown, RetryPosture::DoNotRetry, true},
@@ -93,8 +91,7 @@ constexpr RejectCase kRejectCases[] = {
 
 }  // namespace
 
-TEST_CASE("classify_rejection maps every reason with real complaint strings",
-          "[brokerreason]") {
+TEST_CASE("classify_rejection maps every reason with real complaint strings", "[brokerreason]") {
   for (const RejectCase& tc : kRejectCases) {
     const Classification c = classify_rejection(tc.raw);
     INFO("raw=\"" << tc.raw << "\" detail=\"" << c.canonical_detail << "\"");
@@ -108,13 +105,12 @@ TEST_CASE("classify_rejection maps every reason with real complaint strings",
   }
 }
 
-TEST_CASE("FAIL-CLOSED: empty and unmatched text never become safe-to-retry",
-          "[brokerreason]") {
+TEST_CASE("FAIL-CLOSED: empty and unmatched text never become safe-to-retry", "[brokerreason]") {
   for (const std::string_view raw : {std::string_view(""), std::string_view("   "),
                                      std::string_view("totally novel broker wording 2027")}) {
     const Classification c = classify_rejection(raw);
     CHECK(c.reason == RejectReason::Unknown);
-    CHECK(c.posture == RetryPosture::DoNotRetry);   // the core safety property
+    CHECK(c.posture == RetryPosture::DoNotRetry);  // the core safety property
     CHECK(c.should_alert);
     CHECK(c.posture != RetryPosture::SafeToRetryReadOnly);
   }
@@ -170,14 +166,12 @@ TEST_CASE("Margin wins over generic RMS for 'RMS:Margin'", "[brokerreason]") {
   CHECK(classify_rejection("RMS:Margin shortfall").reason == RejectReason::Margin);
 }
 
-TEST_CASE("canonical_detail is redaction-safe and omits raw broker text/tokens",
-          "[brokerreason]") {
+TEST_CASE("canonical_detail is redaction-safe and omits raw broker text/tokens", "[brokerreason]") {
   // Feed a reject carrying a fake token-shaped secret. The detail must NOT contain
   // any part of the raw input — by construction it echoes only canonical words.
   const std::string_view token = "abcdef0123456789ABCDEF0123456789";
-  const std::string raw =
-      std::string("RMS rejected order; access_token=") + std::string(token) +
-      " for account ABCD1234";
+  const std::string raw = std::string("RMS rejected order; access_token=") + std::string(token) +
+                          " for account ABCD1234";
   const Classification c = classify_rejection(raw);
   CHECK(c.canonical_detail.find(std::string(token)) == std::string::npos);
   CHECK(c.canonical_detail.find("access_token=") == std::string::npos);
@@ -188,8 +182,7 @@ TEST_CASE("canonical_detail is redaction-safe and omits raw broker text/tokens",
   CHECK(c.canonical_detail.find(std::to_string(kClassifierVersion)) != std::string::npos);
 }
 
-TEST_CASE("classify_status recognizes known states and reconciles unknown ones",
-          "[brokerreason]") {
+TEST_CASE("classify_status recognizes known states and reconciles unknown ones", "[brokerreason]") {
   // COMPLETE recognized (terminal-done): not the unknown-status default.
   const Classification complete = classify_status("COMPLETE");
   CHECK(complete.reason == RejectReason::AlreadyComplete);
@@ -229,8 +222,7 @@ TEST_CASE("to_string is stable for both enums", "[brokerreason]") {
   CHECK(to_string(RetryPosture::SafeToRetryReadOnly) == "safe_to_retry_read_only");
 }
 
-TEST_CASE("to_suggested_action bridges posture onto the typed error action",
-          "[brokerreason]") {
+TEST_CASE("to_suggested_action bridges posture onto the typed error action", "[brokerreason]") {
   CHECK(to_suggested_action(RetryPosture::DoNotRetry) == SuggestedAction::DoNotRetry);
   CHECK(to_suggested_action(RetryPosture::ReconcileFirst) == SuggestedAction::ReconcileFirst);
   CHECK(to_suggested_action(RetryPosture::SafeToRetryReadOnly) == SuggestedAction::RetrySafe);

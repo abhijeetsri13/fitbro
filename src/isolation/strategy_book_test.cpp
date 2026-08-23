@@ -1,7 +1,6 @@
 #include "broker_exec/isolation/strategy_book.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 
 #include "broker_exec/domain/enums.hpp"
@@ -33,8 +32,7 @@ constexpr const char* kSym = "NIFTY..CE";
 }  // namespace
 
 // ── AC-1: isolation — two strategies, independent positions ─────────────────
-TEST_CASE("two strategies long the same symbol keep independent positions",
-          "[isolation][ac1]") {
+TEST_CASE("two strategies long the same symbol keep independent positions", "[isolation][ac1]") {
   StrategyBook book;
   book.apply_fill("A", kSym, Side::Buy, Quantity::of(50), Money::from_rupees(100));
   book.apply_fill("B", kSym, Side::Buy, Quantity::of(50), Money::from_rupees(100));
@@ -111,7 +109,7 @@ TEST_CASE("square_off with netting nets across all strategies", "[isolation][ac1
   const auto legs = book.square_off("A", /*netting_enabled=*/true);
   REQUIRE(legs.size() == 1);
   CHECK(legs[0].symbol == kSym);
-  CHECK(legs[0].qty == 30);          // |+50 - 20|
+  CHECK(legs[0].qty == 30);           // |+50 - 20|
   CHECK(legs[0].side == Side::Sell);  // net long -> sell to flatten
 
   // Both strategies' positions in that symbol are zeroed.
@@ -218,8 +216,8 @@ TEST_CASE("cross-zero fill realizes P&L on the closed lots and reopens at price"
   book.apply_fill("A", kSym, Side::Sell, Quantity::of(150), Money::from_rupees(110));
 
   const Position p = book.position_of("A", kSym);
-  CHECK(p.net_qty == -50);                              // 100 long, sold 150 -> 50 short
-  CHECK(p.avg_cost == Money::from_rupees(110));         // remainder reopened at the fill price
+  CHECK(p.net_qty == -50);                       // 100 long, sold 150 -> 50 short
+  CHECK(p.avg_cost == Money::from_rupees(110));  // remainder reopened at the fill price
   // Realized only on the 100 closed: (11000 - 10000 paise) * 100 = 1000 rupees.
   CHECK(p.realized_pnl == Money::from_rupees(1000));
 

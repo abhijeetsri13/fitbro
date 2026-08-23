@@ -1,7 +1,6 @@
 #include "broker_exec/priceband/band_check.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 
 #include "broker_exec/domain/enums.hpp"
@@ -109,7 +108,7 @@ TEST_CASE("stop-limit checks BOTH the trigger and the limit", "[priceband]") {
   CHECK(exit.verdict == BandVerdict::OutsideBandExitClamped);
   CHECK_FALSE(exit.blocked);
   CHECK(exit.has_suggestion);
-  CHECK(exit.suggested_limit == Money::from_rupees(100));   // already in band
+  CHECK(exit.suggested_limit == Money::from_rupees(100));  // already in band
   CHECK(exit.has_trigger_suggestion);
   CHECK(exit.suggested_trigger == Money::from_rupees(90));  // 70 clamped UP to band.lower
 
@@ -209,15 +208,14 @@ TEST_CASE("an inverted band (lower>upper, known) is treated as BandUnknown", "[p
   CHECK_FALSE(r.has_suggestion);
 }
 
-TEST_CASE("CORE INVARIANT: no out-of-band ENTRY is ever allowed through unblocked",
-          "[priceband]") {
+TEST_CASE("CORE INVARIANT: no out-of-band ENTRY is ever allowed through unblocked", "[priceband]") {
   const PriceBand band = band_90_110();
   // Sweep both sides, both limit/stop-limit order types, and prices on both sides
   // of the band. For every ENTRY that is out of band, blocked MUST be true; for
   // every EXIT, blocked MUST be false.
   const Side sides[] = {Side::Buy, Side::Sell};
   const OrderType limit_types[] = {OrderType::Limit, OrderType::StopLoss};
-  const Money prices[] = {Money::from_rupees(50), Money::from_rupees(89), Money::from_rupees(90),
+  const Money prices[] = {Money::from_rupees(50),  Money::from_rupees(89),  Money::from_rupees(90),
                           Money::from_rupees(100), Money::from_rupees(110), Money::from_rupees(111),
                           Money::from_rupees(200)};
 
@@ -325,11 +323,10 @@ TEST_CASE("intent overload: a trigger-less order is not made to look like a stop
   // An SL-M, by contrast, IS checked — on its trigger (IMP-11). Its limit is
   // ignored, so an in-band trigger passes no matter what `price` holds.
   intent.order_type = OrderType::StopLossMarket;
-  intent.price = broker_exec::domain::Price::from_rupees(500);   // ignored
+  intent.price = broker_exec::domain::Price::from_rupees(500);  // ignored
   intent.trigger_price = broker_exec::domain::Price::from_rupees(100);
   CHECK(check_price_band(intent, band_90_110(), false).verdict == BandVerdict::WithinBand);
 
   intent.trigger_price = broker_exec::domain::Price::from_rupees(500);  // out of band
-  CHECK(check_price_band(intent, band_90_110(), false).verdict ==
-        BandVerdict::OutsideBandBlocked);
+  CHECK(check_price_band(intent, band_90_110(), false).verdict == BandVerdict::OutsideBandBlocked);
 }

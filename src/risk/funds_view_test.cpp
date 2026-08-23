@@ -1,7 +1,6 @@
 #include "broker_exec/risk/funds_view.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstdint>
 #include <functional>

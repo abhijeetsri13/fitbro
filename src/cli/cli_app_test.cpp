@@ -1,7 +1,6 @@
 #include "broker_exec/cli/cli_app.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <functional>
 #include <string>
 
@@ -18,8 +17,12 @@ using broker_exec::errors::ErrorCategory;
 
 namespace {
 
-constexpr Verb kAllVerbs[] = {Verb::Status,        Verb::Reconcile,    Verb::ReplayIntentLog,
-                              Verb::SafeStartCheck, Verb::SendTestAlert, Verb::VerifyIp,
+constexpr Verb kAllVerbs[] = {Verb::Status,
+                              Verb::Reconcile,
+                              Verb::ReplayIntentLog,
+                              Verb::SafeStartCheck,
+                              Verb::SendTestAlert,
+                              Verb::VerifyIp,
                               Verb::Kill};
 
 // A spy callback that records invocation and returns a tagged success line, so a

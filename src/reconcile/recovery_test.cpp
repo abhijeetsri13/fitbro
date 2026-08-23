@@ -1,7 +1,6 @@
 #include "broker_exec/reconcile/recovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -143,7 +142,9 @@ Order loaded_order(const std::string& client_ref, OrderState state, bool acked =
 
 // Seam helpers: a Result<Ok> that succeeds / fails, and a load_state that yields
 // a fixed vector / fails.
-broker_exec::Result<ports::Ok> ok_session() { return ports::ok(); }
+broker_exec::Result<ports::Ok> ok_session() {
+  return ports::ok();
+}
 broker_exec::Result<ports::Ok> bad_session() {
   return broker_exec::fail(broker_exec::errors::make_error(
       broker_exec::errors::ErrorCategory::SessionExpired, "no session"));
@@ -191,8 +192,7 @@ TEST_CASE("recover: clean reconcile resumes safe and issues no broker mutation",
   auto load_state = []() -> broker_exec::Result<std::vector<Order>> {
     return std::vector<Order>{loaded_order("alpha-1", OrderState::Acknowledged)};
   };
-  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session,
-                                 ok_session);
+  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session, ok_session);
 
   const rec::RecoveryOutcome out = coord.recover();
   CHECK(out.status == rec::RecoveryStatus::ResumedSafe);
@@ -222,8 +222,7 @@ TEST_CASE("recover: an Unknown order resolved by broker truth resumes safe", "[r
   auto load_state = []() -> broker_exec::Result<std::vector<Order>> {
     return std::vector<Order>{loaded_order("alpha-1", OrderState::Unknown)};
   };
-  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session,
-                                 ok_session);
+  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session, ok_session);
 
   const rec::RecoveryOutcome out = coord.recover();
   CHECK(out.status == rec::RecoveryStatus::ResumedSafe);
@@ -246,8 +245,7 @@ TEST_CASE("recover: an Unknown order with no broker match blocks (not resumed)",
   auto load_state = []() -> broker_exec::Result<std::vector<Order>> {
     return std::vector<Order>{loaded_order("ghost-1", OrderState::Unknown, /*acked=*/false)};
   };
-  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session,
-                                 ok_session);
+  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session, ok_session);
 
   const rec::RecoveryOutcome out = coord.recover();
   CHECK(out.status == rec::RecoveryStatus::Blocked);
@@ -274,8 +272,7 @@ TEST_CASE("recover: Unknown order + unreachable broker escalates to manual inter
   auto load_state = []() -> broker_exec::Result<std::vector<Order>> {
     return std::vector<Order>{loaded_order("alpha-1", OrderState::Unknown)};
   };
-  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session,
-                                 ok_session);
+  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session, ok_session);
 
   const rec::RecoveryOutcome out = coord.recover();
   CHECK(out.status == rec::RecoveryStatus::ManualInterventionRequired);
@@ -319,8 +316,7 @@ TEST_CASE("recover: an UNREADABLE broker reply is not a double fault", "[recover
   auto load_state = []() -> broker_exec::Result<std::vector<Order>> {
     return std::vector<Order>{loaded_order("alpha-1", OrderState::Unknown)};
   };
-  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session,
-                                 ok_session);
+  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session, ok_session);
 
   const rec::RecoveryOutcome out = coord.recover();
 
@@ -357,8 +353,7 @@ TEST_CASE("recover: a genuinely unreachable broker STILL double-faults", "[recov
   auto load_state = []() -> broker_exec::Result<std::vector<Order>> {
     return std::vector<Order>{loaded_order("alpha-1", OrderState::Unknown)};
   };
-  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session,
-                                 ok_session);
+  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session, ok_session);
 
   const rec::RecoveryOutcome out = coord.recover();
   CHECK(out.status == rec::RecoveryStatus::ManualInterventionRequired);
@@ -424,8 +419,7 @@ TEST_CASE("recover: a failed state load blocks and alerts", "[recovery]") {
     return broker_exec::fail(
         broker_exec::errors::make_error(broker_exec::errors::ErrorCategory::Internal, "no state"));
   };
-  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session,
-                                 ok_session);
+  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session, ok_session);
 
   const rec::RecoveryOutcome out = coord.recover();
   CHECK(out.status == rec::RecoveryStatus::Blocked);
@@ -455,8 +449,7 @@ TEST_CASE("recover: unreachable broker with no Unknown order blocks but never es
     return std::vector<Order>{loaded_order("alpha-1", OrderState::Acknowledged),
                               loaded_order("beta-2", OrderState::Sent)};
   };
-  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session,
-                                 ok_session);
+  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session, ok_session);
 
   const rec::RecoveryOutcome out = coord.recover();
   CHECK(out.status == rec::RecoveryStatus::Blocked);
@@ -493,13 +486,12 @@ TEST_CASE("recover: a phantom broker order blocks the resume despite a clean loc
   };
   // Session ok AND safe-start ok: the ONLY thing standing between this and a
   // (wrong) ResumedSafe is the reconcile mismatch gate.
-  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session,
-                                 ok_session);
+  rec::RecoveryCoordinator coord(broker, alerts, clock, engine, load_state, ok_session, ok_session);
 
   const rec::RecoveryOutcome out = coord.recover();
   CHECK(out.status == rec::RecoveryStatus::Blocked);
   CHECK(out.status != rec::RecoveryStatus::ResumedSafe);
-  CHECK(out.mismatches > 0);          // the phantom was counted
+  CHECK(out.mismatches > 0);            // the phantom was counted
   CHECK(out.unknowns_unresolved == 0);  // no ambiguity — purely the phantom gate
   CHECK_FALSE(out.escalated);
   CHECK(cancelled_count(broker) == 0);  // never squared off the phantom

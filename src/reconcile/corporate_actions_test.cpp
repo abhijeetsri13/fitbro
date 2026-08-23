@@ -1,7 +1,6 @@
 #include "broker_exec/reconcile/corporate_actions.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstddef>
 #include <map>
 #include <optional>
@@ -114,7 +113,7 @@ TEST_CASE("classify: a 1:2 split is recognised and re-based (qty doubles, price 
 
   const rec::CorporateActionClassifier classifier(&source, alerts);
 
-  const Position believed = position("X", 50, 10000);        // 50 @ ₹100
+  const Position believed = position("X", 50, 10000);         // 50 @ ₹100
   const Position broker_observed = position("X", 100, 5000);  // 100 @ ₹50
 
   const auto outcome = classifier.classify(believed, broker_observed);
@@ -206,7 +205,7 @@ TEST_CASE("classify: a CA that does NOT match the observed change is not applied
 
   CHECK_FALSE(outcome.is_corporate_action);
   CHECK_FALSE(outcome.source_missing);  // a source IS configured
-  CHECK(alerts.count() == 0);  // a non-matching CA must not alert (no false signal)
+  CHECK(alerts.count() == 0);           // a non-matching CA must not alert (no false signal)
   // The caller treats this as a manual / mismatch (no CA was force-applied).
 }
 
@@ -312,8 +311,8 @@ TEST_CASE("rebase: a non-divisible split truncates the quantity (no fractional s
   const Position pos = position("X", 51, 10000);
   const Position rebased = rec::CorporateActionClassifier::rebase(pos, halve);
 
-  CHECK(rebased.net_qty == Quantity::of(25));   // 51 / 2 truncated, not 25.5
-  CHECK(rebased.avg_price.paise() == 20000);    // price doubles (inverse multiplier)
+  CHECK(rebased.net_qty == Quantity::of(25));  // 51 / 2 truncated, not 25.5
+  CHECK(rebased.avg_price.paise() == 20000);   // price doubles (inverse multiplier)
 }
 
 TEST_CASE("classify: a non-divisible matching CA is applied and the truncation is noted",

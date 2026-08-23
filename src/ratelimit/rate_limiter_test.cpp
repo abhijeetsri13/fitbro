@@ -1,7 +1,6 @@
 #include "broker_exec/ratelimit/rate_limiter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 
 #include "broker_exec/clock/test_clock.hpp"
@@ -184,9 +183,9 @@ TEST_CASE("determinism: identical clock-advance sequences yield identical outcom
     bool is_exit;
   };
   const Step steps[] = {
-      {0ms, kEntry},    {0ms, kEntry},    {0ms, kEntry},  {0ms, kEntry},
-      {0ms, kEntry},    {0ms, kExit},     {0ms, kExit},   {1500ms, kEntry},
-      {500ms, kEntry},  {3000ms, kExit},  {0ms, kExit},   {0ms, kEntry},
+      {0ms, kEntry},   {0ms, kEntry},   {0ms, kEntry}, {0ms, kEntry},
+      {0ms, kEntry},   {0ms, kExit},    {0ms, kExit},  {1500ms, kEntry},
+      {500ms, kEntry}, {3000ms, kExit}, {0ms, kExit},  {0ms, kEntry},
   };
 
   for (const auto& s : steps) {

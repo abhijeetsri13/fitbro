@@ -99,9 +99,8 @@ CorporateActionOutcome CorporateActionClassifier::classify(
   // about the change.
   if (source_ == nullptr) {
     outcome.source_missing = true;
-    outcome.detail =
-        "corporate-action source not configured; cannot classify position change on " +
-        believed.symbol;
+    outcome.detail = "corporate-action source not configured; cannot classify position change on " +
+                     believed.symbol;
     (void)alerts_.send_with_context(
         ports::AlertLevel::Error,
         "corporate-action source not configured; cannot classify position change",

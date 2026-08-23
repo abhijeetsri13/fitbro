@@ -2,12 +2,11 @@
 
 #include <cstddef>
 #include <initializer_list>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/kotak/kotak_errors.hpp"
 #include "broker_exec/adapters/kotak/kotak_transport.hpp"
@@ -180,8 +179,7 @@ std::vector<std::pair<std::string, std::string>> auth_headers(const KotakSession
 
 KotakSessionEstablisher::KotakSessionEstablisher(const HttpClient& http,
                                                  const ports::SecretProvider& secrets,
-                                                 secrets::TokenStore& store,
-                                                 std::string account_id,
+                                                 secrets::TokenStore& store, std::string account_id,
                                                  std::string bundle_store_name)
     : http_(http),
       secrets_(secrets),
@@ -189,9 +187,9 @@ KotakSessionEstablisher::KotakSessionEstablisher(const HttpClient& http,
       account_id_(std::move(account_id)),
       bundle_store_name_(std::move(bundle_store_name)) {}
 
-Result<std::string> KotakSessionEstablisher::fetch_access_token(
-    const std::string& consumer_key, const std::string& consumer_secret,
-    bool& credential_refusal) const {
+Result<std::string> KotakSessionEstablisher::fetch_access_token(const std::string& consumer_key,
+                                                                const std::string& consumer_secret,
+                                                                bool& credential_refusal) const {
   credential_refusal = false;
 
   HttpRequest request;
@@ -375,7 +373,7 @@ Result<SessionState> KotakSessionEstablisher::establish(const KotakLoginInputs& 
   // Leg 3 usually re-issues sid/hsServerId; fall back to leg 2's when it does not.
   bundle.sid = final_leg.value().sid.empty() ? view.value().sid : final_leg.value().sid;
   bundle.hs_server_id = final_leg.value().hs_server_id.empty() ? view.value().hs_server_id
-                                                              : final_leg.value().hs_server_id;
+                                                               : final_leg.value().hs_server_id;
   bundle.extras = std::move(final_leg.value().extras);
 
   // An incomplete bundle is a failed establishment — we do NOT persist a session

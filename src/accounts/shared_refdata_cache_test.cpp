@@ -1,7 +1,6 @@
 #include "broker_exec/accounts/shared_refdata_cache.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -153,10 +152,10 @@ constexpr const char* kCalendarJson =
     "\"square_off\":\"15:15\",\"close\":\"15:30\"}}";
 
 [[nodiscard]] TestClock clock_on(int year, unsigned month, unsigned day) {
-  return TestClock(std::chrono::steady_clock::time_point{},
-                   std::chrono::system_clock::time_point(std::chrono::sys_days{
-                       std::chrono::year{year} / std::chrono::month{month} /
-                       std::chrono::day{day}}));
+  return TestClock(
+      std::chrono::steady_clock::time_point{},
+      std::chrono::system_clock::time_point(std::chrono::sys_days{
+          std::chrono::year{year} / std::chrono::month{month} / std::chrono::day{day}}));
 }
 
 }  // namespace
@@ -228,8 +227,8 @@ TEST_CASE("CONTENDED: a loser blocked on the lock waits, re-reads, and takes the
   SharedRefdataCacheConfig cfg = config_for(shared, 5);
   // Simulate a sibling process holding the lock while it downloads.
   fs::create_directories(shared);
-  Result<FileLock> held = try_acquire_file_lock(
-      shared / (std::string(kArtifactName) + ".lock"), std::chrono::minutes{10});
+  Result<FileLock> held = try_acquire_file_lock(shared / (std::string(kArtifactName) + ".lock"),
+                                                std::chrono::minutes{10});
   REQUIRE(held.has_value());
 
   // The injected wait is where the "other process" makes progress: on the second
@@ -256,15 +255,14 @@ TEST_CASE("CONTENDED: a loser blocked on the lock waits, re-reads, and takes the
   CHECK(waits == 2);
 }
 
-TEST_CASE("lock held and NO artifact appears: bounded failure, fail closed",
-          "[accounts][cache]") {
+TEST_CASE("lock held and NO artifact appears: bounded failure, fail closed", "[accounts][cache]") {
   const TempDir dir;
   const fs::path shared = dir.path / "shared";
   const RefdataKey key = csv_key();
 
   fs::create_directories(shared);
-  Result<FileLock> held = try_acquire_file_lock(
-      shared / (std::string(kArtifactName) + ".lock"), std::chrono::minutes{10});
+  Result<FileLock> held = try_acquire_file_lock(shared / (std::string(kArtifactName) + ".lock"),
+                                                std::chrono::minutes{10});
   REQUIRE(held.has_value());
 
   SharedRefdataCacheConfig cfg = config_for(shared, 4);
@@ -445,8 +443,7 @@ TEST_CASE("a fetched payload that fails validation is NEVER written to the share
   CHECK_FALSE(fs::exists(cache.artifact_path(key)));
 }
 
-TEST_CASE("a lock lost DURING the fetch abandons the publish (fail closed)",
-          "[accounts][cache]") {
+TEST_CASE("a lock lost DURING the fetch abandons the publish (fail closed)", "[accounts][cache]") {
   const TempDir dir;
   const SharedRefdataCache cache(config_for(dir.path / "shared"));
   const RefdataKey key = csv_key();
@@ -543,8 +540,7 @@ TEST_CASE("the key's UNDERSCORE is reserved as the separator (the filename colli
 }
 
 TEST_CASE("the shared root must live OUTSIDE the per-account data tree", "[accounts][cache]") {
-  CHECK(require_outside_account_tree("/var/lib/broker-exec/shared",
-                                     "/var/lib/broker-exec/accounts")
+  CHECK(require_outside_account_tree("/var/lib/broker-exec/shared", "/var/lib/broker-exec/accounts")
             .has_value());
 
   // Inside the account tree — rejected.
@@ -552,8 +548,7 @@ TEST_CASE("the shared root must live OUTSIDE the per-account data tree", "[accou
                                            "/var/lib/broker-exec/accounts")
                   .has_value());
   // The account tree inside the shared root — also rejected (same hazard).
-  CHECK_FALSE(require_outside_account_tree("/var/lib/broker-exec",
-                                           "/var/lib/broker-exec/accounts")
+  CHECK_FALSE(require_outside_account_tree("/var/lib/broker-exec", "/var/lib/broker-exec/accounts")
                   .has_value());
   // Identical paths.
   CHECK_FALSE(require_outside_account_tree("/data", "/data").has_value());
@@ -561,8 +556,8 @@ TEST_CASE("the shared root must live OUTSIDE the per-account data tree", "[accou
   // "accounts").
   CHECK(require_outside_account_tree("/var/lib/accounts2", "/var/lib/accounts").has_value());
   // ".." is normalized before the comparison.
-  CHECK_FALSE(require_outside_account_tree("/var/lib/accounts/x/../y", "/var/lib/accounts")
-                  .has_value());
+  CHECK_FALSE(
+      require_outside_account_tree("/var/lib/accounts/x/../y", "/var/lib/accounts").has_value());
   CHECK_FALSE(require_outside_account_tree("", "/var/lib/accounts").has_value());
 }
 
@@ -654,24 +649,23 @@ TEST_CASE("sweep_debris removes ONLY aged temp/claim residue", "[accounts][cache
   CHECK(absent.sweep_debris() == 0);
 }
 
-TEST_CASE("the sanity validators reject the classic corrupt-cache payloads",
-          "[accounts][cache]") {
+TEST_CASE("the sanity validators reject the classic corrupt-cache payloads", "[accounts][cache]") {
   const RefdataValidateFn csv = csv_sanity_validator();
   CHECK(csv("a,b\n1,2\n"));
   CHECK(csv(kInstrumentsCsv));
   CHECK_FALSE(csv(""));
   CHECK_FALSE(csv("   \n\t "));
   CHECK_FALSE(csv("no commas here"));
-  CHECK_FALSE(csv("a,b\n"));      // header with no rows — a truncated download
-  CHECK_FALSE(csv("a,b"));        // one line, no newline at all
-  CHECK_FALSE(csv("1,2\n3,4\n")); // no letters in the header: not a dump header
+  CHECK_FALSE(csv("a,b\n"));       // header with no rows — a truncated download
+  CHECK_FALSE(csv("a,b"));         // one line, no newline at all
+  CHECK_FALSE(csv("1,2\n3,4\n"));  // no letters in the header: not a dump header
 
   const RefdataValidateFn json = json_sanity_validator();
   CHECK(json("{\"a\":1}"));
   CHECK(json("  [1,2]  "));
   CHECK(json(kCalendarJson));
   CHECK_FALSE(json(""));
-  CHECK_FALSE(json("{\"a\":1"));   // truncated mid-document
+  CHECK_FALSE(json("{\"a\":1"));  // truncated mid-document
   CHECK_FALSE(json("<html></html>"));
 }
 
@@ -726,8 +720,8 @@ TEST_CASE("composition: the fetcher keeps the cache alive (shared ownership)",
     // The composition root's local handle goes out of scope; the fetcher it
     // produced is still wired into a long-lived InstrumentMaster.
     const std::shared_ptr<const SharedRefdataCache> cache = cache_for(dir.path / "shared");
-    fetcher = shared_instrument_csv_fetcher(cache, "kite", "nfo",
-                                            []() { return std::string(kDate); }, upstream.fn());
+    fetcher = shared_instrument_csv_fetcher(
+        cache, "kite", "nfo", []() { return std::string(kDate); }, upstream.fn());
   }
 
   const Result<std::string> result = fetcher();

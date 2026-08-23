@@ -77,10 +77,10 @@ struct PriceBand {
 // as STILL EXPOSED (re-arm), not as protected — so the caller must keep
 // position_qty reconciled or risk an over-exit on a position-feed lag.
 struct ProtectiveStop {
-  std::string position_id;        // the protected position handle (opaque id)
-  std::string symbol;             // tradable symbol (redaction-safe to log)
-  std::int64_t position_qty = 0;  // signed: +long / -short; 0 == flat (reconciled)
-  domain::Money stop_trigger;     // the stop trigger price
+  std::string position_id;         // the protected position handle (opaque id)
+  std::string symbol;              // tradable symbol (redaction-safe to log)
+  std::int64_t position_qty = 0;   // signed: +long / -short; 0 == flat (reconciled)
+  domain::Money stop_trigger;      // the stop trigger price
   domain::Money protective_limit;  // limit for the protective exit (marketable)
 };
 

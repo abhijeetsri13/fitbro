@@ -5,14 +5,13 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iterator>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/adapters/square_off_exit.hpp"
 #include "broker_exec/domain/decimal_paise.hpp"
@@ -484,14 +483,21 @@ enum class StatusClass { Unrecognized, Working, Complete, Rejected, Cancelled };
 struct RawOrder {
   std::string order_id;
   std::string symbol;
-  std::string side;                        // folded to "B"/"S" (or an uncollidable fallback)
-  std::optional<std::int64_t> quantity;    // NULLOPT means "the field was absent", not zero
-  std::int64_t filled = 0;
-  std::int64_t price_paise = 0;
-  std::int64_t avg_paise = 0;
-  // NULLOPT means "this row is not a stop order". Kept optional (unlike the other
-  // money fields, which default to 0) because 0 and absent mean the SAME thing for
-  // a trigger and BOTH must map to the domain's nullopt.
+  std::string side;                      // folded to "B"/"S" (or an uncollidable fallback)
+  std::optional<std::int64_t> quantity;  // NULLOPT means "the field was absent", not zero
+  // THE SAME THREE-WAY CONTRACT, NOW CARRIED BY EVERY NUMBER ON THIS ROW. These
+  // three were plain int64s filled in through `.value_or(0)`, which spent BOTH
+  // "the field was absent" and "the field was present but garbage" as the number
+  // 0 — collapsing exactly the distinction the readers above exist to preserve,
+  // one line after the readers drew it. NULLOPT here means "we could not read
+  // it"; it NEVER means zero, and every consumer below must decide explicitly
+  // what to do about that rather than inherit a fabricated number.
+  std::optional<std::int64_t> filled;
+  std::optional<std::int64_t> price_paise;
+  std::optional<std::int64_t> avg_paise;
+  // NULLOPT means "this row is not a stop order" — a DIFFERENT meaning from the
+  // three above, because 0 and absent mean the SAME thing for a trigger and BOTH
+  // must map to the domain's nullopt.
   std::optional<std::int64_t> trigger_paise;
   // Fails CLOSED to Market on an absent/unrecognized `prcTp`, which suppresses the
   // trigger for the row (a Market carrying a trigger is a refused shape).
@@ -502,8 +508,8 @@ struct RawOrder {
   // opens a second one, and a segment we round-trip through our own inference is a
   // segment we may have guessed. Empty means "the report did not say"; the exit
   // then falls back to the same mapping a normal place uses.
-  std::string product;  // `prod` / `pc` / `pCode` — the product the position is in
-  std::string segment;  // `exSeg` / `es` — the exchange segment it actually sits on
+  std::string product;     // `prod` / `pc` / `pCode` — the product the position is in
+  std::string segment;     // `exSeg` / `es` — the exchange segment it actually sits on
   bool malformed = false;  // a field was PRESENT but unparseable -> fail this row closed
 };
 
@@ -513,11 +519,9 @@ struct RawOrder {
   raw.symbol = first_str(row, {"trdSym", "tsym", "sym", "trdSymbol"});
   raw.side = fold_side_code(first_str(row, {"trnsTp", "trnsTyp", "tt"}));
   raw.quantity = first_number(row, {"qty", "qt", "ordQty", "totQty"}, raw.malformed);
-  raw.filled = first_number(row, {"fldQty", "flQty", "fillQty", "filledQty"}, raw.malformed)
-                   .value_or(0);
-  raw.price_paise = first_paise(row, {"prc", "pr", "ordPrc"}, raw.malformed).value_or(0);
-  raw.avg_paise =
-      first_paise(row, {"avgPrc", "avgPrice", "fldPrc", "flPrc"}, raw.malformed).value_or(0);
+  raw.filled = first_number(row, {"fldQty", "flQty", "fillQty", "filledQty"}, raw.malformed);
+  raw.price_paise = first_paise(row, {"prc", "pr", "ordPrc"}, raw.malformed);
+  raw.avg_paise = first_paise(row, {"avgPrc", "avgPrice", "fldPrc", "flPrc"}, raw.malformed);
   // The TRIGGER, round-tripped back out of broker truth. Kotak is NOT symmetric
   // about this datum: the quick-place REQUEST spells it `tp`, the order REPORT
   // spells it `trgPrc`.
@@ -551,13 +555,17 @@ struct RawOrder {
     raw.quantity.reset();
     raw.malformed = true;
   }
-  if (raw.filled < 0) {
+  // Both clamps below act ONLY on a fill we actually read. An unread fill stays
+  // NULLOPT: clamping nothing into 0 would re-introduce the fabricated zero the
+  // optional exists to prevent.
+  if (raw.filled.has_value() && *raw.filled < 0) {
     raw.filled = 0;  // fillnorm clamps too; do it here so the reported qty agrees
   }
   // CLAMP AN IMPOSSIBLE OVER-FILL. A broker reporting fldQty > qty is reporting
   // garbage, and the dangerous direction is obvious: a fill of 500 against an
   // order of 50 would size a 10x exit. Cap it at what was actually ordered.
-  if (raw.quantity.has_value() && *raw.quantity > 0 && raw.filled > *raw.quantity) {
+  if (raw.quantity.has_value() && *raw.quantity > 0 && raw.filled.has_value() &&
+      *raw.filled > *raw.quantity) {
     raw.filled = *raw.quantity;
   }
   return raw;
@@ -590,8 +598,7 @@ void KotakBrokerAdapter::register_intent(const domain::OrderIntent& intent) {
   }
 }
 
-void KotakBrokerAdapter::anchor(const std::string& broker_order_id,
-                                const std::string& client_ref) {
+void KotakBrokerAdapter::anchor(const std::string& broker_order_id, const std::string& client_ref) {
   if (broker_order_id.empty() || client_ref.empty()) {
     return;
   }
@@ -606,11 +613,10 @@ void KotakBrokerAdapter::drop_pending(const std::string& client_ref) {
   if (client_ref.empty()) {
     return;
   }
-  pending_.erase(std::remove_if(pending_.begin(), pending_.end(),
-                                [&client_ref](const PendingIntent& p) {
-                                  return p.client_ref == client_ref;
-                                }),
-                 pending_.end());
+  pending_.erase(
+      std::remove_if(pending_.begin(), pending_.end(),
+                     [&client_ref](const PendingIntent& p) { return p.client_ref == client_ref; }),
+      pending_.end());
 }
 
 std::string KotakBrokerAdapter::ref_for_id(const std::string& broker_order_id) const {
@@ -645,9 +651,9 @@ Result<ports::BrokerAck> KotakBrokerAdapter::place(const domain::OrderIntent& in
     // Kotak said "Ok" but gave us no id. That is ambiguous, not successful, so the
     // registration STAYS: reconcile against broker truth rather than assuming
     // nothing happened.
-    return broker_exec::fail(errors::make_error(
-        errors::ErrorCategory::Unknown, "kotak: place acknowledged without an order number",
-        "KOTAK-PLACE-NOID"));
+    return broker_exec::fail(errors::make_error(errors::ErrorCategory::Unknown,
+                                                "kotak: place acknowledged without an order number",
+                                                "KOTAK-PLACE-NOID"));
   }
   anchor(order_id, intent.client_ref);
   return ports::BrokerAck{order_id, intent.client_ref};
@@ -708,8 +714,8 @@ Result<ports::Ok> KotakBrokerAdapter::square_off_banded(const std::string& broke
     return broker_exec::fail(payload.error());  // an unread book cannot size an exit
   }
   if (!payload.value().is_array()) {
-    return broker_exec::fail(reconcile_first_error(
-        "kotak: the order book payload was not an array", "KOTAK-SQUAREOFF-BOOKSHAPE"));
+    return broker_exec::fail(reconcile_first_error("kotak: the order book payload was not an array",
+                                                   "KOTAK-SQUAREOFF-BOOKSHAPE"));
   }
 
   std::vector<RawOrder> rows;
@@ -740,6 +746,22 @@ Result<ports::Ok> KotakBrokerAdapter::square_off_banded(const std::string& broke
         "kotak: square_off read an unparseable field on the order; reconcile before flattening",
         "KOTAK-SQUAREOFF-MALFORMED"));
   }
+  // THE TWIN OF KOTAK-SQUAREOFF-NOQTY BELOW, and it closes the more dangerous half
+  // of the same hole. `malformed` above only catches a fill field that was PRESENT
+  // and garbage; a `fldQty` ABSENT under all four spellings (or sent as "", which
+  // json_str cannot distinguish from absent) used to arrive here as the number 0 —
+  // and 0 is not "unreadable" to anything downstream. fillnorm reports
+  // exit_qty_trustworthy=false, `exit_qty` comes out 0, and branch (d) reads that
+  // as "nothing filled, so cancel-only IS a complete square-off" and returns ok()
+  // having flattened NOTHING while a genuinely filled position stays fully on.
+  // A flatten that reports success without exiting is the single worst answer this
+  // function can give, so an unreadable fill refuses outright.
+  if (!parent->filled.has_value()) {
+    return broker_exec::fail(reconcile_first_error(
+        "kotak: square_off could not read the order's filled quantity; reconcile before "
+        "flattening",
+        "KOTAK-SQUAREOFF-NOFILLQTY"));
+  }
 
   // ── NEVER FLATTEN A FLATTEN ───────────────────────────────────────────────
   // The row we were pointed at is itself a square-off exit. Flattening it places
@@ -767,7 +789,7 @@ Result<ports::Ok> KotakBrokerAdapter::square_off_banded(const std::string& broke
   }
 
   const domain::OrderState reported =
-      map_order_state(parent->status, parent->filled, parent->quantity);
+      map_order_state(parent->status, *parent->filled, parent->quantity);
   if (reported == domain::OrderState::Unknown) {
     return broker_exec::fail(reconcile_first_error(
         "kotak: square_off read an unrecognized order status; reconcile before flattening",
@@ -790,7 +812,7 @@ Result<ports::Ok> KotakBrokerAdapter::square_off_banded(const std::string& broke
   // authoritative read, which is the only basis on which an exit may be sized.
   const char* neutral_status = reported == domain::OrderState::Filled ? "complete" : "open";
   const fillnorm::FillSnapshot snap = fillnorm::normalize_fill(
-      neutral_status, parent->filled, *parent->quantity, /*from_reconcile=*/true);
+      neutral_status, *parent->filled, *parent->quantity, /*from_reconcile=*/true);
   const std::int64_t exit_qty = fillnorm::exit_qty_for(snap);
 
   // ── (b) CANCEL THE WORKING REMAINDER ──────────────────────────────────────
@@ -1116,10 +1138,52 @@ Result<std::vector<domain::Order>> KotakBrokerAdapter::fetch_orders() {
     order.intent.symbol = raw.symbol;
     // A row whose fields we could not parse is a row we do not understand: fail it
     // closed to Unknown so the engine reconciles instead of trusting our reading.
-    order.state = raw.malformed ? domain::OrderState::Unknown
-                                : map_order_state(raw.status, raw.filled, raw.quantity);
-    order.filled_qty = domain::Quantity::of(raw.filled);
-    order.avg_price = domain::Price::from_paise(raw.avg_paise);
+    //
+    // ABSENT IS NOT ZERO, AND IT GOVERNS THE FILL — NOT ONLY THE ORDER TOTAL. The
+    // header states that rule for `qty` and the reader draws it for every number;
+    // this loop used to spend it one line later by publishing `.value_or(0)`. Two
+    // distinct fabrications came out of that, and neither is cosmetic:
+    //
+    //   * THE FILLED QUANTITY IS WHAT DEFINES THE STATE. Acknowledged vs
+    //     PartiallyFilled vs Filled differ ONLY by the fill, so a fill we could not
+    //     read is a lifecycle position we are not entitled to assert. A 30-of-50
+    //     working order whose `fldQty` arrives under no spelling we know used to be
+    //     published as a confident Acknowledged carrying a fill of 0.
+    //   * AN AVERAGE PRICE IS MONEY, and money is never read best-effort here. A row
+    //     that reports a fill but no readable `avgPrc` used to publish Rs 0.00 as the
+    //     cost basis the ledger, the P&L and the operator then believe. It is only
+    //     demanded of a row that CLAIMS a fill: on a working order with nothing done,
+    //     an absent average is the truth, not a gap, and demanding it there would
+    //     turn an ordinary book Unknown and freeze entries via the UNKNOWN-pause.
+    //
+    // Unknown is also the only answer that stays REPAIRABLE. Filled/Cancelled are
+    // terminal-absorbing in the lifecycle FSM, so publishing either one beside a
+    // fabricated zero would freeze that zero in permanently; an Unknown row is
+    // re-read on the next snapshot and corrects itself.
+    const bool fill_unreadable =
+        !raw.filled.has_value() || (*raw.filled > 0 && !raw.avg_paise.has_value());
+    order.state = (raw.malformed || fill_unreadable)
+                      ? domain::OrderState::Unknown
+                      : map_order_state(raw.status, *raw.filled, raw.quantity);
+    // PUBLISH ONLY WHAT WE ACTUALLY READ. `domain::Order` has no way to say "I
+    // could not read this number", so a withheld fill still LOOKS like 0 to a
+    // consumer — but it is no longer this adapter ASSERTING 0, and the row it
+    // travels on is Unknown, which is the signal the engine acts on.
+    //
+    // THE REMAINING GAP, STATED RATHER THAN PAPERED OVER: `LifecycleEngine::apply`
+    // copies `view.filled_qty` / `view.avg_price` onto the order unconditionally
+    // once the view changes anything, so an Unknown view still overwrites a real
+    // 30-lot fill with 0 in the engine's working copy and in the durable store.
+    // Closing that needs a change OUTSIDE this adapter — either skipping those two
+    // writes when `view.observed_state == OrderState::Unknown`, or giving
+    // `lifecycle::BrokerView` optional fill fields. Nothing an adapter can publish
+    // fixes it from here.
+    if (raw.filled.has_value()) {
+      order.filled_qty = domain::Quantity::of(*raw.filled);
+    }
+    if (raw.avg_paise.has_value()) {
+      order.avg_price = domain::Price::from_paise(*raw.avg_paise);
+    }
 
     // THE CORRELATION TUPLE IS PUBLISHED ONLY FOR ROWS WE POSITIVELY CORRELATED.
     // `runtime::UnknownResolver`'s rung 3 re-runs attribute corroboration on
@@ -1134,7 +1198,12 @@ Result<std::vector<domain::Order>> KotakBrokerAdapter::fetch_orders() {
       if (raw.quantity.has_value()) {
         order.intent.quantity = domain::Quantity::of(*raw.quantity);
       }
-      order.intent.price = domain::Price::from_paise(raw.price_paise);
+      // Same rule as the fill above: the LIMIT price is published only when the
+      // row actually carried one we could parse. An unread `prc` used to arrive
+      // here as Rs 0.00 wearing the correlation tuple's authority.
+      if (raw.price_paise.has_value()) {
+        order.intent.price = domain::Price::from_paise(*raw.price_paise);
+      }
       // The order TYPE and the trigger travel with the rest of the correlation
       // tuple, and for the same reason: they are published only for a row we
       // POSITIVELY correlated. The type is set FIRST because it gates the trigger.
@@ -1264,8 +1333,8 @@ Result<ports::FundsSnapshot> KotakBrokerAdapter::fetch_funds() {
   bool malformed = false;
   const std::optional<std::int64_t> available =
       first_paise(body, {"Net", "net", "availableMargin", "AvailableMargin"}, malformed);
-  const std::optional<std::int64_t> used =
-      first_paise(body, {"MarginUsed", "marginUsed", "UtilizedMargin", "utilizedMargin"}, malformed);
+  const std::optional<std::int64_t> used = first_paise(
+      body, {"MarginUsed", "marginUsed", "UtilizedMargin", "utilizedMargin"}, malformed);
   if (malformed) {
     // A funds figure we cannot parse EXACTLY must not be reported as a number —
     // the freshness/margin gates would size real risk off it. Fail the read.

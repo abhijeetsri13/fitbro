@@ -1,7 +1,6 @@
 #include "broker_exec/config/config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -101,9 +100,9 @@ TEST_CASE("valid TOML loads into a typed Config and env overrides win over the f
   CHECK(cfg.logging.level == LogLevel::Info);
 
   // Overridden fields take the env value, not the file value (env WINS).
-  CHECK(cfg.engine.mode == RunProfile::Live);          // file said "paper"
-  CHECK(cfg.broker.timeout_ms == 1500);                // file said 4000
-  CHECK(cfg.risk.max_open_positions == 3);             // file said 10
+  CHECK(cfg.engine.mode == RunProfile::Live);  // file said "paper"
+  CHECK(cfg.broker.timeout_ms == 1500);        // file said 4000
+  CHECK(cfg.risk.max_open_positions == 3);     // file said 10
 }
 
 TEST_CASE("an invalid enum value fails fast with an Error naming the field", "[config]") {
@@ -279,8 +278,9 @@ TEST_CASE("env overrides win over the file for every field (AC-3, all fields)", 
   CHECK(cfg.logging.level == LogLevel::Debug);
 }
 
-TEST_CASE("one binary, config-only: the same TOML + two env profile sets yield two distinct Configs",
-          "[config]") {
+TEST_CASE(
+    "one binary, config-only: the same TOML + two env profile sets yield two distinct Configs",
+    "[config]") {
   const TempToml file("one_binary", kValidToml);
 
   // Paper profile: small book, conservative.
@@ -325,8 +325,7 @@ TEST_CASE("defaults + env only (no file) load when required fields come from env
 }
 
 TEST_CASE("a missing TOML file is reported as an error naming the path", "[config]") {
-  const fs::path missing =
-      fs::temp_directory_path() / "broker_exec_config_does_not_exist_zzz.toml";
+  const fs::path missing = fs::temp_directory_path() / "broker_exec_config_does_not_exist_zzz.toml";
   std::error_code ec;
   fs::remove(missing, ec);
 
@@ -477,4 +476,110 @@ names = ["alpha", 7]
   const auto r2 = load(mixed.path, env_from({}));
   REQUIRE_FALSE(r2.has_value());
   CHECK(r2.error().message.find("array of strings") != std::string::npos);
+}
+
+// ── IMP-34: an integer field accepts ONLY a TOML integer ─────────────────────
+//
+// toml++'s node::value<T>() is documented PERMISSIVE: a boolean node hands back
+// 0/1 and a whole-valued float hands back its truncation, with no diagnostic. The
+// loader used it while promising "must be an integer", so EVERY case below LOADED
+// CLEANLY before the fix — each converted value landed inside validate()'s legal
+// range, which is precisely why nothing downstream could notice. value_exact<T>()
+// makes the file layer refuse exactly what the env layer's std::from_chars always
+// refused.
+
+TEST_CASE("a boolean in an integer field is refused, not read as 0/1", "[config][IMP-34]") {
+  // The 1 ms timeout is the whole point: `true` -> 1 passes `timeout_ms <= 0`, and
+  // a 1 ms broker timeout expires before any response arrives, so every order
+  // placement resolves to UNKNOWN — the ambiguity this library exists to prevent —
+  // out of a file the loader reported as valid.
+  const TempToml file("int_bool_timeout", R"toml(
+[engine]
+account_id = "acct"
+[broker]
+name = "kite"
+timeout_ms = true
+[paths]
+data_dir = "/data"
+)toml");
+
+  const auto result = load(file.path, env_from({}));
+  REQUIRE_FALSE(result.has_value());
+  CHECK(result.error().category == ErrorCategory::Validation);
+  CHECK(result.error().message.find("broker.timeout_ms") != std::string::npos);
+  CHECK(result.error().message.find("must be an integer") != std::string::npos);
+  // The message names the type actually written, so the operator is told WHAT they
+  // wrote rather than only what was expected.
+  CHECK(result.error().message.find("boolean") != std::string::npos);
+
+  // The sibling integer field is exactly as strict: `false` -> 0 also cleared
+  // validate()'s `< 0` test before the fix, so it loaded a silently invented limit.
+  const TempToml positions("int_bool_positions", R"toml(
+[engine]
+account_id = "acct"
+[broker]
+name = "kite"
+[risk]
+max_open_positions = false
+[paths]
+data_dir = "/data"
+)toml");
+
+  const auto r2 = load(positions.path, env_from({}));
+  REQUIRE_FALSE(r2.has_value());
+  CHECK(r2.error().message.find("risk.max_open_positions") != std::string::npos);
+  CHECK(r2.error().message.find("boolean") != std::string::npos);
+}
+
+TEST_CASE("a float in the paise field is refused — no double reaches the money path",
+          "[config][IMP-34]") {
+  // 2.5e5 was accepted as 250000: a floating-point literal converted into an
+  // int64 paise field, against the binding "no double/float in a money or price
+  // path" rule, with nothing in the loaded Config recording that it happened.
+  const TempToml file("int_float_paise", R"toml(
+[engine]
+account_id = "acct"
+[broker]
+name = "kite"
+[risk]
+max_order_value_paise = 2.5e5
+[paths]
+data_dir = "/data"
+)toml");
+
+  const auto result = load(file.path, env_from({}));
+  REQUIRE_FALSE(result.has_value());
+  CHECK(result.error().category == ErrorCategory::Validation);
+  CHECK(result.error().message.find("risk.max_order_value_paise") != std::string::npos);
+  CHECK(result.error().message.find("must be an integer") != std::string::npos);
+  // "must be an integer" alone is a riddle for a value that looks numeric; the
+  // message has to say which character made it a float.
+  CHECK(result.error().message.find("floating-point") != std::string::npos);
+}
+
+TEST_CASE("the file and env layers agree on what an integer is", "[config][IMP-34]") {
+  // The two layers disagreed: std::from_chars leaves ".0" unconsumed so the env
+  // branch always rejected "4000.0", while the file branch read the same text as
+  // 4000. A field's type must not depend on which layer supplied it.
+  const TempToml from_file_toml("int_float_timeout", R"toml(
+[engine]
+account_id = "acct"
+[broker]
+name = "kite"
+timeout_ms = 4000.0
+[paths]
+data_dir = "/data"
+)toml");
+
+  const auto from_file = load(from_file_toml.path, env_from({}));
+  REQUIRE_FALSE(from_file.has_value());
+  CHECK(from_file.error().message.find("broker.timeout_ms") != std::string::npos);
+  CHECK(from_file.error().message.find("must be an integer") != std::string::npos);
+
+  const TempToml baseline("int_float_env_twin", kValidToml);
+  const auto from_env =
+      load(baseline.path, env_from({{"BROKER_EXEC_BROKER_TIMEOUT_MS", "4000.0"}}));
+  REQUIRE_FALSE(from_env.has_value());
+  CHECK(from_env.error().message.find("broker.timeout_ms") != std::string::npos);
+  CHECK(from_env.error().message.find("must be an integer") != std::string::npos);
 }

@@ -66,9 +66,14 @@ enum class GateOutcome { Allow, AllowWithSlicing };
 // predicates / config for each check. Every injected input defaults to "pass"
 // where sensible so a minimal context evaluates a clean entry.
 struct GateContext {
-  // The order under test and its already-resolved reference data.
+  // The order under test and its already-resolved reference data. `instrument`
+  // must carry a REAL per-exchange freeze ceiling: a 0 / negative `freeze_qty` is
+  // REFUSED by the freeze check, never read as "no ceiling". An unknown ceiling
+  // cannot tell an over-freeze order from a safe one, and treating it as absent
+  // silently skips the check, discards the `slice_mode` posture below, and leaves
+  // AllowWithSlicing unreachable.
   const domain::OrderIntent& intent;
-  domain::Instrument instrument;
+  domain::Instrument instrument{};
 
   // True for a risk-reducing op (exit / square-off / hedge-completion /
   // emergency). EXEMPT from the entry-only blocks: kill-switch(entry),
@@ -82,21 +87,21 @@ struct GateContext {
   // The runtime UNKNOWN-pause: entries paused while UNKNOWN orders are unresolved.
   bool unknown_pause_active = false;
   // True if this client_ref / signal has already been seen. Empty => not a dup.
-  std::function<bool()> is_duplicate;
+  std::function<bool()> is_duplicate{};
   // Entry time-window authority. If null, the time-window check is skipped.
   const refdata::TradingCalendar* calendar = nullptr;
   // Margin / funds check (entry-only); fail-closed on stale (DataStale). Empty => pass.
-  std::function<Result<ports::Ok>()> funds_check;
+  std::function<Result<ports::Ok>()> funds_check{};
   // Account / strategy / instrument / order risk check. Empty => pass.
-  std::function<Result<ports::Ok>()> risk_check;
+  std::function<Result<ports::Ok>()> risk_check{};
   // Naked-sell / hedge-completion check. Empty => pass.
-  std::function<Result<ports::Ok>()> hedge_check;
+  std::function<Result<ports::Ok>()> hedge_check{};
 
   // ── Allow-lists (empty => accept any) ────────────────────────────────────
   // Allowed exchanges. If empty, any non-empty instrument exchange is accepted.
-  std::vector<std::string> allowed_exchanges;
+  std::vector<std::string> allowed_exchanges{};
   // Allowed products. If empty, any product is accepted.
-  std::vector<domain::Product> allowed_products;
+  std::vector<domain::Product> allowed_products{};
 
   // Over-freeze handling: true (default) => AllowWithSlicing; false => reject as
   // a Validation Error (config posture; the real fan-out lands in Story 2.9).

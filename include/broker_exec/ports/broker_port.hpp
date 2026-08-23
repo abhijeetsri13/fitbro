@@ -32,8 +32,8 @@ struct BrokerAck {
 
 // A point-in-time view of margin/funds, used by the funds-freshness gate.
 struct FundsSnapshot {
-  domain::Money available_margin;  // Free margin available to deploy.
-  domain::Money used_margin;       // Margin currently blocked.
+  domain::Money available_margin{};  // Free margin available to deploy.
+  domain::Money used_margin{};       // Margin currently blocked.
 
   [[nodiscard]] bool operator==(const FundsSnapshot&) const = default;
 };

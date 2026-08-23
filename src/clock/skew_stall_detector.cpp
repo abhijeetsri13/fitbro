@@ -63,8 +63,8 @@ ClockStatus SkewStallDetector::sample(std::chrono::steady_clock::time_point stea
   const auto divergence = abs_ns(wall_elapsed - steady_elapsed);
   if (divergence > config_.skew_threshold) {
     status_ = ClockStatus::Skewed;
-    reason_ = "clock skew: wall/steady divergence " + ms_text(divergence) +
-              " exceeds threshold " + ms_text(config_.skew_threshold);
+    reason_ = "clock skew: wall/steady divergence " + ms_text(divergence) + " exceeds threshold " +
+              ms_text(config_.skew_threshold);
     return status_;
   }
 

@@ -12,7 +12,6 @@
 #include "broker_exec/adapters/kotak/kotak_errors.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 #include <utility>
 #include <vector>
@@ -79,6 +78,19 @@ constexpr const char* kFaultServerError =
 constexpr const char* kLoginErrorNode =
     R"({"error":[{"code":"10022","message":"Invalid Credentials"}]})";
 
+// A gateway fault whose code is a BARE (unquoted) integer above INT64_MAX. This
+// one is a SHAPE PROBE, not a recorded fixture: Kotak's real codes are 5-6 digits,
+// and this is simply the smallest input that can tell the two orderings of the
+// is_number_unsigned / is_number_integer checks apart. Bare numeric codes
+// themselves are recorded — every `"stCode":5001` fixture above is one.
+constexpr const char* kFaultUnsignedCodeAboveInt64Max =
+    R"({"fault":{"code":18446744073709551615,"message":"Message throttled out"}})";
+
+// The same fault with an ordinary bare code, to pin that the reordering did not
+// disturb the realistic case.
+constexpr const char* kFaultBareCode =
+    R"({"fault":{"code":900802,"message":"Message throttled out"}})";
+
 [[nodiscard]] HttpResponse response(long status, std::string body,
                                     std::vector<std::pair<std::string, std::string>> headers = {}) {
   HttpResponse r;
@@ -124,6 +136,30 @@ TEST_CASE("the gateway fault shape parses in both spellings", "[kotak][errors]")
   CHECK(missing.has_fault);
   CHECK(missing.status_code == "900901");
   CHECK_FALSE(missing.message.empty());
+}
+
+TEST_CASE("a bare unsigned fault code renders exactly, never through a signed read",
+          "[kotak][errors]") {
+  // nlohmann parses EVERY positive integer literal as number_unsigned, and its
+  // is_number_integer() is `number_integer || number_unsigned` — true for those
+  // too. Testing is_number_integer() FIRST therefore made the unsigned arm dead
+  // for every unsigned value and read the uint64 storage through a signed get<>,
+  // an unchecked narrowing. This code came back "-1", and map_kotak_error stamped
+  // that fabrication onto broker_code as though the gateway had said it — a code
+  // matching nothing in Kotak's documentation, handed to the operator who is
+  // investigating a live rejection.
+  const KotakEnvelope huge = parse_kotak_envelope(kFaultUnsignedCodeAboveInt64Max);
+  CHECK(huge.has_fault);
+  CHECK(huge.status_code == "18446744073709551615");
+
+  const auto error = map_kotak_error(response(200, kFaultUnsignedCodeAboveInt64Max));
+  CHECK(error.broker_code.find("stCode=18446744073709551615") != std::string::npos);
+  CHECK(error.broker_code.find("stCode=-1") == std::string::npos);
+
+  // The realistic 5-6 digit codes were only ever right by two's-complement
+  // accident; they are unchanged, and now right by rule.
+  const KotakEnvelope ordinary = parse_kotak_envelope(kFaultBareCode);
+  CHECK(ordinary.status_code == "900802");
 }
 
 TEST_CASE("the login error node parses", "[kotak][errors]") {

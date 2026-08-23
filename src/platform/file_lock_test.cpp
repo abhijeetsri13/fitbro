@@ -1,7 +1,6 @@
 #include "broker_exec/platform/file_lock.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -208,13 +207,12 @@ TEST_CASE("move transfers ownership: the moved-from lock releases nothing", "[pl
     CHECK(moved.held());
     CHECK(moved.payload().nonce == nonce);
     CHECK(fs::exists(lock));  // still held by `moved`
-  }  // <- `moved` releases here
+  }                           // <- `moved` releases here
 
   CHECK_FALSE(fs::exists(lock));
 }
 
-TEST_CASE("a FRESH lock is never stolen, however small the staleness window",
-          "[platform][lock]") {
+TEST_CASE("a FRESH lock is never stolen, however small the staleness window", "[platform][lock]") {
   const TempDir dir;
   const fs::path lock = dir.path / "refdata.lock";
 
@@ -232,8 +230,7 @@ TEST_CASE("a FRESH lock is never stolen, however small the staleness window",
   CHECK(parsed->nonce == nonce);
 }
 
-TEST_CASE("a STALE lock is taken over exactly once, and only by one winner",
-          "[platform][lock]") {
+TEST_CASE("a STALE lock is taken over exactly once, and only by one winner", "[platform][lock]") {
   const TempDir dir;
   const fs::path lock = dir.path / "refdata.lock";
 
@@ -305,8 +302,7 @@ TEST_CASE("a lock file just inside the staleness window is not stale", "[platfor
   CHECK(winner.has_value());
 }
 
-TEST_CASE("a lock with a FUTURE mtime is never treated as stale (clock skew)",
-          "[platform][lock]") {
+TEST_CASE("a lock with a FUTURE mtime is never treated as stale (clock skew)", "[platform][lock]") {
   const TempDir dir;
   const fs::path lock = dir.path / "refdata.lock";
 

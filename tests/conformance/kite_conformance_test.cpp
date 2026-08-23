@@ -13,28 +13,25 @@
 // Cross-platform: C++20 standard library only. No OS APIs, no `#ifdef`, no float.
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include <nlohmann/json.hpp>
-
 #include "broker_exec/adapters/fake/fake_broker.hpp"  // FaultConfig (the fault selector)
 #include "broker_exec/adapters/kite/http_client.hpp"
+#include "broker_exec/adapters/square_off_exit.hpp"
 #include "broker_exec/clock/test_clock.hpp"
 #include "broker_exec/domain/decimal_paise.hpp"
 #include "broker_exec/domain/enums.hpp"
 #include "broker_exec/domain/money.hpp"
-#include "broker_exec/adapters/square_off_exit.hpp"
 #include "broker_exec/domain/types.hpp"
 #include "broker_exec/errors/error.hpp"
 #include "broker_exec/idempotency/idempotency.hpp"
 #include "broker_exec/ports/broker_port.hpp"
 #include "broker_exec/ports/clock_port.hpp"
-
 #include "conformance_kit.hpp"
 #include "recorded_kite_server.hpp"
 
@@ -67,10 +64,11 @@ TEST_CASE("conformance: the Kite adapter passes the full fault matrix with zero 
           "[conformance][kite]") {
   const conf::ConformanceReport report = conf::run_conformance(kite_factory());
 
-  // Surface every failure line so a regression names the exact scenario+property.
-  for (const std::string& f : report.failures) {
-    UNSCOPED_INFO("kite conformance failure: " << f);
-  }
+  // Scoped, so the reason survives to whichever assertion below actually fires.
+  INFO("kite conformance failures:" << conf::failure_digest(report.failures));
+  INFO("kite conformance SETUP failures:" << conf::failure_digest(report.setup_failures));
+  CHECK(report.setup_failures.empty());
+  CHECK(report.failures.empty());
 
   // The whole matrix ran, the headline zero-duplicate invariant held, and every
   // scenario passed all three properties (no-blind-retry, UNKNOWN handling, zero
@@ -185,7 +183,7 @@ TEST_CASE("[conformance][kite][IMP-11] SL sends a DISTINCT trigger_price and par
     intent.symbol = "NIFTY24JUN24000CE";
     intent.side = broker_exec::domain::Side::Sell;
     intent.quantity = broker_exec::domain::Quantity::of(50);
-    intent.price = broker_exec::domain::Price::from_rupees(119);        // the LIMIT
+    intent.price = broker_exec::domain::Price::from_rupees(119);              // the LIMIT
     intent.trigger_price = broker_exec::domain::Price::from_rupees(120, 50);  // the TRIGGER
     intent.order_type = type;
     intent.product = broker_exec::domain::Product::Intraday;
@@ -646,8 +644,8 @@ namespace {
 // Place one clean order, then have broker truth report `avg` as the
 // `average_price` on every row (std::nullopt OMITS the key entirely — the ABSENT
 // case), and hand back the single row fetch_orders publishes.
-[[nodiscard]] broker_exec::domain::Order row_with_average_price(
-    OwningKiteAdapter& owner, std::optional<std::string> avg) {
+[[nodiscard]] broker_exec::domain::Order row_with_average_price(OwningKiteAdapter& owner,
+                                                                std::optional<std::string> avg) {
   REQUIRE(owner.adapter.place(parent_sell()).has_value());
   owner.server->set_average_price_override(std::move(avg));
   auto orders = owner.adapter.fetch_orders();
@@ -698,8 +696,7 @@ TEST_CASE("[conformance][kite][IMP-14] an UNREADABLE price fails the row closed,
   SECTION("a thousands SEPARATOR is refused, not read as Rs 1.00") {
     broker_exec::clock::TestClock clock;
     OwningKiteAdapter owner(clock, FaultConfig{});
-    const broker_exec::domain::Order back =
-        row_with_average_price(owner, std::string("1,450.25"));
+    const broker_exec::domain::Order back = row_with_average_price(owner, std::string("1,450.25"));
 
     // The precise old failure: 100 paise published where the broker said 145025.
     CHECK(back.avg_price != Price::from_paise(100));
@@ -1128,9 +1125,10 @@ TEST_CASE("[conformance][kite][IMP-14] a FRACTIONAL count is malformed, not trun
   }
 }
 
-TEST_CASE("[conformance][kite][IMP-14] every refusal a flatten can decide from the READ is decided "
-          "BEFORE the cancel",
-          "[conformance][kite][IMP-14][squareoff]") {
+TEST_CASE(
+    "[conformance][kite][IMP-14] every refusal a flatten can decide from the READ is decided "
+    "BEFORE the cancel",
+    "[conformance][kite][IMP-14][squareoff]") {
   // TWO ORDERING FIXES, both about which answer a caller gets and when.
   //
   // (1) A SELF-EXIT OUTRANKS A GARBLED NUMBER. Both are decidable from the same

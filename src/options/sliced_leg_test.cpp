@@ -1,8 +1,7 @@
 #include "broker_exec/options/sliced_leg.hpp"
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <algorithm>
+#include <catch2/catch_test_macros.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <set>
@@ -99,7 +98,9 @@ const std::string kStrategy = "alpha";
 const std::string kParent = kStrategy + "-1a2b3c4d-deadbeef-cafe-4bab-8abe-0123456789ab";
 
 // The deterministic child ref for k (mirrors slicing::child_ref's binding format).
-[[nodiscard]] std::string ref(std::int64_t k) { return kParent + "#" + std::to_string(k); }
+[[nodiscard]] std::string ref(std::int64_t k) {
+  return kParent + "#" + std::to_string(k);
+}
 
 // An over-freeze parent: qty 30, lot 1, freeze 10 => the REAL FreezeSlicer makes
 // chunk = (10/1)*1 = 10, full = 30/10 = 3, rem = 0 => EXACTLY 3 children of qty 10
@@ -141,7 +142,9 @@ const std::string kParent = kStrategy + "-1a2b3c4d-deadbeef-cafe-4bab-8abe-01234
 }
 
 // The deterministic broker order id a child gets when placed.
-[[nodiscard]] std::string order_id_for(const std::string& child_ref) { return "ord-" + child_ref; }
+[[nodiscard]] std::string order_id_for(const std::string& child_ref) {
+  return "ord-" + child_ref;
+}
 
 // Count occurrences of a value in a call/placement log.
 [[nodiscard]] std::size_t count_of(const std::vector<std::string>& log, const std::string& v) {
@@ -152,7 +155,9 @@ const std::string kParent = kStrategy + "-1a2b3c4d-deadbeef-cafe-4bab-8abe-01234
 
 // ── AC-1: deterministic slice, all children placed ───────────────────────────
 
-TEST_CASE("AC-1 deterministic slice: over-freeze parent => refs #1..#3 in order, all Acked, FilledSliced") {
+TEST_CASE(
+    "AC-1 deterministic slice: over-freeze parent => refs #1..#3 in order, all Acked, "
+    "FilledSliced") {
   std::vector<std::string> place_log;
   SpyAlertSink alerts;
 
@@ -220,7 +225,8 @@ TEST_CASE("IMP-11: a sliced STOP leg places children that are still stops",
 
 // ── AC-2: SIGKILL recovery / no duplicate ────────────────────────────────────
 
-TEST_CASE("AC-2 SIGKILL recovery: #1,#2 already placed => only #3 re-sent, deduped 2, FilledSliced") {
+TEST_CASE(
+    "AC-2 SIGKILL recovery: #1,#2 already placed => only #3 re-sent, deduped 2, FilledSliced") {
   std::vector<std::string> place_log;
   std::set<std::string> already = {ref(1), ref(2)};  // crash after the first two
   SpyAlertSink alerts;
@@ -247,7 +253,9 @@ TEST_CASE("AC-2 SIGKILL recovery: #1,#2 already placed => only #3 re-sent, dedup
   CHECK(alerts.count() == 0);
 }
 
-TEST_CASE("AC-2 all-already-placed replay is a no-op: place_child never called, deduped N, FilledSliced") {
+TEST_CASE(
+    "AC-2 all-already-placed replay is a no-op: place_child never called, deduped N, "
+    "FilledSliced") {
   std::vector<std::string> place_log;
   SpyAlertSink alerts;
 
@@ -332,7 +340,8 @@ TEST_CASE("AC-3 place Error at #2 => UnknownPaused (ambiguous mutating failure, 
   CHECK(alerts.last_level() == AlertLevel::Critical);
 }
 
-TEST_CASE("AC-3 already_placed Error at #2 => UnknownPaused, place_child NEVER called for that child") {
+TEST_CASE(
+    "AC-3 already_placed Error at #2 => UnknownPaused, place_child NEVER called for that child") {
   std::vector<std::string> place_log;
   SpyAlertSink alerts;
 
@@ -363,7 +372,9 @@ TEST_CASE("AC-3 already_placed Error at #2 => UnknownPaused, place_child NEVER c
 
 // ── Fail-closed: nothing is ever placed ──────────────────────────────────────
 
-TEST_CASE("Fail-closed: slicer Validation Error (freeze < lot) => SliceRejected, place_child never called") {
+TEST_CASE(
+    "Fail-closed: slicer Validation Error (freeze < lot) => SliceRejected, place_child never "
+    "called") {
   std::vector<std::string> place_log;
   SpyAlertSink alerts;
 
@@ -382,7 +393,8 @@ TEST_CASE("Fail-closed: slicer Validation Error (freeze < lot) => SliceRejected,
   CHECK(alerts.count() == 0);
 }
 
-TEST_CASE("Fail-closed: a '#'-child parent ref cannot be re-sliced => SliceRejected, nothing placed") {
+TEST_CASE(
+    "Fail-closed: a '#'-child parent ref cannot be re-sliced => SliceRejected, nothing placed") {
   std::vector<std::string> place_log;
   SpyAlertSink alerts;
 

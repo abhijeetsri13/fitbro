@@ -19,7 +19,6 @@
 #include "broker_exec/boot/boot.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -104,8 +103,8 @@ class MapSecrets final : public broker_exec::ports::SecretProvider {
   [[nodiscard]] Result<std::string> get(std::string_view key) const override {
     const auto it = values.find(std::string(key));
     if (it == values.end()) {
-      return broker_exec::fail(broker_exec::errors::make_error(
-          ErrorCategory::Validation, "test secrets: no such key"));
+      return broker_exec::fail(
+          broker_exec::errors::make_error(ErrorCategory::Validation, "test secrets: no such key"));
     }
     return it->second;
   }
@@ -240,14 +239,15 @@ struct World {
     REQUIRE(opened.has_value());
     store.emplace(std::move(opened).value());
 
-    ledger = std::make_unique<broker_exec::ledger::Ledger>(test_clock, account_root / "ledger.jsonl");
+    ledger =
+        std::make_unique<broker_exec::ledger::Ledger>(test_clock, account_root / "ledger.jsonl");
 
     instruments = std::make_unique<broker_exec::refdata::InstrumentMaster>(
-        []() -> Result<std::string> { return valid_instruments_csv(); }, test_clock, refdata_cache.path,
-        "kite", "nfo");
+        []() -> Result<std::string> { return valid_instruments_csv(); }, test_clock,
+        refdata_cache.path, "kite", "nfo");
     calendar = std::make_unique<broker_exec::refdata::TradingCalendar>(
-        []() -> Result<std::string> { return valid_calendar_json(); }, test_clock, refdata_cache.path,
-        "kite");
+        []() -> Result<std::string> { return valid_calendar_json(); }, test_clock,
+        refdata_cache.path, "kite");
   }
 
   World(const World&) = delete;
@@ -296,10 +296,9 @@ struct World {
 
     d.broker_deps.kite_http = &kite_http;
     d.broker_deps.kite_secrets = &secrets;
-    d.broker_options.required_capabilities = {caps::Capability::PlaceOrder,
-                                              caps::Capability::ModifyOrder,
-                                              caps::Capability::CancelOrder,
-                                              caps::Capability::SquareOff};
+    d.broker_options.required_capabilities = {
+        caps::Capability::PlaceOrder, caps::Capability::ModifyOrder, caps::Capability::CancelOrder,
+        caps::Capability::SquareOff};
 
     d.engine_deps.kill_state = &kill_state;
     d.engine_deps.posture = &posture;
@@ -580,6 +579,62 @@ TEST_CASE("a corrupt ledger chain stops at open-ledger and is never auto-restart
   CHECK(outcome.step == BootStep::OpenLedger);
   CHECK(outcome.exit_class == ExitClass::FailClosedNeedsHuman);
   CHECK(world.session_probe_calls == 0);
+}
+
+TEST_CASE("a ledger-chain probe that CANNOT ANSWER is refused, not read as a first boot",
+          "[boot][fail-closed][ledger]") {
+  World world;
+
+  // A POPULATED chain on disk. This is what makes the permissive reading
+  // catastrophic rather than merely wrong: skipping load() leaves the in-memory
+  // chain empty, and the first append then writes seq=0 with an empty prev_hash
+  // on top of these two records — which every later boot fails verify_chain on,
+  // for good.
+  const fs::path chain = world.data_root.path / World::kAccount / "ledger.jsonl";
+  {
+    broker_exec::ledger::Ledger seed(world.test_clock, chain);
+    REQUIRE(seed.append("boot-test: first entry").has_value());
+    REQUIRE(seed.append("boot-test: second entry").has_value());
+  }
+
+  BootDeps deps = world.deps();
+  int probe_calls = 0;
+  // The injected fault stands in for the transient the real probe cannot be made
+  // to produce from a test (see ChainPresenceFn): a bind/NFS mount that answers
+  // EACCES/ESTALE for one syscall. `fs::exists` reports that as a plain `false`.
+  deps.chain_present = [&probe_calls](const fs::path&) -> Result<bool> {
+    ++probe_calls;
+    return broker_exec::fail(broker_exec::errors::make_error(
+        ErrorCategory::Internal, "test probe: the account tree could not be stat()ed"));
+  };
+
+  const BootOutcome outcome = boot::boot(deps);
+
+  CHECK(probe_calls == 1);
+  CHECK_FALSE(outcome.ok);
+  CHECK(outcome.step == BootStep::OpenLedger);
+  // A momentary mount fault restarts with backoff — it is not a 70 — but it is
+  // still a refusal: the process does not trade on a ledger it never read.
+  CHECK(outcome.exit_class == ExitClass::Crash);
+  CHECK_FALSE(outcome.absence_alarm_fired);
+
+  // NOTHING AFTER THE FAILING STEP RAN. The ledger stayed unloaded (size 0) and
+  // boot did NOT carry that empty chain forward into the run phase, which is the
+  // whole defect: the caller-owned Ledger outlives boot and would have appended
+  // onto it.
+  CHECK(world.ledger->size() == 0);
+  CHECK(world.session_probe_calls == 0);
+  CHECK(outcome.audit.total() == 0);
+  CHECK_FALSE(outcome.broker.has_value());
+  CHECK_FALSE(outcome.engine.has_value());
+  CHECK_FALSE(outcome.health_published);
+  CHECK(world.run_calls == 0);
+
+  // And the on-disk chain is exactly as it was: two entries, still verifying.
+  broker_exec::ledger::Ledger reopened(world.test_clock, chain);
+  REQUIRE(reopened.load().has_value());
+  CHECK(reopened.size() == 2);
+  CHECK(reopened.verify_chain().has_value());
 }
 
 TEST_CASE("a TRANSPORT failure on the session probe is the CRASH class, not 70",
@@ -1107,4 +1162,38 @@ TEST_CASE("require_crypto_keys demands BOTH the token key and the pinned ledger 
   const auto short_key = broker_exec::boot::require_crypto_keys(secrets, name, key_path);
   REQUIRE_FALSE(short_key.has_value());
   CHECK_FALSE(contains(short_key.error().message, "kkkk"));
+}
+
+TEST_CASE("ledger_chain_present separates 'there is no chain' from 'I could not tell'",
+          "[boot][checks][ledger]") {
+  TempDir dir;
+  const fs::path chain = dir.path / "ledger.jsonl";
+
+  // Absent, cleanly. THIS is the only answer that may be read as a first boot.
+  const auto absent = boot::ledger_chain_present(chain);
+  REQUIRE(absent.has_value());
+  CHECK_FALSE(absent.value());
+
+  write_text(chain, "{}\n");
+  const auto present = boot::ledger_chain_present(chain);
+  REQUIRE(present.has_value());
+  CHECK(present.value());
+
+  // An unresolved path is a composition fault, never "no chain yet".
+  CHECK_FALSE(boot::ledger_chain_present(fs::path{}).has_value());
+
+  // A path the platform genuinely cannot stat must be an Error, not a `false`.
+  // Only some platforms produce one here (libstdc++ reports ENAMETOOLONG for an
+  // over-long component; the MSVC STL folds several such codes back into "not
+  // found"), so the claim is made exactly where it is observable: whenever the
+  // standard library itself sets an error_code, this function must REFUSE. That
+  // conditional is also the evidence for why ChainPresenceFn exists at all.
+  const fs::path unstatable = dir.path / std::string(600, 'a');
+  std::error_code ec;
+  static_cast<void>(fs::exists(unstatable, ec));
+  if (ec) {
+    const auto unanswerable = boot::ledger_chain_present(unstatable);
+    REQUIRE_FALSE(unanswerable.has_value());
+    CHECK(contains(unanswerable.error().message, "could not determine"));
+  }
 }

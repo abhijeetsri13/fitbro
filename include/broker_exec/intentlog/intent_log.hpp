@@ -39,6 +39,25 @@
 // the single fsync on the append hot path works identically on every OS. No OS
 // APIs, no `#ifdef` here (binding cross-platform convention).
 //
+// THE FILE'S NAME IS PART OF ITS DURABILITY (IMP-14): fsync on a descriptor
+// commits the file's CONTENTS, not the parent directory entry that names it. A
+// log created on a fresh data dir could therefore have every record fsync'd and
+// still be ABSENT after a power cut — replay() would find no file, report a clean
+// empty boot, and the idempotency index would come back empty for orders that are
+// live at the exchange. open() closes that by syncing the containing directory
+// once, through platform::durable_sync_directory, before it hands back a log any
+// caller could append to.
+//
+// A TORN TAIL IS RECOVERABLE, NOT FATAL (IMP-13): a crash between fwrite and
+// fsync can leave ONE partial, un-newline-terminated line at the end of the file.
+// That record was never sent (append() had not returned, so the dispatcher never
+// reached the socket), so it is provably safe to discard — and refusing the WHOLE
+// log over it would throw away the verified prefix that names every live order.
+// replay() discards exactly that fragment, truncates the file back to the last
+// record boundary, and reports the repair via torn_tail(). Anything malformed
+// that is newline-terminated, or that has data after it, stays FATAL: a complete
+// line cannot be a half-written one, so that is tampering or real corruption.
+//
 // Cross-platform: C++20 standard library + nlohmann_json + the vendored SHA-256
 // only. Paths via std::filesystem. No OS APIs, no `#ifdef`.
 
@@ -80,13 +99,26 @@ inline constexpr int kSchemaVersion = 1;
 // disk, so a record round-trips byte-identically through replay().
 struct IntentRecord {
   int schema_version = kSchemaVersion;
-  std::int64_t seq = 0;       // monotonic, starts at 1
-  std::string client_ref;     // caller-provided (canonicalised); idempotency key (1.7)
+  std::int64_t seq = 0;    // monotonic, starts at 1
+  std::string client_ref;  // caller-provided (canonicalised); idempotency key (1.7)
   IntentOp op = IntentOp::PlaceOrder;
-  std::string payload_json;   // opaque JSON object as a string; caller-provided (canonicalised)
+  std::string payload_json;     // opaque JSON object as a string; caller-provided (canonicalised)
   std::int64_t wall_ts_ns = 0;  // wall-clock ns since epoch, from ClockPort
-  std::string prev_hash;      // hex SHA-256 of previous record's hash, or "GENESIS"
-  std::string hash;           // hex SHA-256 over this record's canonical content
+  std::string prev_hash;        // hex SHA-256 of previous record's hash, or "GENESIS"
+  std::string hash;             // hex SHA-256 over this record's canonical content
+};
+
+// The outcome of replay()'s tail repair — an operator-facing fact, not a
+// tolerance: a repair means a crash landed between fwrite and fsync, and the
+// record that was being written never reached the broker. Reported so boot can
+// degrade readiness and the runbook can reconcile, instead of the repair being
+// silent.
+struct TornTail {
+  bool repaired = false;              // replay() rewrote the tail of the file
+  std::uint64_t discarded_bytes = 0;  // bytes of the partial record removed (0 when only
+                                      // a missing newline was restored)
+  std::uint64_t truncated_to = 0;     // byte offset of the record boundary kept
+  std::int64_t records_kept = 0;      // verified records replay() returned
 };
 
 // The append-only, fsync-on-write, hash-chained intent log.
@@ -106,8 +138,12 @@ class IntentLog {
   // Open (creating the file if absent) at `path`; `clock` supplies append
   // timestamps and must outlive this log. Does NOT auto-replay — call replay()
   // on boot before append() to rebuild the index from any existing records.
-  [[nodiscard]] static Result<IntentLog> open(std::filesystem::path path,
-                                              ports::ClockPort& clock);
+  //
+  // Also fsyncs the containing DIRECTORY (once — the entry only has to be created
+  // durably), so a freshly created log cannot lose its own name to a power cut
+  // while its records are on disk. Fails CLOSED if that sync fails: without it
+  // append()'s "durable before you socket-send" promise is not one we can keep.
+  [[nodiscard]] static Result<IntentLog> open(std::filesystem::path path, ports::ClockPort& clock);
 
   // Append one intent. Normalises `client_ref` and `payload_json` to valid UTF-8
   // (IMP-17 — see the note at the top of this file), fills
@@ -126,7 +162,26 @@ class IntentLog {
   // an Error (ErrorCategory::Internal) naming the first bad seq. On success
   // returns every record in order and rebuilds the in-memory client_ref index +
   // next_seq. Safe to call exactly once on boot (before the first append).
+  //
+  // TORN TAIL: if the LAST chunk of the file is not newline-terminated it is an
+  // uncommitted partial write, and replay() REPAIRS the file rather than failing —
+  // an unparseable fragment is discarded and the file truncated back to the last
+  // record boundary; a fragment that parses and verifies is kept and its missing
+  // newline written back (without that, the next append() would be glued onto it
+  // and the log would be permanently unreplayable). Either repair is recorded in
+  // torn_tail() and made durable before replay() returns. A malformed line that IS
+  // newline-terminated, or that is followed by more data, is still a hard Error.
+  //
+  // A MISSING file replays to an empty log (a first boot). A file that EXISTS but
+  // cannot be opened is an Error, never a silent empty boot — the two look the
+  // same to the idempotency rebuild and only one of them is safe.
   [[nodiscard]] Result<std::vector<IntentRecord>> replay();
+
+  // What the last replay() found and repaired at the tail, if anything. `repaired
+  // == false` after a successful replay is the health snapshot's `replay_clean`
+  // (see cli/health_snapshot.hpp): the log was intact, no tail was rewritten.
+  // Reset at the top of every replay(); all-zero before the first one.
+  [[nodiscard]] const TornTail& torn_tail() const noexcept { return torn_tail_; }
 
   // The latest record seen for `client_ref` (after replay/append), if any. The
   // query is canonicalised the same way append() canonicalises the stored ref, so
@@ -145,6 +200,7 @@ class IntentLog {
   ports::ClockPort* clock_ = nullptr;
   std::int64_t next_seq_ = 1;
   std::string last_hash_;  // hash of the most recent record, "" ⇒ next prev is GENESIS
+  TornTail torn_tail_;     // what the last replay() repaired at the tail, if anything
   std::unordered_map<std::string, IntentRecord> index_;  // client_ref → latest record
 };
 

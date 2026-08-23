@@ -1,7 +1,6 @@
 #include "broker_exec/ledger/ledger.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -42,9 +41,8 @@ struct TempDir {
   fs::path path;
 
   explicit TempDir(const std::string& tag)
-      : path(fs::temp_directory_path() /
-             ("broker_exec_ledger_" + tag + "_" +
-              std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
+      : path(fs::temp_directory_path() / ("broker_exec_ledger_" + tag + "_" +
+                                          std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
     std::error_code ec;
     fs::create_directories(path, ec);
   }
@@ -156,7 +154,8 @@ TEST_CASE("the ledger survives a restart (persist + reload)", "[ledger]") {
   CHECK(fresh.verify_chain().has_value());
 }
 
-TEST_CASE("Ed25519 sign/verify the chain head, fail-closed on wrong key/tampered head", "[ledger]") {
+TEST_CASE("Ed25519 sign/verify the chain head, fail-closed on wrong key/tampered head",
+          "[ledger]") {
   const TempDir dir("ed25519");
   const TestClock clock;
   Ledger ledger(clock, dir.path / "ledger.jsonl");
@@ -179,8 +178,8 @@ TEST_CASE("Ed25519 sign/verify the chain head, fail-closed on wrong key/tampered
   // A DIFFERENT keypair's public key fails closed.
   const auto other = Ledger::generate_keypair();
   REQUIRE(other.has_value());
-  CHECK_FALSE(Ledger::verify_head(ledger.head_hash(), sig.value(), other.value().public_key)
-                  .has_value());
+  CHECK_FALSE(
+      Ledger::verify_head(ledger.head_hash(), sig.value(), other.value().public_key).has_value());
 
   // A tampered head fails closed.
   CHECK_FALSE(Ledger::verify_head("deadbeef", sig.value(), kp.public_key).has_value());
@@ -249,7 +248,7 @@ TEST_CASE("the heartbeat carries ts + exposure and scrubs secrets (AC-2)", "[led
   const std::string json = hb.to_json();
 
   CHECK(json.find("net=+50") != std::string::npos);  // exposure preserved
-  CHECK(json.find(hb.ts) != std::string::npos);       // timestamp present
+  CHECK(json.find(hb.ts) != std::string::npos);      // timestamp present
   // The token is scrubbed before it reaches the operator sink.
   CHECK(hb.exposure.find(kToken) == std::string::npos);
   CHECK(json.find(kToken) == std::string::npos);
@@ -375,7 +374,8 @@ TEST_CASE("an appended secret is scrubbed before hashing/persist (4.2 lesson)", 
   CHECK(ledger.verify_chain().has_value());
 }
 
-TEST_CASE("write_checkpoint then verify_against_checkpoint passes; high-water advances", "[ledger]") {
+TEST_CASE("write_checkpoint then verify_against_checkpoint passes; high-water advances",
+          "[ledger]") {
   const TempDir dir("checkpoint_intact");
   const TestClock clock;
   Ledger ledger(clock, dir.path / "ledger.jsonl");
@@ -450,7 +450,7 @@ TEST_CASE("a chopped tail is detected against the signed checkpoint (truncation)
   CHECK(fresh.size() == 3);
   CHECK(fresh.verify_chain().has_value());  // the surviving 3 are self-consistent
   const auto verified = fresh.verify_against_checkpoint(kp.value().public_key);
-  REQUIRE_FALSE(verified.has_value());      // ...but truncation IS caught
+  REQUIRE_FALSE(verified.has_value());  // ...but truncation IS caught
   CHECK(verified.error().category == ErrorCategory::Validation);
   CHECK(verified.error().message.find("TRUNCATED") != std::string::npos);
 }
@@ -484,7 +484,7 @@ TEST_CASE("a substituted/rolled-back chain is detected against the checkpoint", 
   CHECK(fresh.size() == 5);
   CHECK(fresh.verify_chain().has_value());  // chain B is internally consistent
   const auto verified = fresh.verify_against_checkpoint(kp.value().public_key);
-  REQUIRE_FALSE(verified.has_value());      // ...but it is NOT the signed chain
+  REQUIRE_FALSE(verified.has_value());  // ...but it is NOT the signed chain
   CHECK(verified.error().category == ErrorCategory::Validation);
   CHECK(verified.error().message.find("ROLLED BACK") != std::string::npos);
 }
@@ -547,9 +547,10 @@ TEST_CASE("checkpointing an empty ledger is a defined Error", "[ledger]") {
   CHECK(written.error().message.find("empty") != std::string::npos);
 }
 
-TEST_CASE("KEY-SUBSTITUTION attack is caught by pinning (a self-consistent checkpoint under a "
-          "DIFFERENT key is rejected)",
-          "[ledger]") {
+TEST_CASE(
+    "KEY-SUBSTITUTION attack is caught by pinning (a self-consistent checkpoint under a "
+    "DIFFERENT key is rejected)",
+    "[ledger]") {
   const TempDir dir("checkpoint_substitution");
   const TestClock clock;
   Ledger ledger(clock, dir.path / "ledger.jsonl");
@@ -566,8 +567,8 @@ TEST_CASE("KEY-SUBSTITUTION attack is caught by pinning (a self-consistent check
   // OWN key (signature verifies, size + head match the on-disk chain). Pre-pinning
   // this passed; with key pinning it must be rejected because the embedded key is
   // not the pinned key.
-  REQUIRE(
-      ledger.write_checkpoint(attacker.value().private_key, attacker.value().public_key).has_value());
+  REQUIRE(ledger.write_checkpoint(attacker.value().private_key, attacker.value().public_key)
+              .has_value());
 
   const auto verified = ledger.verify_against_checkpoint(pinned.value().public_key);
   REQUIRE_FALSE(verified.has_value());
@@ -1059,8 +1060,8 @@ TEST_CASE("IMP-17/C2: PositionHeartbeat::to_json normalises BOTH hand-fillable f
   const std::string rendered = hb.to_json();
   const nlohmann::json parsed = nlohmann::json::parse(rendered, nullptr, false);
   REQUIRE_FALSE(parsed.is_discarded());
-  CHECK(parsed.at("ts").get<std::string>() == std::string("2026-08-09T00:00:0") +
-                                                  std::string(kReplacementChar) + "Z");
+  CHECK(parsed.at("ts").get<std::string>() ==
+        std::string("2026-08-09T00:00:0") + std::string(kReplacementChar) + "Z");
   CHECK(parsed.at("exposure").get<std::string>() == kInvalidLeadCanonical);
 
   // A heartbeat built the normal way is untouched by either call (both are no-ops
@@ -1170,9 +1171,12 @@ TEST_CASE("IMP-17: the scrub/normalise ORDER IS OBSERVABLE — the counterexampl
   // normalisation the expansion separates the keyword and it matches. The order is
   // simply OBSERVABLE in both directions, which is precisely why it must be FIXED
   // and stated rather than assumed away.
-  constexpr std::string_view kEmbeddedRaw = "passwordtokentotp\xC0\x80" "12345678";
+  constexpr std::string_view kEmbeddedRaw =
+      "passwordtokentotp\xC0\x80"
+      "12345678";
   constexpr std::string_view kEmbeddedCanonical =
-      "passwordtokentotp\xEF\xBF\xBD\xEF\xBF\xBD" "12345678";
+      "passwordtokentotp\xEF\xBF\xBD\xEF\xBF\xBD"
+      "12345678";
 
   Ledger shipped2(clock, dir.path / "shipped2.jsonl");
   const auto shipped2_entry = shipped2.append(std::string(kEmbeddedRaw));
@@ -1230,7 +1234,9 @@ TEST_CASE("IMP-17/C1: a RAW ill-formed byte in a stored LINE is REJECTED by load
   // Belt and braces: assert the third-party behaviour we are depending on,
   // directly, so a dependency bump that changed it fails HERE with an obvious
   // message rather than in the ledger's error text.
-  const nlohmann::json direct = nlohmann::json::parse(R"({"payload":"alph)" "\x80" R"("})",
+  const nlohmann::json direct = nlohmann::json::parse(R"({"payload":"alph)"
+                                                      "\x80"
+                                                      R"("})",
                                                       nullptr, false);
   CHECK(direct.is_discarded());
 }
@@ -1280,4 +1286,104 @@ TEST_CASE("IMP-17/B2: the checkpoint's head_hash IS the bytes sign_head signed",
   REQUIRE_FALSE(on_disk.is_discarded());
   CHECK(on_disk.at("head_hash").get<std::string>() == head);
   CHECK(ledger.verify_against_checkpoint(kp.value().public_key).has_value());
+}
+
+TEST_CASE("IMP-36: a torn trailing record is never spliced onto — append refuses and seals",
+          "[ledger][durability]") {
+  // THE BRICKING SEQUENCE THIS CLOSES. A partial fwrite/fflush (ENOSPC mid-flush)
+  // leaves a terminator-less fragment at EOF. Before the fix, append() opened the
+  // file "ab" and wrote a COMPLETE record straight onto that fragment: getline()
+  // then read the two as ONE unparseable line, load() forgave it exactly once (it
+  // was still the LAST content line — silently DROPPING the record we had just
+  // reported as written), and ONE MORE entry buried the corrupt line mid-file,
+  // where the torn-write leniency does not apply. From then on load() fails
+  // "malformed entry on line N" on EVERY boot, and boot.cpp classifies that
+  // OpenLedger failure as FailClosedNeedsHuman — a permanent refusal to start
+  // until somebody HAND-EDITS the tamper-evident audit file, which is precisely
+  // the artifact that must never be hand-edited.
+  const TempDir dir("torn_append");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+
+  {
+    Ledger ledger(clock, file);
+    append_all(ledger, {"payload-alpha", "payload-bravo"});
+  }
+  const std::string good = read_file(file);  // two complete, newline-terminated lines
+
+  // The partial flush: a fragment of a third record, with no terminator. This is
+  // byte-for-byte the state the existing torn-trailing-line test already pins as
+  // LOADABLE — the damage below is done entirely by the NEXT append.
+  {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out << good << R"({"seq":2,"prev_ha)";
+  }
+  const std::string torn = read_file(file);
+
+  Ledger fresh(clock, file);
+  REQUIRE(fresh.load().has_value());  // load()'s torn-tail leniency is unchanged
+  REQUIRE(fresh.size() == 2);
+
+  // THE FIX: the append is REFUSED, and not one byte is written.
+  const auto refused = fresh.append("payload-charlie");
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error().category == ErrorCategory::Validation);
+  CHECK(refused.error().message.find("torn") != std::string::npos);
+  CHECK(read_file(file) == torn);
+
+  // AND THE LEDGER IS SEALED: the second append — the one that used to bury the
+  // corrupt line mid-file and make the damage PERMANENT — never reaches the file.
+  const auto sealed = fresh.append("payload-delta");
+  REQUIRE_FALSE(sealed.has_value());
+  CHECK(sealed.error().category == ErrorCategory::Validation);
+  CHECK(sealed.error().message.find("sealed") != std::string::npos);
+  CHECK(read_file(file) == torn);
+  CHECK(fresh.size() == 2);  // the in-memory chain never grew either
+
+  // THE PAYOFF: the file is still LOADABLE. Both real records survive and the
+  // chain still verifies, so recovery is mechanical (drop the fragment) instead of
+  // a hand-edit of a tamper-evident file on every future boot.
+  Ledger reboot(clock, file);
+  REQUIRE(reboot.load().has_value());
+  CHECK(reboot.size() == 2);
+  CHECK(reboot.verify_chain().has_value());
+}
+
+TEST_CASE("IMP-36: a COMPLETE last record with no terminator is not spliced onto either",
+          "[ledger][durability]") {
+  // THE QUIETER HALF OF THE SAME DEFECT — this one LOSES DATA rather than bricking.
+  // The file's last line is a perfectly valid record that merely lacks its '\n'.
+  // load() parses it fine (getline() does not need a terminator), so the chain
+  // reports size 2 and verifies. Before the fix the next append wrote onto those
+  // bytes and MERGED the two records into one garbage line; the reload then
+  // silently dropped BOTH — size 1, no error anywhere. A silently SHORTER audit
+  // trail is worse than a loud failure, so this must fail closed too.
+  const TempDir dir("unterminated_append");
+  const fs::path file = dir.path / "ledger.jsonl";
+  const TestClock clock;
+
+  {
+    Ledger ledger(clock, file);
+    append_all(ledger, {"payload-alpha", "payload-bravo"});
+  }
+  std::string content = read_file(file);
+  REQUIRE_FALSE(content.empty());
+  REQUIRE(content.back() == '\n');
+  content.pop_back();  // strip ONLY the final terminator; both records stay whole
+  write_file(file, content);
+
+  Ledger fresh(clock, file);
+  REQUIRE(fresh.load().has_value());
+  REQUIRE(fresh.size() == 2);  // the unterminated last line IS a real record
+
+  const auto refused = fresh.append("payload-charlie");
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error().category == ErrorCategory::Validation);
+  CHECK(read_file(file) == content);  // byte-identical: nothing was spliced on
+
+  // Both records are still there on reload — the pre-fix path lost them both.
+  Ledger reboot(clock, file);
+  REQUIRE(reboot.load().has_value());
+  CHECK(reboot.size() == 2);
+  CHECK(reboot.verify_chain().has_value());
 }

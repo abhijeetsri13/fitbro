@@ -1,7 +1,8 @@
 #include "broker_exec/risk/risk_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
+#include <climits>
+#include <cstdint>
 #include <string>
 
 #include "broker_exec/domain/enums.hpp"
@@ -18,6 +19,7 @@ using broker_exec::domain::Product;
 using broker_exec::domain::Quantity;
 using broker_exec::domain::Side;
 using broker_exec::errors::ErrorCategory;
+using broker_exec::errors::SuggestedAction;
 using broker_exec::ports::Ok;
 using broker_exec::risk::make_risk_check;
 using broker_exec::risk::RiskEngine;
@@ -48,11 +50,11 @@ namespace {
 // the clean state below passes all four levels.
 [[nodiscard]] RiskLimits clean_limits() {
   RiskLimits limits;
-  limits.daily_loss_limit_paise = 1'000'000;        // -10,000 rupees tolerated.
+  limits.daily_loss_limit_paise = 1'000'000;  // -10,000 rupees tolerated.
   limits.max_open_positions = 10;
-  limits.max_account_margin_paise = 10'000'000;     // 100,000 rupees.
-  limits.max_order_value_paise = 5'000'000;         // 50,000 rupees.
-  limits.block_market_orders = true;                // a Limit order is fine.
+  limits.max_account_margin_paise = 10'000'000;  // 100,000 rupees.
+  limits.max_order_value_paise = 5'000'000;      // 50,000 rupees.
+  limits.block_market_orders = true;             // a Limit order is fine.
   limits.max_slippage_bps = 50;
   limits.max_lots_per_strategy = 20;
   limits.max_lots_per_instrument = 20;
@@ -63,7 +65,7 @@ namespace {
 // A "clean" state: comfortably inside every armed limit above.
 [[nodiscard]] RiskState clean_state() {
   RiskState state;
-  state.account_pnl_paise = -100'000;   // small loss, well under the limit.
+  state.account_pnl_paise = -100'000;  // small loss, well under the limit.
   state.open_positions = 2;
   state.used_margin_paise = 1'000'000;
   state.order_value_paise = 500'000;
@@ -410,5 +412,158 @@ TEST_CASE("make_risk_check returns the same verdict as check_all", "[risk]") {
     REQUIRE_FALSE(bound);
     REQUIRE_FALSE(direct);
     CHECK(bound.error().message == direct.error().message);
+  }
+}
+
+// ── the SuggestedAction on a locally-decided verdict ─────────────────────────
+
+TEST_CASE("every rejection carries BlockStrategy, not RiskRejected's ReconcileFirst", "[risk]") {
+  const RiskEngine engine;
+  const RiskLimits limits = clean_limits();
+
+  // One state per LEVEL, each tripping exactly that level's rule. The action is
+  // load-bearing, not cosmetic: ReconcileFirst (the category's default) means
+  // "resolve against broker truth before any decision", and none of these verdicts
+  // change after a reconcile — the limit is local operator config. It also
+  // classifies as an auto-restartable Crash on the boot exit-code path.
+  RiskState account = clean_state();
+  account.account_pnl_paise = -limits.daily_loss_limit_paise;
+  RiskState strategy = clean_state();
+  strategy.strategy_enabled = false;
+  RiskState instrument = clean_state();
+  instrument.data_tradable = false;
+  RiskState order = clean_state();
+  order.slippage_bps = limits.max_slippage_bps + 1;
+
+  const auto a = engine.check_account(limits, account);
+  REQUIRE_FALSE(a);
+  CHECK(a.error().category == ErrorCategory::RiskRejected);
+  CHECK(a.error().action == SuggestedAction::BlockStrategy);
+
+  const auto s = engine.check_strategy(limits, strategy);
+  REQUIRE_FALSE(s);
+  CHECK(s.error().action == SuggestedAction::BlockStrategy);
+
+  const auto i = engine.check_instrument(limits, instrument);
+  REQUIRE_FALSE(i);
+  CHECK(i.error().action == SuggestedAction::BlockStrategy);
+
+  const auto o = engine.check_order(limit_intent(), limits, order);
+  REQUIRE_FALSE(o);
+  CHECK(o.error().action == SuggestedAction::BlockStrategy);
+
+  // And it survives the bound closure the gate actually calls, which is the form
+  // the verdict reaches the strategy in.
+  const auto bound = make_risk_check(engine, limit_intent(), limits, account)();
+  REQUIRE_FALSE(bound);
+  CHECK(bound.error().category == ErrorCategory::RiskRejected);
+  CHECK(bound.error().action == SuggestedAction::BlockStrategy);
+}
+
+// ── no armed rule may FORM the sum it compares ───────────────────────────────
+
+TEST_CASE("account margin: a near-INT64_MAX used margin cannot WRAP past the ceiling", "[risk]") {
+  const RiskEngine engine;
+  RiskLimits limits;
+  limits.max_account_margin_paise = 10'000'000;  // armed.
+
+  RiskState state = clean_state();
+  state.used_margin_paise = INT64_MAX - 10;  // absurd, but caller-supplied.
+  state.order_value_paise = 1'000;           // used + value overflows int64.
+
+  // Forming the sum wrapped it to a large NEGATIVE total, which is <= any positive
+  // ceiling, so the one account-level rule that bounds total leverage returned ok()
+  // at exactly the extreme it exists to catch (and the add itself was UB).
+  const auto result = engine.check_account(limits, state);
+  REQUIRE_FALSE(result);
+  CHECK(result.error().category == ErrorCategory::RiskRejected);
+  CHECK(has(result.error().message, "risk[account]"));
+  CHECK(has(result.error().message, "margin"));
+}
+
+TEST_CASE("account margin: a NEGATIVE input is refused, not netted off the ceiling", "[risk]") {
+  const RiskEngine engine;
+  RiskLimits limits;
+  limits.max_account_margin_paise = 10'000'000;  // armed.
+
+  SECTION("a negative used margin would make any order 'fit'") {
+    RiskState state = clean_state();
+    state.used_margin_paise = -1'000'000'000;
+    state.order_value_paise = 500'000'000;  // fifty times the armed ceiling.
+
+    const auto result = engine.check_account(limits, state);
+    REQUIRE_FALSE(result);
+    CHECK(has(result.error().message, "risk[account]"));
+    CHECK(has(result.error().message, "margin"));
+  }
+
+  SECTION("a negative order value shrinks the committed total") {
+    RiskState state = clean_state();
+    state.order_value_paise = -1;
+
+    const auto result = engine.check_account(limits, state);
+    REQUIRE_FALSE(result);
+    CHECK(has(result.error().message, "risk[account]"));
+  }
+}
+
+TEST_CASE("order value: a negative notional is refused by an armed ceiling", "[risk]") {
+  const RiskEngine engine;
+  RiskLimits limits;
+  limits.max_order_value_paise = 5'000'000;  // armed; nothing else is.
+
+  RiskState state = clean_state();
+  state.order_value_paise = -1;  // passed `> max_order_value_paise` before.
+
+  const auto result = engine.check_order(limit_intent(), limits, state);
+  REQUIRE_FALSE(result);
+  CHECK(has(result.error().message, "risk[order]"));
+  CHECK(has(result.error().message, "order value"));
+}
+
+TEST_CASE("lot caps: the int sum cannot wrap, and a negative count is refused", "[risk]") {
+  const RiskEngine engine;
+  RiskLimits limits;
+  limits.max_lots_per_strategy = 20;
+  limits.max_lots_per_instrument = 20;
+
+  SECTION("near-INT_MAX current lots + this order's lots overflows `int`") {
+    RiskState state = clean_state();
+    state.strategy_lots = INT_MAX - 1;
+    state.instrument_lots = INT_MAX - 1;
+    state.order_lots = 100;  // current + order wraps large-NEGATIVE, i.e. "under".
+
+    const auto s = engine.check_strategy(limits, state);
+    REQUIRE_FALSE(s);
+    CHECK(has(s.error().message, "risk[strategy]"));
+
+    const auto i = engine.check_instrument(limits, state);
+    REQUIRE_FALSE(i);
+    CHECK(has(i.error().message, "risk[instrument]"));
+  }
+
+  SECTION("a negative lot count is refused rather than netted off the cap") {
+    RiskState state = clean_state();
+    state.strategy_lots = -1'000;
+    state.instrument_lots = -1'000;
+    state.order_lots = 500;  // far over the cap of 20, but -1000 + 500 < 20.
+
+    const auto s = engine.check_strategy(limits, state);
+    REQUIRE_FALSE(s);
+    CHECK(has(s.error().message, "risk[strategy]"));
+    CHECK(has(s.error().message, "lots"));
+
+    const auto i = engine.check_instrument(limits, state);
+    REQUIRE_FALSE(i);
+    CHECK(has(i.error().message, "risk[instrument]"));
+    CHECK(has(i.error().message, "lots"));
+  }
+
+  SECTION("a negative ORDER lot count is refused too") {
+    RiskState state = clean_state();
+    state.order_lots = -1;
+
+    CHECK_FALSE(engine.check_strategy(limits, state));
+    CHECK_FALSE(engine.check_instrument(limits, state));
   }
 }

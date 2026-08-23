@@ -22,7 +22,8 @@ using errors::make_error;
 }
 
 // Build a fresh, gate-owned Error that names the check.
-[[nodiscard]] Error gate_error(ErrorCategory category, const char* check, const std::string& detail) {
+[[nodiscard]] Error gate_error(ErrorCategory category, const char* check,
+                               const std::string& detail) {
   return make_error(category, named(check, detail));
 }
 
@@ -91,8 +92,7 @@ using errors::make_error;
                                                   const char* label) {
   if (price <= 0) {
     return gate_error(ErrorCategory::Validation, "tick",
-                      std::string(label) + " " + std::to_string(price) +
-                          " paise must be positive");
+                      std::string(label) + " " + std::to_string(price) + " paise must be positive");
   }
   if (tick <= 0) {
     return gate_error(ErrorCategory::Validation, "tick",
@@ -101,8 +101,7 @@ using errors::make_error;
   if (price % tick != 0) {
     return gate_error(ErrorCategory::Validation, "tick",
                       std::string(label) + " " + std::to_string(price) +
-                          " paise is not aligned to tick size " + std::to_string(tick) +
-                          " paise");
+                          " paise is not aligned to tick size " + std::to_string(tick) + " paise");
   }
   return std::nullopt;
 }
@@ -136,8 +135,7 @@ Result<GateOutcome> ValidationGate::validate(const GateContext& ctx) const {
 
   // ── 4. exchange (applies to exits too) ───────────────────────────────────
   if (ctx.instrument.exchange.empty()) {
-    return fail(gate_error(ErrorCategory::Validation, "exchange",
-                           "instrument has no exchange"));
+    return fail(gate_error(ErrorCategory::Validation, "exchange", "instrument has no exchange"));
   }
   if (!ctx.allowed_exchanges.empty() &&
       !contains_exchange(ctx.allowed_exchanges, ctx.instrument.exchange)) {
@@ -167,8 +165,8 @@ Result<GateOutcome> ValidationGate::validate(const GateContext& ctx) const {
   }
   if (qty < lot || qty % lot != 0) {
     return fail(gate_error(ErrorCategory::Validation, "lot",
-                           "quantity " + std::to_string(qty) +
-                               " is not a multiple of lot size " + std::to_string(lot)));
+                           "quantity " + std::to_string(qty) + " is not a multiple of lot size " +
+                               std::to_string(lot)));
   }
 
   // ── 7. order-shape (applies to exits too — see below) ────────────────────
@@ -215,7 +213,8 @@ Result<GateOutcome> ValidationGate::validate(const GateContext& ctx) const {
   if (ctx.intent.order_type == domain::OrderType::StopLoss) {
     const domain::Price limit = ctx.intent.price;
     const domain::Price trigger = *ctx.intent.trigger_price;  // presence proven above
-    const bool ordered = ctx.intent.side == domain::Side::Sell ? limit <= trigger : limit >= trigger;
+    const bool ordered =
+        ctx.intent.side == domain::Side::Sell ? limit <= trigger : limit >= trigger;
     if (!ordered) {
       return fail(gate_error(
           ErrorCategory::Validation, "order-shape",
@@ -252,14 +251,31 @@ Result<GateOutcome> ValidationGate::validate(const GateContext& ctx) const {
   // checks (time-window / funds / risk / hedge) so a later failure still wins.
   bool needs_slicing = false;
   const std::int64_t freeze = ctx.instrument.freeze_qty.value();
-  if (freeze > 0 && qty > freeze) {
+  // AN ABSENT (0) OR CORRUPT (NEGATIVE) CEILING IS NOT "NO CEILING". Reading it
+  // as one skipped this check entirely, and the skip is invisible: the order was
+  // dispatched WHOLE, the exchange refused it on ITS freeze limit
+  // (brokerreason::RejectReason::FreezeQuantity), and a protective leg never
+  // reached the book during the move it existed to escape. The same skip
+  // silently overrode the operator's slice_mode=false reject posture and left
+  // GateOutcome::AllowWithSlicing with no producer at all. Unusable reference
+  // data is refused here exactly as checks 4/6/8 above refuse an empty exchange,
+  // a non-positive lot and a non-positive tick, and exactly as the sibling that
+  // consumes this same field refuses it (slicing/freeze_slicer.cpp, freeze <= 0).
+  // NOT exit-exempt, for the reason check 7 states: an order whose over-freeze
+  // status cannot be established is a broker rejection at the worst possible
+  // moment, not protection.
+  if (freeze <= 0) {
+    return fail(gate_error(
+        ErrorCategory::Validation, "freeze",
+        "instrument freeze ceiling " + std::to_string(freeze) + " is unknown or invalid"));
+  }
+  if (qty > freeze) {
     if (ctx.slice_mode) {
       needs_slicing = true;
     } else {
       return fail(gate_error(ErrorCategory::Validation, "freeze",
-                             "quantity " + std::to_string(qty) +
-                                 " exceeds the freeze ceiling " + std::to_string(freeze) +
-                                 " and slicing is disabled"));
+                             "quantity " + std::to_string(qty) + " exceeds the freeze ceiling " +
+                                 std::to_string(freeze) + " and slicing is disabled"));
     }
   }
 

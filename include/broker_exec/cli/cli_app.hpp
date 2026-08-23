@@ -43,7 +43,15 @@ struct OperatorApi {
 };
 
 // The operator verbs. Exactly one (`Kill`) is mutating; the rest are read-only.
-enum class Verb { Status, Reconcile, ReplayIntentLog, SafeStartCheck, SendTestAlert, VerifyIp, Kill };
+enum class Verb {
+  Status,
+  Reconcile,
+  ReplayIntentLog,
+  SafeStartCheck,
+  SendTestAlert,
+  VerifyIp,
+  Kill
+};
 
 // Stable, log/serialization-friendly verb name (the subcommand spelling). Renaming
 // a returned name is a breaking operator-contract change.

@@ -53,28 +53,8 @@ std::string_view to_string(MatchKind kind) noexcept {
 
 UnknownResolver::UnknownResolver(ports::BrokerPort& broker, store::Store& store,
                                  lifecycle::LifecycleEngine& fsm, ports::AlertSink& alerts,
-                                 ports::ClockPort& clock, Config config)
-    : broker_(broker),
-      store_(store),
-      fsm_(fsm),
-      alerts_(alerts),
-      clock_(clock),
-      config_(config) {}
-
-bool UnknownResolver::within_attr_window(const Order& /*broker_order*/) const noexcept {
-  // The domain Order the broker returns carries no timestamp of its own (the
-  // broker-neutral order model is id + intent + fill progress, not a placement
-  // clock), so there is no broker time to compare against `config_.attr_window`
-  // here. We therefore admit the attribute rung unconditionally at THIS layer and
-  // keep the window in the public Config as the contract a real adapter honors
-  // once it can stamp a broker placement time onto the order (Epic 3). Admitting
-  // it is safe because attribute corroboration is already the LAST resort: it is
-  // reached only when BOTH id rungs failed, and a false corroboration cannot fire
-  // a second order — the resolver is read-only. The risk it carries (adopting a
-  // collided identical lot) is documented in the header and the Dev Notes.
-  (void)config_;
-  return true;
-}
+                                 ports::ClockPort& /*clock*/)
+    : broker_(broker), store_(store), fsm_(fsm), alerts_(alerts) {}
 
 UnknownResolver::Classification UnknownResolver::classify(
     const Order& unknown_order, const std::vector<Order>& broker_orders) const {
@@ -102,9 +82,12 @@ UnknownResolver::Classification UnknownResolver::classify(
   }
 
   // Rung 3 — ATTRIBUTE CORROBORATION (weakest; both ids absent at the broker).
-  // Only reached when neither id rung hit. Gated by the time window.
+  // Only reached when neither id rung hit, and NOT time-bounded: `domain::Order`
+  // carries no placement time to bound it with. The header states what that costs
+  // and why it is survivable at this rung; do not read the absence of a window
+  // here as an oversight.
   const auto it = std::find_if(broker_orders.begin(), broker_orders.end(), [&](const Order& bo) {
-    return attributes_match(unknown_order, bo) && within_attr_window(bo);
+    return attributes_match(unknown_order, bo);
   });
   if (it != broker_orders.end()) {
     return {MatchKind::AttributeCorroboration, *it};
@@ -180,8 +163,7 @@ Result<UnknownResolution> UnknownResolver::resolve(const Order& unknown_order) {
     // whole-column allowlist (domain::scrub_provenance_column) and appends as
     // ` [client_ref=... broker_order_id=... strategy=...]`. The body's own
     // redaction is unchanged, and a column that is not id-shaped is still redacted.
-    const std::string message =
-        "UNKNOWN order has no authoritative broker match (fail-closed)";
+    const std::string message = "UNKNOWN order has no authoritative broker match (fail-closed)";
     ports::AlertContext provenance;
     provenance.client_ref = unknown_order.intent.client_ref;
     provenance.broker_order_id = unknown_order.broker_order_id;  // empty fields are omitted

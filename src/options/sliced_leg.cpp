@@ -44,8 +44,9 @@ std::string_view to_string(SlicedLegOutcome outcome) noexcept {
   return "Unknown";
 }
 
-SlicedLegResult execute_sliced_leg(const domain::OrderIntent& parent, const domain::Instrument& inst,
-                                   const SlicedLegSeams& seams, ports::AlertSink& alerts) {
+SlicedLegResult execute_sliced_leg(const domain::OrderIntent& parent,
+                                   const domain::Instrument& inst, const SlicedLegSeams& seams,
+                                   ports::AlertSink& alerts) {
   SlicedLegResult result;
   result.outcome = SlicedLegOutcome::SliceRejected;
   result.placed_count = 0;
@@ -79,8 +80,8 @@ SlicedLegResult execute_sliced_leg(const domain::OrderIntent& parent, const doma
     result.outcome = SlicedLegOutcome::UnknownPaused;
     // `result.detail` is an IN-PROCESS typed record (never run through a scrubbing
     // sink), so it keeps naming the child ref inline.
-    result.detail =
-        "sliced leg UNKNOWN at " + ref + " (" + reason + "): placement STOPPED, reconcile before resume";
+    result.detail = "sliced leg UNKNOWN at " + ref + " (" + reason +
+                    "): placement STOPPED, reconcile before resume";
     // THE ALERT NAMES THE CHILD (IMP-16) via the TYPED ports::AlertContext rather
     // than by interpolation: a sink scrubs the whole free-form body, and a slicer
     // child ref (`<parent>#<k>`) is one long token-shaped run, so the interpolated

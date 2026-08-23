@@ -95,18 +95,18 @@ SupervisorDecision decide(ExitReason reason, int consecutive_crashes, const Back
       // Crash-loop circuit-breaker: once consecutive crashes exceed the cap, stop
       // flapping (which would hammer the broker) and escalate to a human.
       if (consecutive_crashes > cfg.max_consecutive_restarts) {
-        return SupervisorDecision{
-            SupervisorAction::NoRestartEscalate, 0, true,
-            "crash-loop circuit-breaker tripped after " + std::to_string(consecutive_crashes) +
-                " consecutive crashes - escalated"};
+        return SupervisorDecision{SupervisorAction::NoRestartEscalate, 0, true,
+                                  "crash-loop circuit-breaker tripped after " +
+                                      std::to_string(consecutive_crashes) +
+                                      " consecutive crashes - escalated"};
       }
       // A transient crash: restart after a capped exponential backoff. No alarm —
       // the supervisor is handling it.
       {
         const int backoff = backoff_for(consecutive_crashes, cfg);
-        return SupervisorDecision{SupervisorAction::RestartWithBackoff, backoff, false,
-                                  "crash - restarting after " + std::to_string(backoff) +
-                                      "s backoff"};
+        return SupervisorDecision{
+            SupervisorAction::RestartWithBackoff, backoff, false,
+            "crash - restarting after " + std::to_string(backoff) + "s backoff"};
       }
   }
 

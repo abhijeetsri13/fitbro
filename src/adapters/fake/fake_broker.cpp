@@ -37,8 +37,8 @@ FakeBroker::FakeBroker(ports::ClockPort& clock, FaultConfig cfg)
 std::int64_t FakeBroker::elapsed_ticks() const noexcept {
   // Work entirely in nanoseconds so both operands share one signed integer rep
   // regardless of the platform's steady_clock period (no narrowing under /W4).
-  const auto tick = static_cast<std::int64_t>(
-      cfg_.tick_duration.count() > 0 ? cfg_.tick_duration.count() : 1);
+  const auto tick =
+      static_cast<std::int64_t>(cfg_.tick_duration.count() > 0 ? cfg_.tick_duration.count() : 1);
   const auto elapsed = static_cast<std::int64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(clock_.now_steady() - start_steady_)
           .count());
@@ -70,8 +70,8 @@ BookEntry* FakeBroker::find(const std::string& broker_order_id) noexcept {
 
 Result<ports::BrokerAck> FakeBroker::place(const domain::OrderIntent& intent) {
   if (rate_limited()) {
-    return fail(errors::make_error(errors::ErrorCategory::RateLimited, "rate limited by fake broker",
-                                   kRateLimitCode));
+    return fail(errors::make_error(errors::ErrorCategory::RateLimited,
+                                   "rate limited by fake broker", kRateLimitCode));
   }
 
   // The order ALWAYS enters the broker-truth book — this is what makes the
@@ -122,8 +122,8 @@ Result<ports::BrokerAck> FakeBroker::place(const domain::OrderIntent& intent) {
 Result<ports::BrokerAck> FakeBroker::modify(const std::string& broker_order_id,
                                             const domain::OrderIntent& intent) {
   if (rate_limited()) {
-    return fail(errors::make_error(errors::ErrorCategory::RateLimited, "rate limited by fake broker",
-                                   kRateLimitCode));
+    return fail(errors::make_error(errors::ErrorCategory::RateLimited,
+                                   "rate limited by fake broker", kRateLimitCode));
   }
 
   BookEntry* entry = find(broker_order_id);
@@ -158,8 +158,8 @@ Result<ports::BrokerAck> FakeBroker::modify(const std::string& broker_order_id,
 
 Result<ports::Ok> FakeBroker::cancel(const std::string& broker_order_id) {
   if (rate_limited()) {
-    return fail(errors::make_error(errors::ErrorCategory::RateLimited, "rate limited by fake broker",
-                                   kRateLimitCode));
+    return fail(errors::make_error(errors::ErrorCategory::RateLimited,
+                                   "rate limited by fake broker", kRateLimitCode));
   }
   BookEntry* entry = find(broker_order_id);
   if (entry == nullptr) {
@@ -185,8 +185,8 @@ Result<ports::Ok> FakeBroker::cancel(const std::string& broker_order_id) {
 
 Result<ports::Ok> FakeBroker::square_off(const std::string& broker_order_id) {
   if (rate_limited()) {
-    return fail(errors::make_error(errors::ErrorCategory::RateLimited, "rate limited by fake broker",
-                                   kRateLimitCode));
+    return fail(errors::make_error(errors::ErrorCategory::RateLimited,
+                                   "rate limited by fake broker", kRateLimitCode));
   }
   BookEntry* entry = find(broker_order_id);
   if (entry == nullptr) {
@@ -210,8 +210,8 @@ Result<ports::Ok> FakeBroker::square_off(const std::string& broker_order_id) {
 
 Result<std::vector<domain::Order>> FakeBroker::fetch_orders() {
   if (rate_limited()) {
-    return fail(errors::make_error(errors::ErrorCategory::RateLimited, "rate limited by fake broker",
-                                   kRateLimitCode));
+    return fail(errors::make_error(errors::ErrorCategory::RateLimited,
+                                   "rate limited by fake broker", kRateLimitCode));
   }
   // Reads return BROKER TRUTH: every order in the book, INCLUDING orders whose
   // ack was lost/dropped/delayed (ack_returned==false). This is what lets the
@@ -229,8 +229,8 @@ Result<std::vector<domain::Order>> FakeBroker::fetch_orders() {
 
 Result<std::vector<domain::Trade>> FakeBroker::fetch_trades() {
   if (rate_limited()) {
-    return fail(errors::make_error(errors::ErrorCategory::RateLimited, "rate limited by fake broker",
-                                   kRateLimitCode));
+    return fail(errors::make_error(errors::ErrorCategory::RateLimited,
+                                   "rate limited by fake broker", kRateLimitCode));
   }
   std::vector<domain::Trade> out = trades_;  // copy of broker-truth fills
   if (cfg_.out_of_order_events) {
@@ -241,8 +241,8 @@ Result<std::vector<domain::Trade>> FakeBroker::fetch_trades() {
 
 Result<std::vector<domain::Position>> FakeBroker::fetch_positions() {
   if (rate_limited()) {
-    return fail(errors::make_error(errors::ErrorCategory::RateLimited, "rate limited by fake broker",
-                                   kRateLimitCode));
+    return fail(errors::make_error(errors::ErrorCategory::RateLimited,
+                                   "rate limited by fake broker", kRateLimitCode));
   }
   // Positions are derived from the filled trades: net signed quantity per symbol.
   // Kept simple and deterministic; the safety core reconciles against this view.
@@ -253,9 +253,8 @@ Result<std::vector<domain::Position>> FakeBroker::fetch_positions() {
       continue;
     }
     const domain::OrderIntent& intent = e.order.intent;
-    const std::int64_t signed_qty = intent.side == domain::Side::Buy
-                                        ? e.order.filled_qty.value()
-                                        : -e.order.filled_qty.value();
+    const std::int64_t signed_qty =
+        intent.side == domain::Side::Buy ? e.order.filled_qty.value() : -e.order.filled_qty.value();
     const auto pos_it = std::find_if(out.begin(), out.end(), [&](const domain::Position& p) {
       return p.symbol == intent.symbol;
     });
@@ -274,8 +273,8 @@ Result<std::vector<domain::Position>> FakeBroker::fetch_positions() {
 
 Result<ports::FundsSnapshot> FakeBroker::fetch_funds() {
   if (rate_limited()) {
-    return fail(errors::make_error(errors::ErrorCategory::RateLimited, "rate limited by fake broker",
-                                   kRateLimitCode));
+    return fail(errors::make_error(errors::ErrorCategory::RateLimited,
+                                   "rate limited by fake broker", kRateLimitCode));
   }
   return funds_;
 }

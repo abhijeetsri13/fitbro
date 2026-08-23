@@ -13,13 +13,41 @@ namespace {
 using errors::Error;
 using errors::ErrorCategory;
 using errors::make_error;
+using errors::SuggestedAction;
 
 // Every risk reject NAMES the failing level + rule (AC-1) with a stable prefix
-// "risk[<level>]: <rule>". Built as a fresh RiskRejected Error (SuggestedAction
-// default for the category).
+// "risk[<level>]: <rule>", as a fresh RiskRejected Error whose action is set
+// EXPLICITLY to BlockStrategy.
+//
+// WHY NOT THE CATEGORY DEFAULT: RiskRejected defaults to ReconcileFirst —
+// "resolve against broker truth before any decision" — which is right for a
+// BROKER RMS refusal and wrong for every verdict here. These are all computed
+// LOCALLY from operator config: a breached daily-loss limit, a stopped strategy
+// or an untradable price is exactly as breached after a reconcile, so that action
+// sends the runtime round the loop again against a hard stop instead of halting
+// the strategy, and boot::exit_class_for maps ReconcileFirst to the
+// auto-restartable ExitClass::Crash. Mirrors every sibling that decides locally
+// (validation_gate.cpp's kill-switch / UNKNOWN-pause, isolation/strategy_book.cpp,
+// modes/posture.cpp). The gate's wrap_error PRESERVES this action, so it is the
+// verdict the strategy actually switches on.
 [[nodiscard]] Error rejected(const char* level, const std::string& rule) {
-  return make_error(ErrorCategory::RiskRejected,
-                    std::string("risk[") + level + "]: " + rule);
+  Error err = make_error(ErrorCategory::RiskRejected, std::string("risk[") + level + "]: " + rule);
+  err.action = SuggestedAction::BlockStrategy;
+  return err;
+}
+
+// `a + b > ceiling` for an ARMED (positive) ceiling, decided WITHOUT ever forming
+// the sum. Callers prove `a` and `b` non-negative first, so `ceiling - b` cannot
+// underflow. FORMING the sum is the bug this exists to prevent: signed overflow is
+// UB, and on the usual two's-complement wrap the total lands large-NEGATIVE, which
+// is <= any positive ceiling — so the armed limit PASSES at exactly the extreme it
+// exists to catch, and the fail-open lands on the rules that bound total leverage
+// and total lots. marginsafety/margin_buffer.cpp holds the same invariant with
+// sat_add ("NO INTEGER WRAP"); risk was the last place adding two caller-supplied
+// numbers raw.
+template <typename T>
+[[nodiscard]] constexpr bool sum_over(T a, T b, T ceiling) noexcept {
+  return a > ceiling - b;
 }
 
 }  // namespace
@@ -46,7 +74,14 @@ Result<ports::Ok> RiskEngine::check_account(const RiskLimits& limits,
     if (!state.order_value_known) {
       return fail(rejected("account", "cannot verify margin (order value unknown)"));
     }
-    if (state.used_margin_paise + state.order_value_paise > limits.max_account_margin_paise) {
+    // A NEGATIVE used-margin or order value is not a number this rule can
+    // evaluate — both are magnitudes — and it is the shape that drags the total
+    // DOWN under the ceiling. Refuse it rather than compare against it.
+    if (state.used_margin_paise < 0 || state.order_value_paise < 0) {
+      return fail(rejected("account", "cannot verify margin (negative margin/order value)"));
+    }
+    if (sum_over(state.used_margin_paise, state.order_value_paise,
+                 limits.max_account_margin_paise)) {
       return fail(rejected("account", "max account margin exceeded"));
     }
   }
@@ -68,9 +103,16 @@ Result<ports::Ok> RiskEngine::check_strategy(const RiskLimits& limits,
   }
 
   // ── strategy max lots: current + this order's lots. 0 = off. ───────────────
-  if (limits.max_lots_per_strategy > 0 &&
-      state.strategy_lots + state.order_lots > limits.max_lots_per_strategy) {
-    return fail(rejected("strategy", "max lots per strategy exceeded"));
+  // Same wrap hazard as the account margin above, one size down: these are `int`,
+  // so the sum overflows four billion times sooner. A negative lot count is not a
+  // position, so it is refused rather than netted off the cap.
+  if (limits.max_lots_per_strategy > 0) {
+    if (state.strategy_lots < 0 || state.order_lots < 0) {
+      return fail(rejected("strategy", "cannot verify lots (negative lot count)"));
+    }
+    if (sum_over(state.strategy_lots, state.order_lots, limits.max_lots_per_strategy)) {
+      return fail(rejected("strategy", "max lots per strategy exceeded"));
+    }
   }
 
   return ports::ok();
@@ -79,9 +121,14 @@ Result<ports::Ok> RiskEngine::check_strategy(const RiskLimits& limits,
 Result<ports::Ok> RiskEngine::check_instrument(const RiskLimits& limits,
                                                const RiskState& state) const {
   // ── instrument max lots: current + this order's lots. 0 = off. ─────────────
-  if (limits.max_lots_per_instrument > 0 &&
-      state.instrument_lots + state.order_lots > limits.max_lots_per_instrument) {
-    return fail(rejected("instrument", "max lots per instrument exceeded"));
+  // Non-negative first, then compared by subtraction — see check_strategy.
+  if (limits.max_lots_per_instrument > 0) {
+    if (state.instrument_lots < 0 || state.order_lots < 0) {
+      return fail(rejected("instrument", "cannot verify lots (negative lot count)"));
+    }
+    if (sum_over(state.instrument_lots, state.order_lots, limits.max_lots_per_instrument)) {
+      return fail(rejected("instrument", "max lots per instrument exceeded"));
+    }
   }
 
   // ── illiquid / stale price -> not tradable. ────────────────────────────────
@@ -93,8 +140,7 @@ Result<ports::Ok> RiskEngine::check_instrument(const RiskLimits& limits,
 }
 
 Result<ports::Ok> RiskEngine::check_order(const domain::OrderIntent& intent,
-                                          const RiskLimits& limits,
-                                          const RiskState& state) const {
+                                          const RiskLimits& limits, const RiskState& state) const {
   // ── market-order block: a posture flag, evaluated from the intent only. ────
   if (limits.block_market_orders && intent.order_type == domain::OrderType::Market) {
     return fail(rejected("order", "market orders are blocked"));
@@ -104,6 +150,13 @@ Result<ports::Ok> RiskEngine::check_order(const domain::OrderIntent& intent,
   if (limits.max_order_value_paise > 0) {
     if (!state.order_value_known) {
       return fail(rejected("order", "cannot verify order value (unknown)"));
+    }
+    // A negative notional is not a smaller order, it is corrupt input, and it
+    // slips under ANY armed ceiling. Refused for the same reason check_account
+    // refuses it. (slippage_bps below is deliberately NOT guarded this way: a
+    // negative slippage estimate is price IMPROVEMENT, a real and benign value.)
+    if (state.order_value_paise < 0) {
+      return fail(rejected("order", "cannot verify order value (negative)"));
     }
     if (state.order_value_paise > limits.max_order_value_paise) {
       return fail(rejected("order", "max order value exceeded"));
@@ -118,8 +171,7 @@ Result<ports::Ok> RiskEngine::check_order(const domain::OrderIntent& intent,
   return ports::ok();
 }
 
-Result<ports::Ok> RiskEngine::check_all(const domain::OrderIntent& intent,
-                                        const RiskLimits& limits,
+Result<ports::Ok> RiskEngine::check_all(const domain::OrderIntent& intent, const RiskLimits& limits,
                                         const RiskState& state) const {
   // Fixed order, fail-closed: account -> strategy -> instrument -> order. The
   // FIRST violation wins and is returned named (AC-1).
@@ -147,8 +199,7 @@ std::function<Result<ports::Ok>()> make_risk_check(const RiskEngine& engine,
   // destroyed first. The engine is stateless, so the closure constructs a fresh
   // one rather than referencing the caller's. Drops into GateContext::risk_check.
   (void)engine;
-  return [intent, limits = std::move(limits),
-          state = std::move(state)]() -> Result<ports::Ok> {
+  return [intent, limits = std::move(limits), state = std::move(state)]() -> Result<ports::Ok> {
     return RiskEngine{}.check_all(intent, limits, state);
   };
 }

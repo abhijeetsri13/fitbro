@@ -1,7 +1,6 @@
 #include "broker_exec/modes/posture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -17,8 +16,8 @@ using broker_exec::errors::SuggestedAction;
 using broker_exec::health::HealthSignal;
 using broker_exec::modes::DetectorSignal;
 using broker_exec::modes::Posture;
-using broker_exec::modes::PostureCoordinator;
 using broker_exec::modes::posture_for;
+using broker_exec::modes::PostureCoordinator;
 using broker_exec::modes::to_string;
 using broker_exec::ports::AlertLevel;
 
@@ -48,7 +47,9 @@ class CountingAlertSink final : public ports::AlertSink {
   std::string last_message_;
 };
 
-[[nodiscard]] int sev(Posture p) { return static_cast<int>(p); }
+[[nodiscard]] int sev(Posture p) {
+  return static_cast<int>(p);
+}
 
 }  // namespace
 
@@ -192,9 +193,9 @@ TEST_CASE("no detector signal escalates beyond SoftKill (Panic is operator-only)
   // The whole detector vocabulary active at once: the severest a detector mix can
   // produce is SoftKill (RiskBreach); Panic is reachable ONLY via operator_floor.
   const std::vector<DetectorSignal> all_signals{
-      DetectorSignal::StaleData,   DetectorSignal::MuteFeed,        DetectorSignal::Unknown,
-      DetectorSignal::Mismatch,    DetectorSignal::SessionExpiry,   DetectorSignal::BrokerDown,
-      DetectorSignal::ClockSkew,   DetectorSignal::ClockStall,      DetectorSignal::ResourcePressure,
+      DetectorSignal::StaleData, DetectorSignal::MuteFeed,      DetectorSignal::Unknown,
+      DetectorSignal::Mismatch,  DetectorSignal::SessionExpiry, DetectorSignal::BrokerDown,
+      DetectorSignal::ClockSkew, DetectorSignal::ClockStall,    DetectorSignal::ResourcePressure,
       DetectorSignal::RiskBreach};
   CHECK(coord.evaluate(all_signals) == Posture::SoftKill);
   CHECK(coord.evaluate(all_signals, Posture::Panic) == Posture::Panic);  // operator floor wins

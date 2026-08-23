@@ -128,6 +128,8 @@ std::int64_t exit_qty_for(const FillSnapshot& snap) noexcept {
   return snap.exit_qty_trustworthy ? snap.filled_qty : 0;
 }
 
-bool is_authoritative(const FillSnapshot& snap) noexcept { return snap.authoritative; }
+bool is_authoritative(const FillSnapshot& snap) noexcept {
+  return snap.authoritative;
+}
 
 }  // namespace broker_exec::fillnorm

@@ -1,11 +1,9 @@
 #include "broker_exec/cli/health_endpoint.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
-#include <string>
-
 #include <nlohmann/json.hpp>
+#include <string>
 
 #include "broker_exec/cli/health_snapshot.hpp"
 #include "broker_exec/cli/health_state.hpp"

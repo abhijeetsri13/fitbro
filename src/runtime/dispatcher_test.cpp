@@ -1,7 +1,6 @@
 #include "broker_exec/runtime/dispatcher.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -10,6 +9,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "broker_exec/adapters/fake/fake_broker.hpp"
@@ -168,8 +168,19 @@ TEST_CASE("place: happy path records PlaceOrder then Result, one order, acknowle
   CHECK(recs[0].payload_json == idem::intent_payload_json(order.intent));
 }
 
-// ── (b) fsync-before-send ────────────────────────────────────────────────────
-TEST_CASE("place: the PlaceOrder intent is durable on disk BEFORE the broker send",
+// ── (b) record-before-send ───────────────────────────────────────────────────
+//
+// WHAT THIS PROVES, AND WHAT IT CANNOT. The barrier reads the log with a
+// std::ifstream, which sees bytes the moment std::fflush hands them to the OS. So
+// this pins the ORDERING — the record is written before broker.place() is called —
+// but NOT stable storage: delete the durable_sync() call from IntentLog::append
+// and this test (and every other test in the tree) still passes, because the page
+// cache answers the read. No filesystem read on any OS can tell the two apart.
+// Counting the fsync needs a durability seam INSIDE intentlog — an injectable
+// sync function on IntentLog, defaulted to platform::durable_sync — which does not
+// exist and cannot be added from this module. Do not read the assertions below as
+// fsync coverage; the test is named for what it actually checks.
+TEST_CASE("place: the PlaceOrder intent is written to the log BEFORE the broker send",
           "[runtime][dispatch][durability]") {
   Harness h("barrier");
   const OrderIntent intent = sample_intent();
@@ -406,4 +417,91 @@ TEST_CASE("square_off: happy path returns Ok and records the intent; lost ack ->
   REQUIRE(found.has_value());
   REQUIRE(found.value().has_value());
   CHECK(found.value()->state == OrderState::Unknown);
+}
+
+// ── (f) a failed intent-log append must not poison the signal ────────────────
+TEST_CASE("place: a reserved ref is resumed ONLY when its intent never became durable",
+          "[runtime][dispatch][durability][idempotency]") {
+  Harness h("append_fail");
+
+  // ── (i) RESERVED AND DURABLY RECORDED, but not projected ───────────────────
+  // What a restart looks like when the index was rebuilt from the intent log and
+  // the projection has no row: the intent IS on disk, so the send MAY have
+  // happened. UNKNOWN is the correct posture and MUST survive — a second send for
+  // a possibly-live order is the duplicate this library exists to prevent.
+  OrderIntent recorded_signal = sample_intent();
+  recorded_signal.quantity = Quantity::of(25);  // a different signal to (ii)
+  const std::string prior_ref = "alpha-deadbeef-1111";
+  h.index.register_ref(recorded_signal, prior_ref);
+
+  auto unknown = h.dispatcher.place(recorded_signal.strategy, recorded_signal);
+  REQUIRE(unknown.has_value());
+  CHECK(unknown.value().state == OrderState::Unknown);
+  CHECK(unknown.value().intent.client_ref == prior_ref);
+  CHECK(h.broker.request_count() == 0);  // NOTHING sent for a possibly-live order
+
+  // ── (ii) RESERVED, but the intent never reached the log ────────────────────
+  const OrderIntent intent = sample_intent();
+  // The ref reserve() mints for this signal, reproduced deterministically: the
+  // harness generator has drawn nothing yet, because (i) hit the index and never
+  // minted.
+  idem::SeededUuidGenerator probe(0xC0FFEE);  // same seed as the harness uuids
+  const std::string reserved_ref =
+      idem::make_client_ref(intent.strategy, idem::signal_signature(intent), probe.next());
+
+  {
+    // Fault injection needing no new seam: append() on a MOVED-FROM log returns an
+    // Error (documented in intent_log.hpp) at exactly the point a short write, a
+    // failed fflush or a failed durable_sync returns one — BEFORE the pre-send
+    // barrier and before broker.place(). Moving the log back restores the same
+    // handle and seq: the transient I/O failure that then recovers.
+    IntentLog parked = std::move(h.log);
+
+    auto failed = h.dispatcher.place(intent.strategy, intent);
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(h.broker.request_count() == 0);  // nothing recorded => nothing sent
+
+    h.log = std::move(parked);
+  }
+
+  // THE REGRESSION THIS PINS. reserve() registers signature -> ref BEFORE place()
+  // records anything, and the index has no unregister, so the failed append used
+  // to leave the signal bound to a ref that exists in no log record and no store
+  // row. This retry then took the "already submitted" branch and returned a
+  // SYNTHESIZED Unknown order: zero sends, no store row — so
+  // UnknownResolver::resolve_all(), which enumerates store rows, could never see
+  // or clear it — leaving the signal un-placeable for the life of the process
+  // while the strategy was told it might be holding a position. It must place.
+  auto retried = h.dispatcher.place(intent.strategy, intent);
+  REQUIRE(retried.has_value());
+  CHECK(retried.value().state == OrderState::Acknowledged);
+  CHECK(h.broker.request_count() == 1);
+  // The RESERVED ref is resumed, not re-minted, so the log, the store and an index
+  // rebuilt from the log all name ONE ref for this signal.
+  CHECK(retried.value().intent.client_ref == reserved_ref);
+
+  auto found = h.store.find_order(reserved_ref);
+  REQUIRE(found.has_value());
+  REQUIRE(found.value().has_value());
+  CHECK(found.value()->state == OrderState::Acknowledged);
+
+  // Exactly ONE PlaceOrder on disk: the failed append wrote nothing, and the
+  // resume is a fresh record, not a blind repeat of a send.
+  auto replayed = h.log.replay();
+  REQUIRE(replayed.has_value());
+  int place_count = 0;
+  for (const auto& r : replayed.value()) {
+    if (r.op == IntentOp::PlaceOrder) {
+      ++place_count;
+    }
+  }
+  CHECK(place_count == 1);
+
+  // And the signal dedups normally again from here: a third attempt returns the
+  // stored order with no further send (the resume is not a retry loop).
+  auto third = h.dispatcher.place(intent.strategy, intent);
+  REQUIRE(third.has_value());
+  CHECK(third.value().intent.client_ref == reserved_ref);
+  CHECK(third.value().state == OrderState::Acknowledged);
+  CHECK(h.broker.request_count() == 1);
 }

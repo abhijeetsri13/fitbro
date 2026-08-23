@@ -15,7 +15,20 @@
 //      applied only if its key is >= the last key already applied for that
 //      order; a lower key is a stale/duplicate view and is dropped.
 //   3. LEGAL TRANSITIONS ONLY. State may only move along the documented
-//      transition table (see is_valid_transition); an illegal jump is refused.
+//      transition table (see is_valid_transition); an illegal jump is refused,
+//      and a refused view does NOT advance the order's ordering key (the key
+//      tracks what was applied, not what was seen).
+//
+// ADAPTER SPELLINGS OF "STILL WORKING": OrderState::Sent means "sent, no ack
+// processed yet" HERE, but an adapter may use it for "the broker says this order
+// is live and working" — Kite maps OPEN / TRIGGER PENDING / MODIFY PENDING and
+// the rest of its working statuses onto it. apply() therefore canonicalizes such
+// a view against the fill count it carries (filled > 0 -> PartiallyFilled, else
+// Acknowledged — the same rule fillnorm::normalize_fill applies, and the one the
+// Kotak adapter already publishes) BEFORE the table judges it, so a working-order
+// view is applied rather than refused as a backward jump and its fill discarded.
+// The rule and its deliberate exclusions are documented on canonical_observed()
+// in lifecycle.cpp.
 //
 // PARENT/CHILD MODEL: a sliced parent order (freeze-slicer, Story 2.9) has
 // children "<parent>#<k>". The parent has no broker state of its own — it is a
@@ -50,20 +63,30 @@ namespace broker_exec::lifecycle {
 // a monotonic broker/exchange update sequence where a higher value is newer.
 // Two views with the same key are the same observation (idempotent re-apply).
 struct BrokerView {
-  std::string client_ref;          // The order's client-ref (Story 1.7).
-  std::string broker_order_id;     // Broker-assigned id; empty until acknowledged.
+  std::string client_ref;       // The order's client-ref (Story 1.7).
+  std::string broker_order_id;  // Broker-assigned id; empty until acknowledged.
   domain::OrderState observed_state{domain::OrderState::Unknown};
-  domain::Quantity filled_qty;     // Cumulative filled quantity in this view.
-  domain::Price avg_price;         // Volume-weighted average fill price in this view.
-  std::int64_t ordering_key{0};    // Monotonic update sequence; higher = newer.
+  domain::Quantity filled_qty;   // Cumulative filled quantity in this view.
+  domain::Price avg_price;       // Volume-weighted average fill price in this view.
+  std::int64_t ordering_key{0};  // Monotonic update sequence; higher = newer.
 };
 
 // What apply() did, for logging / metrics. Exactly one is returned per call.
+//
+// KNOWN GAP: NoChange is overloaded. It covers both the benign "legal, current,
+// nothing to do" view AND a view REFUSED as an illegal transition — a genuine
+// divergence between local state and broker truth that a caller ought to count as
+// a mismatch, alert on, and block new entries over. A caller cannot tell them
+// apart today. Splitting the refusal out needs a new enumerator (a stable
+// "DROPPED_ILLEGAL" to_string name) plus a matching arm in EVERY switch over this
+// enum — including ReconcileApplier's, which has no default label and so fails
+// -Wswitch/-Werror the moment an enumerator appears. That makes it one atomic
+// change across this header, lifecycle.cpp and src/reconcile/reconciler.cpp.
 enum class ApplyOutcome {
   Applied,          // The view advanced the order; `order` was mutated.
   DroppedStale,     // view.ordering_key < last applied key — an older/duplicate view.
   DroppedTerminal,  // The order is already terminal (absorbing) — view ignored.
-  NoChange          // The view is legal and current but does not change the state.
+  NoChange          // Nothing changed: a matched current view, OR a refused jump.
 };
 
 // Stable, log-friendly name for an ApplyOutcome (observability contract, NFR-8).
@@ -110,9 +133,12 @@ class LifecycleEngine {
   //      (never moved out of a sink), regardless of the view's ordering_key.
   //   2. forward-progressing : if view.ordering_key < the last key applied for
   //      view.client_ref -> DroppedStale (an older / duplicate observation).
-  //   3. legal transition    : if observed_state is not a legal successor of the
-  //      current state -> NoChange (the illegal jump is refused; the order is
-  //      left untouched but the key is still recorded as seen).
+  //   3. legal transition    : the observed state is first canonicalized (see
+  //      "ADAPTER SPELLINGS OF STILL WORKING" above); if the result is not a
+  //      legal successor of the current state -> NoChange (the illegal jump is
+  //      refused, the order is left untouched, and the key is NOT advanced — a
+  //      view the machine never believed must not raise the high-water mark and
+  //      strand the next legal, lower-keyed view as stale).
   // On a legal, current, state-changing view -> Applied: the order's state,
   // broker_order_id, filled_qty and avg_price are updated and the last-applied
   // key advances. A legal current view that does not change the state ->
@@ -125,11 +151,11 @@ class LifecycleEngine {
   // (fold_parent_state over all known children of this parent). The parent state
   // is also cached and queryable via parent_state().
   domain::OrderState apply_child(std::string_view parent_client_ref,
-                                 std::string_view child_client_ref,
-                                 domain::OrderState child_state);
+                                 std::string_view child_client_ref, domain::OrderState child_state);
 
   // The last ordering key applied for `client_ref`, if any view has been applied
-  // to it yet. (A DroppedStale call does not advance it; an Applied/NoChange does.)
+  // to it yet. Only a view the machine BELIEVED advances it: a DroppedStale, a
+  // DroppedTerminal and a refused illegal transition all leave it where it was.
   [[nodiscard]] std::optional<std::int64_t> last_key(std::string_view client_ref) const;
 
   // The current folded parent state for a registered parent, if any child has

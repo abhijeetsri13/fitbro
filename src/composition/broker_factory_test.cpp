@@ -10,8 +10,9 @@
 //
 // Cross-platform: C++20 standard library only. No OS APIs, no `#ifdef`, no float.
 
-#include <catch2/catch_test_macros.hpp>
+#include "broker_exec/composition/broker_factory.hpp"
 
+#include <catch2/catch_test_macros.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -21,7 +22,6 @@
 #include "broker_exec/adapters/kotak/kotak_rest_client.hpp"
 #include "broker_exec/adapters/kotak/kotak_session.hpp"
 #include "broker_exec/capabilities/capabilities.hpp"
-#include "broker_exec/composition/broker_factory.hpp"
 #include "broker_exec/config/config.hpp"
 #include "broker_exec/domain/enums.hpp"
 #include "broker_exec/domain/money.hpp"
@@ -149,8 +149,8 @@ TEST_CASE("composition: broker.name parses exactly and fails closed otherwise",
     // A config value we do not recognize means the operator believes they are
     // trading somewhere we are not. Guessing is how a strategy ends up pointed
     // at the wrong account, so there is no trimming and no case folding.
-    for (const char* bad : {"Kite", "KITE", "Kotak", "KOTAK", " kite", "kite ", "kite\n",
-                            "zerodha", "kotak-neo", "fake", ""}) {
+    for (const char* bad : {"Kite", "KITE", "Kotak", "KOTAK", " kite", "kite ", "kite\n", "zerodha",
+                            "kotak-neo", "fake", ""}) {
       UNSCOPED_INFO("broker.name = '" << bad << "'");
       auto parsed = comp::parse_broker_choice(bad);
       REQUIRE_FALSE(parsed.has_value());
@@ -273,9 +273,9 @@ TEST_CASE("composition: a required capability is gated at LOAD, before any adapt
   const comp::BrokerDeps deps = fixture.deps();
 
   SECTION("a certified-Supported capability composes") {
-    auto made = comp::make_broker(comp::BrokerChoice::Kite, deps,
-                                  declaring({caps::Capability::PlaceOrder,
-                                             caps::Capability::CancelOrder}));
+    auto made =
+        comp::make_broker(comp::BrokerChoice::Kite, deps,
+                          declaring({caps::Capability::PlaceOrder, caps::Capability::CancelOrder}));
     REQUIRE(made.has_value());
     CHECK(made.value().choice() == comp::BrokerChoice::Kite);
     CHECK(made.value().capability_set().supports(caps::Capability::PlaceOrder));
@@ -299,8 +299,8 @@ TEST_CASE("composition: a required capability is gated at LOAD, before any adapt
                                   declaring({caps::Capability::HeadlessSessionRefresh}));
     REQUIRE_FALSE(made.has_value());
     CHECK(made.error().category == broker_exec::errors::ErrorCategory::NotSupported);
-    CHECK(contains(made.error().message,
-                   caps::to_string(caps::Capability::HeadlessSessionRefresh)));
+    CHECK(
+        contains(made.error().message, caps::to_string(caps::Capability::HeadlessSessionRefresh)));
   }
 
   SECTION("REJECTED AT LOAD MEANS NOTHING WAS BUILT AND NOTHING WAS SENT") {
@@ -336,10 +336,10 @@ TEST_CASE("composition: every MUTATION is re-gated per call, reads are not",
   Fixture fixture;
 
   comp::BrokerOptions options = declaring_place();
-  options.capability_override = comp::FixtureCertification(
-      caps::CapabilitySet::builder()
-          .set(caps::Capability::PlaceOrder, caps::Support::Supported)
-          .build());
+  options.capability_override =
+      comp::FixtureCertification(caps::CapabilitySet::builder()
+                                     .set(caps::Capability::PlaceOrder, caps::Support::Supported)
+                                     .build());
 
   auto made = comp::make_broker(comp::BrokerChoice::Kotak, fixture.deps(), options);
   REQUIRE(made.has_value());
@@ -397,10 +397,10 @@ TEST_CASE("composition: the per-call gate is silent when the load gate did its j
   // The normal case: everything the component calls was declared and certified,
   // so the extra check never changes an outcome.
   Fixture fixture;
-  auto made = comp::make_broker(
-      comp::BrokerChoice::Kite, fixture.deps(),
-      declaring({caps::Capability::PlaceOrder, caps::Capability::CancelOrder,
-                 caps::Capability::SquareOff, caps::Capability::ModifyOrder}));
+  auto made =
+      comp::make_broker(comp::BrokerChoice::Kite, fixture.deps(),
+                        declaring({caps::Capability::PlaceOrder, caps::Capability::CancelOrder,
+                                   caps::Capability::SquareOff, caps::Capability::ModifyOrder}));
   REQUIRE(made.has_value());
 
   // Kite certifies all four, so none of these is refused by the gate; they fail
@@ -439,10 +439,10 @@ TEST_CASE("composition: require_capabilities() REFUSES to answer from a fixture 
   // has no way to tell the difference. The only truthful answer is a refusal.
   Fixture fixture;
   comp::BrokerOptions options = declaring_place();
-  options.capability_override = comp::FixtureCertification(
-      caps::CapabilitySet::builder()
-          .set(caps::Capability::PlaceOrder, caps::Support::Supported)
-          .build());
+  options.capability_override =
+      comp::FixtureCertification(caps::CapabilitySet::builder()
+                                     .set(caps::Capability::PlaceOrder, caps::Support::Supported)
+                                     .build());
 
   auto made = comp::make_broker(comp::BrokerChoice::Kotak, fixture.deps(), options);
   REQUIRE(made.has_value());
@@ -467,10 +467,10 @@ TEST_CASE("composition: assert_production_posture() fails a fixture-composed ass
 
   SECTION("a fixture certification is a hard startup failure") {
     comp::BrokerOptions options = declaring_place();
-    options.capability_override = comp::FixtureCertification(
-        caps::CapabilitySet::builder()
-            .set(caps::Capability::PlaceOrder, caps::Support::Supported)
-            .build());
+    options.capability_override =
+        comp::FixtureCertification(caps::CapabilitySet::builder()
+                                       .set(caps::Capability::PlaceOrder, caps::Support::Supported)
+                                       .build());
     auto made = comp::make_broker(comp::BrokerChoice::Kotak, fixture.deps(), options);
     REQUIRE(made.has_value());
 
@@ -487,10 +487,10 @@ TEST_CASE("composition: the fixture certification is honored AND flagged",
           "[composition][testonly]") {
   Fixture fixture;
   comp::BrokerOptions options = declaring_place();
-  options.capability_override = comp::FixtureCertification(
-      caps::CapabilitySet::builder()
-          .set(caps::Capability::PlaceOrder, caps::Support::Supported)
-          .build());
+  options.capability_override =
+      comp::FixtureCertification(caps::CapabilitySet::builder()
+                                     .set(caps::Capability::PlaceOrder, caps::Support::Supported)
+                                     .build());
 
   auto made = comp::make_broker(comp::BrokerChoice::Kotak, fixture.deps(), options);
   REQUIRE(made.has_value());
@@ -511,8 +511,7 @@ TEST_CASE("composition: the fixture certification is honored AND flagged",
 
 // ── Dependency validation ───────────────────────────────────────────────────
 
-TEST_CASE("composition: a missing dependency is a named Validation error",
-          "[composition][deps]") {
+TEST_CASE("composition: a missing dependency is a named Validation error", "[composition][deps]") {
   Fixture fixture;
 
   SECTION("kite without a transport") {
@@ -575,8 +574,7 @@ TEST_CASE("composition: a missing dependency is a named Validation error",
 
 // ── The config-driven overload (the flip itself) ────────────────────────────
 
-TEST_CASE("composition: make_broker(config) is the whole broker switch",
-          "[composition][config]") {
+TEST_CASE("composition: make_broker(config) is the whole broker switch", "[composition][config]") {
   Fixture fixture;
   const comp::BrokerDeps deps = fixture.deps();
 
@@ -585,10 +583,10 @@ TEST_CASE("composition: make_broker(config) is the whole broker switch",
   // Both brokers must be composable for the flip to be observable, so this uses
   // the fixture posture. AC-2 covers the default posture separately.
   comp::BrokerOptions options = declaring_place();
-  options.capability_override = comp::FixtureCertification(
-      caps::CapabilitySet::builder()
-          .set(caps::Capability::PlaceOrder, caps::Support::Supported)
-          .build());
+  options.capability_override =
+      comp::FixtureCertification(caps::CapabilitySet::builder()
+                                     .set(caps::Capability::PlaceOrder, caps::Support::Supported)
+                                     .build());
 
   SECTION("flipping the one string flips the composed broker") {
     config.broker.name = "kite";

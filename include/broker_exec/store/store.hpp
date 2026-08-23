@@ -22,9 +22,12 @@
 // the common path durable anyway).
 //
 // CROSS-PLATFORM: SQLite C API + C++20 stdlib only. Paths flow through
-// std::filesystem::path; the on-disk filename is taken as UTF-8 via
-// path.string(). No OS APIs, no `#ifdef`. ":memory:" is supported for fast
-// in-process tests (it skips WAL, which an in-memory db does not support).
+// std::filesystem::path; the on-disk filename is handed to SQLite as UTF-8 via
+// path.u8string(), which is the API's documented encoding on every platform —
+// path.string() is the implementation's NATIVE NARROW encoding (the CRT code
+// page on MSVC) and would name a different file under a non-ASCII data root.
+// No OS APIs, no `#ifdef`. ":memory:" is supported for fast in-process tests
+// (it skips WAL, which an in-memory db does not support).
 
 #include <cstdint>
 #include <filesystem>
@@ -57,9 +60,9 @@ struct Ok {};
 // clock at which the broker view was taken (the freshness stamp the fail-closed
 // funds gate keys on, Story 2.11). Money is exact integer paise (no float).
 struct Funds {
-  std::string account;                 // Owning account id (one row per account).
-  domain::Money available;             // Free cash available to trade.
-  domain::Money used_margin;           // Margin currently blocked.
+  std::string account;                  // Owning account id (one row per account).
+  domain::Money available;              // Free cash available to trade.
+  domain::Money used_margin;            // Margin currently blocked.
   std::int64_t fetched_at_epoch_ms{0};  // Wall-clock stamp of the broker view.
 
   [[nodiscard]] bool operator==(const Funds&) const = default;
@@ -68,11 +71,11 @@ struct Funds {
 // A risk-engine decision worth persisting for provenance (Story 2.10 / FR-15).
 // `rule` is the named rule that fired; `detail` is a short, redaction-safe note.
 struct RiskEvent {
-  std::int64_t id{0};            // Assigned by the store on insert (0 = unset).
-  std::string client_ref;        // Order the event relates to (may be empty).
-  std::string rule;              // Named risk rule, e.g. "max_lots".
-  std::string detail;            // Short human-readable note (log-safe).
-  std::int64_t at_epoch_ms{0};   // Wall-clock stamp.
+  std::int64_t id{0};           // Assigned by the store on insert (0 = unset).
+  std::string client_ref;       // Order the event relates to (may be empty).
+  std::string rule;             // Named risk rule, e.g. "max_lots".
+  std::string detail;           // Short human-readable note (log-safe).
+  std::int64_t at_epoch_ms{0};  // Wall-clock stamp.
 
   [[nodiscard]] bool operator==(const RiskEvent&) const = default;
 };
@@ -81,12 +84,12 @@ struct RiskEvent {
 // and read these back; structured interpretation happens in the observability
 // layer. `payload` is an already-redaction-safe string (e.g. a JSON line).
 struct AuditRecord {
-  std::int64_t id{0};            // Assigned by the store on insert (0 = unset).
-  std::int64_t seq{0};           // Monotonic provenance sequence (intent-log seq).
-  std::string client_ref;        // Related order, if any.
-  std::string event;             // Event kind, e.g. "ORDER_SENT".
-  std::string payload;           // Redaction-safe detail blob.
-  std::int64_t at_epoch_ms{0};   // Wall-clock stamp.
+  std::int64_t id{0};           // Assigned by the store on insert (0 = unset).
+  std::int64_t seq{0};          // Monotonic provenance sequence (intent-log seq).
+  std::string client_ref;       // Related order, if any.
+  std::string event;            // Event kind, e.g. "ORDER_SENT".
+  std::string payload;          // Redaction-safe detail blob.
+  std::int64_t at_epoch_ms{0};  // Wall-clock stamp.
 
   [[nodiscard]] bool operator==(const AuditRecord&) const = default;
 };
@@ -115,6 +118,13 @@ class Store {
   // schema_version is still a hard refuse-to-start Error (that is an operator/
   // deployment fault, not corruption — see NFR-4).
   //
+  // "Corruption" means a VERDICT the probes reached — quick_check said not-ok, a
+  // promised table is missing, or the read failed with SQLITE_CORRUPT/NOTADB —
+  // NEVER merely "a read failed". SQLITE_BUSY, SQLITE_IOERR, SQLITE_NOMEM and
+  // SQLITE_INTERRUPT return an Error instead: the rebuild DROPs all six tables,
+  // and `audit`/`risk_events` have no second source, so a transient fault must
+  // not be allowed to destroy the FR-27 trail.
+  //
   // OpenOutcome is declared here and DEFINED out-of-line below the class: it has
   // a by-value `Store store` member, which requires the (enclosing) Store type to
   // be complete — so its definition must follow the class. The member-function
@@ -142,8 +152,7 @@ class Store {
   [[nodiscard]] Result<Ok> upsert_order(const domain::Order& order);
 
   // Look up an order by its client_ref. std::nullopt if none exists.
-  [[nodiscard]] Result<std::optional<domain::Order>> find_order(
-      std::string_view client_ref) const;
+  [[nodiscard]] Result<std::optional<domain::Order>> find_order(std::string_view client_ref) const;
 
   // All orders, ordered by client_ref for a stable, test-friendly result.
   [[nodiscard]] Result<std::vector<domain::Order>> all_orders() const;

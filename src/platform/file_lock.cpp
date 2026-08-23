@@ -198,20 +198,48 @@ enum class CreateOutcome { Created, Exists, Failed };
   return (now - mtime) > staleness;
 }
 
+// The outcome of a nonce-checked removal. The DISTINCTION IS LOAD-BEARING: "a
+// file is still sitting at the path" has two opposite causes — a stranger's lock
+// now occupies the name, or OUR OWN removal did not happen — and the takeover's
+// undo must react to them in opposite ways. Collapsing them into a silent void
+// return (and then reading bare existence off the filesystem) is how a live
+// holder's lock file gets deleted and ours gets orphaned in its place.
+enum class RemoveOutcome {
+  Removed,  // it carried our nonce and is gone — or it was already gone
+  NotOurs,  // it PARSES as a lock and carries somebody else's nonce: proven theirs
+  Failed,   // still there: neither removed nor provably anyone's — never "freed"
+};
+
 // Remove a lock file ONLY if it still carries `nonce`. The single place that is
 // ever allowed to delete a lock file, so "never delete someone else's lock" is
 // enforced in one spot rather than at every call site.
-void remove_if_ours(const fs::path& path, const std::string& nonce) {
+[[nodiscard]] RemoveOutcome remove_if_ours(const fs::path& path, const std::string& nonce) {
   const std::optional<std::string> text = read_text(path);
   if (!text.has_value()) {
-    return;
+    // Two very different worlds behind one nullopt: the file is GONE (nothing of
+    // ours occupies the name, so the caller's goal is already met), or it is
+    // there and would not open (fd exhaustion, a permission change). Only the
+    // first is success — reporting the second as removed would let a caller act
+    // on a file it never actually cleared.
+    std::error_code exists_ec;
+    const bool present = fs::exists(path, exists_ec);
+    return (!present && !exists_ec) ? RemoveOutcome::Removed : RemoveOutcome::Failed;
   }
   const std::optional<LockPayload> parsed = parse_lock_payload(*text);
-  if (!parsed.has_value() || parsed->nonce != nonce) {
-    return;
+  if (!parsed.has_value()) {
+    return RemoveOutcome::Failed;  // not provably ours, and not provably theirs
+  }
+  if (parsed->nonce != nonce) {
+    return RemoveOutcome::NotOurs;
   }
   std::error_code ec;
   fs::remove(path, ec);
+  // Windows' DeleteFileW refuses with ERROR_SHARING_VIOLATION for as long as ANY
+  // process holds the file open, and siblings open this exact path routinely (the
+  // read-back in try_acquire_file_lock, still_ours()). Discarding this error_code
+  // is what let the takeover's undo mistake its OWN surviving lock for a
+  // stranger's and delete the displaced holder's file instead.
+  return ec ? RemoveOutcome::Failed : RemoveOutcome::Removed;
 }
 
 // The TEST SEAM (see the header). Unset in production; the call below is a null
@@ -223,6 +251,13 @@ void fire_fault(LockFaultPoint point, const fs::path& lock_path, const fs::path&
     g_lock_fault_hook(point, lock_path, claim_path);
   }
 }
+
+// How many times the takeover's undo re-attempts a removal that FAILED (as
+// opposed to one that found a stranger's nonce). The dominant cause is a sibling
+// holding the path open for the microseconds of a read, which a handful of
+// immediate retries outlives. Bounded because this runs on the acquire path, and
+// safe at any bound because a removal we never manage is handled correctly below.
+constexpr int kUndoRemoveAttempts = 4;
 
 // Take over a STALE lock, in the exact order documented as guarantee 2:
 //   (a) atomically claim the stale file by renaming it away — one winner;
@@ -262,16 +297,22 @@ void fire_fault(LockFaultPoint point, const fs::path& lock_path, const fs::path&
   // silently replaced by our restore (fs::rename replaces its target).
   const CreateOutcome outcome = create_exclusive(lock_path, payload_text);
   if (outcome != CreateOutcome::Created) {
-    // Someone occupied the freed name before us. Their lock is real and current:
-    // we drop the corpse we claimed and NEVER restore over them.
-    std::error_code drop_ec;
-    fs::remove(claim_path, drop_ec);
     if (outcome == CreateOutcome::Exists) {
+      // PROVEN: someone occupied the freed name before us. Their lock is real and
+      // current, so we drop the corpse we claimed and NEVER restore over them.
+      std::error_code drop_ec;
+      fs::remove(claim_path, drop_ec);
       return make_error(ErrorCategory::Transient,
                         "file lock: re-acquired by another process during takeover");
     }
+    // NOT proven. A create that merely FAILED (out of space, a permission change,
+    // a Windows sharing violation) says nothing about who — if anyone — holds the
+    // name, so we destroy nothing: deleting claim_path on that guess throws away
+    // the displaced holder's REAL lock file. The residue is named in the error and
+    // is swept later, age-gated, as an orphaned `.stale-*`.
     return make_error(ErrorCategory::Internal,
-                      "file lock: cannot create lock file after takeover");
+                      "file lock: cannot create lock file after takeover (the displaced lock "
+                      "remains beside it as a claimed-lock '.stale-' file)");
   }
   fire_fault(LockFaultPoint::AfterCreate, lock_path, claim_path);
 
@@ -282,10 +323,30 @@ void fire_fault(LockFaultPoint point, const fs::path& lock_path, const fs::path&
   // only ever delete our own file) and put the victim's file back.
   const std::optional<bool> was_stale = path_is_stale(claim_path, staleness);
   if (!was_stale.has_value() || !*was_stale) {
-    remove_if_ours(lock_path, our_nonce);
+    // Give up our own lock first. WHAT THAT REMOVAL REPORTS is the only sound
+    // discriminator for everything below: a bare fs::exists(lock_path) cannot
+    // tell "a third party grabbed the freed name" (restoring would clobber a live
+    // lock) from "our own remove failed, so that file is still OURS" (dropping
+    // the claim then destroys the displaced holder's real lock AND strands ours
+    // at the lock path, which no destructor will ever release — blocking every
+    // sibling until the whole staleness window elapses).
+    RemoveOutcome undo = remove_if_ours(lock_path, our_nonce);
+    for (int attempt = 1; attempt < kUndoRemoveAttempts && undo == RemoveOutcome::Failed;
+         ++attempt) {
+      undo = remove_if_ours(lock_path, our_nonce);
+    }
 
-    std::error_code exists_ec;
-    if (fs::exists(lock_path, exists_ec) || exists_ec) {
+    // "Somebody else's lock is at the path" must be PROVEN, never inferred: the
+    // file itself carries a stranger's nonce, or our own file is provably gone and
+    // something has appeared in its place. Existence alone proves nothing.
+    bool retaken = (undo == RemoveOutcome::NotOurs);
+    if (undo == RemoveOutcome::Removed) {
+      std::error_code exists_ec;
+      const bool present = fs::exists(lock_path, exists_ec);
+      retaken = present && !exists_ec;
+    }
+
+    if (retaken) {
       // A third party took the name in the instant we gave it up. Restoring would
       // clobber a live lock, so we do not. The victim's lock is lost; it will
       // discover that through still_ours()/release()'s nonce check.
@@ -296,19 +357,33 @@ void fire_fault(LockFaultPoint point, const fs::path& lock_path, const fs::path&
                         "restored (the lock path was re-taken)");
     }
 
+    // Every other outcome puts the victim BACK. fs::rename replaces its target, so
+    // one call both reinstates the victim and clears any lock of OURS still stuck
+    // at the path. claim_path is never deleted here: it is the displaced holder's
+    // real lock file, and an orphan of our own that nobody will ever release is
+    // strictly worse than reinstating a file we should never have moved.
     std::error_code restore_ec;
     fs::rename(claim_path, lock_path, restore_ec);
     if (restore_ec) {
       // The one genuinely ambiguous outcome the protocol can produce. It is
       // reported LOUDLY (Internal ⇒ RaiseAlert) and names the residue, because a
       // silently swallowed restore failure leaves an operator with a live holder
-      // whose lock file has vanished and a stray `.stale-*` file beside it.
+      // whose lock file has vanished and a stray `.stale-*` file beside it. The
+      // message distinguishes the two shapes, because "the lock path was re-taken"
+      // pointed operators at the wrong cause whenever it was our own lock in the way.
+      if (undo == RemoveOutcome::Failed) {
+        return make_error(ErrorCategory::Internal,
+                          "file lock: stale takeover aborted, our own lock could NOT be removed "
+                          "and the displaced lock could NOT be restored over it (an orphaned lock "
+                          "and a claimed-lock '.stale-' file both remain)");
+      }
       return make_error(ErrorCategory::Internal,
                         "file lock: stale takeover aborted and the displaced lock could NOT be "
                         "restored (a claimed-lock '.stale-' file remains beside it)");
     }
-    return make_error(ErrorCategory::Transient,
-                      "file lock: stale takeover aborted - the lock was live and has been restored");
+    return make_error(
+        ErrorCategory::Transient,
+        "file lock: stale takeover aborted - the lock was live and has been restored");
   }
 
   fs::remove(claim_path, ec);  // best-effort: the corpse is ours to bury
@@ -392,7 +467,9 @@ FileLock& FileLock::operator=(FileLock&& other) noexcept {
   return *this;
 }
 
-FileLock::~FileLock() { release(); }
+FileLock::~FileLock() {
+  release();
+}
 
 bool FileLock::still_ours() const noexcept {
   if (!held_) {
@@ -434,14 +511,20 @@ void FileLock::release() noexcept {
   // were working, it now belongs to someone else and deleting it would hand a
   // third party a lock nobody owns.
   try {
-    remove_if_ours(path_, payload_.nonce);
+    // The outcome is deliberately discarded HERE and only here: release has no
+    // second move to make. `NotOurs` means a takeover already replaced us (we must
+    // not touch it) and `Failed` degrades to a lock that goes stale and is later
+    // taken over — both are already the correct end state for a releasing holder.
+    static_cast<void>(remove_if_ours(path_, payload_.nonce));
   } catch (...) {
     // Swallow: a failed release degrades to a lock that goes stale and is later
     // taken over. Throwing out of a destructor is never acceptable.
   }
 }
 
-void set_lock_fault_hook(LockFaultHook hook) { g_lock_fault_hook = std::move(hook); }
+void set_lock_fault_hook(LockFaultHook hook) {
+  g_lock_fault_hook = std::move(hook);
+}
 
 Result<FileLock> try_acquire_file_lock(const std::filesystem::path& lock_path,
                                        std::chrono::seconds staleness) {
@@ -482,8 +565,8 @@ Result<FileLock> try_acquire_file_lock(const std::filesystem::path& lock_path,
                              "file lock: lock file age unreadable - failing closed"));
     }
     if (!*stale) {
-      return fail(make_error(ErrorCategory::Transient,
-                             "file lock: already held by another process"));
+      return fail(
+          make_error(ErrorCategory::Transient, "file lock: already held by another process"));
     }
 
     // GUARANTEE 4: age alone does not license a takeover. The file must also
@@ -519,8 +602,8 @@ Result<FileLock> try_acquire_file_lock(const std::filesystem::path& lock_path,
   }
   const std::optional<LockPayload> parsed = parse_lock_payload(*back);
   if (!parsed.has_value() || parsed->nonce != payload.nonce) {
-    return fail(make_error(ErrorCategory::Transient,
-                           "file lock: lost the lock to a concurrent takeover"));
+    return fail(
+        make_error(ErrorCategory::Transient, "file lock: lost the lock to a concurrent takeover"));
   }
 
   return FileLock(lock_path, std::move(payload));

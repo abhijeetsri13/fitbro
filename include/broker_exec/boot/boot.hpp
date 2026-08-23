@@ -252,6 +252,24 @@ using SessionProbeFn = std::function<Result<session::SessionState>()>;
 // a socket (the same posture cli's own tests take).
 using StartHealthEndpointFn = std::function<Result<ports::Ok>()>;
 
+// The ledger-chain PRESENCE probe. THREE answers, not two: `true` (a chain file
+// is there and must be loaded and verified), `false` (there genuinely is none —
+// a FIRST boot), and an Error (the filesystem could not be asked at all).
+//
+// IT IS A SEAM ONLY BECAUSE THAT THIRD ANSWER IS OTHERWISE UNREACHABLE FROM A
+// TEST. No portable call makes `std::filesystem::exists` set an `error_code`: the
+// conditions that do (a parent directory that denies search, a symlink loop, a
+// stale handle on a re-exported mount) need a hostile filesystem, and both
+// libstdc++ and the MSVC STL fold ENOTDIR / ERROR_PATH_NOT_FOUND back into a
+// clean "not found". Production leaves this empty and gets `ledger_chain_present`;
+// a test injects the fault, which is how the refusal at step 3 is pinned.
+using ChainPresenceFn = std::function<Result<bool>(const std::filesystem::path&)>;
+
+// The production probe: `std::filesystem::exists` through its NON-THROWING
+// overload, where a failed probe is a typed Error and NEVER a `false`. That
+// distinction is the whole point — see the call site in step 3.
+[[nodiscard]] Result<bool> ledger_chain_present(const std::filesystem::path& path);
+
 // ── THE RUN PHASE IS A STUB. THIS SEAM IS THE HAND-OFF POINT. ───────────────
 //
 // The synchronous trading main loop is OUT OF SCOPE for IMP-20 (see the file
@@ -319,6 +337,11 @@ struct BootDeps {
   // The account-directory permission seam. Empty => the production seam
   // (`platform::restrict_to_owner_dir`); tests inject a spy.
   accounts::DirPermissionFn dir_permissions;
+
+  // The ledger-chain presence probe. Empty => `ledger_chain_present`; a test
+  // injects an UNANSWERABLE probe, which is the only way to reach step 3's
+  // refusal without a hostile filesystem. See `ChainPresenceFn`.
+  ChainPresenceFn chain_present;
 
   // ── Composition-root inputs ───────────────────────────────────────────────
   // Handed straight to `composition::make_broker` / `make_engine`. boot does not

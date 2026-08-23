@@ -75,7 +75,8 @@ struct HealthHttpServer::Impl {
   std::int64_t live_budget_ms;
   httplib::Server server;
 
-  Impl(const HealthState& state_in, std::int64_t budget) : state(state_in), live_budget_ms(budget) {}
+  Impl(const HealthState& state_in, std::int64_t budget)
+      : state(state_in), live_budget_ms(budget) {}
 };
 
 namespace {
@@ -102,12 +103,13 @@ HealthHttpServer::HealthHttpServer(const HealthState& state, std::int64_t live_b
   // Parity with route(): a live unknown-path / wrong-method request returns the
   // SAME fixed JSON 404 the pure handler does (not httplib's default text/html),
   // so the served contract is identical whether exercised in a test or on a socket.
-  impl_->server.set_error_handler([](const httplib::Request&, httplib::Response& res) {
-    apply_reply(not_found_reply(), res);
-  });
+  impl_->server.set_error_handler(
+      [](const httplib::Request&, httplib::Response& res) { apply_reply(not_found_reply(), res); });
 }
 
-HealthHttpServer::~HealthHttpServer() { delete impl_; }
+HealthHttpServer::~HealthHttpServer() {
+  delete impl_;
+}
 
 bool HealthHttpServer::listen(const std::string& host, int port) {
   // LOCALHOST-ONLY CONTRACT (AC-3), ENFORCED (not merely documented): this is an
@@ -120,6 +122,8 @@ bool HealthHttpServer::listen(const std::string& host, int port) {
   return impl_->server.listen(host, port);
 }
 
-void HealthHttpServer::stop() { impl_->server.stop(); }
+void HealthHttpServer::stop() {
+  impl_->server.stop();
+}
 
 }  // namespace broker_exec::cli

@@ -13,8 +13,12 @@
 // byte-identical to_json(). Per-order output is sorted by client_ref so the
 // result never depends on map/iteration order.
 //
-// MONEY: never a float. P&L is summed as integer paise (int64); a non-integer
-// `fields["pnl"]` value is IGNORED, never coerced to a double.
+// MONEY: never a float, and never a wraparound. P&L is summed as integer paise
+// (int64). A `fields["pnl"]` that cannot be added EXACTLY — a non-integer, an
+// integer outside int64 (nlohmann's is_number_integer() is TRUE for an unsigned
+// above INT64_MAX and get<std::int64_t>() narrows it SILENTLY), or an addend
+// that would overflow the running total — is IGNORED and COUNTED in
+// `pnl_values_ignored`: never coerced to a double, never wrapped.
 //
 // REDACTION: the in-memory `AuditEvent.fields` are stored RAW — domain::scrub
 // runs only on the rendered log line in StructuredLogger (Story 4.1), NOT on the
@@ -46,10 +50,13 @@
 namespace broker_exec::observability {
 
 // End-of-session tally (AC-1). Counts are per EventType occurrence;
-// `realized_pnl_paise` is the exact integer sum of every integer `fields["pnl"]`
-// (non-integer pnl values are ignored). `orders_per_strategy` counts placed
-// orders per strategy (counted on OrderPlaced to avoid double counting a single
-// order across its lifecycle).
+// `realized_pnl_paise` is the exact integer sum of every `fields["pnl"]` that is
+// an int64-representable integer AND can be added without overflowing, and
+// `pnl_values_ignored` counts the values that were not summed for either reason
+// — a non-zero count means the total is a PARTIAL sum and must not be
+// reconciled against a broker statement as if it were the whole session's P&L.
+// `orders_per_strategy` counts placed orders per strategy (counted on
+// OrderPlaced to avoid double counting a single order across its lifecycle).
 struct DailyReport {
   int orders_placed = 0;
   int filled = 0;
@@ -57,6 +64,7 @@ struct DailyReport {
   int cancelled = 0;
   int unknown = 0;
   std::int64_t realized_pnl_paise = 0;
+  int pnl_values_ignored = 0;
   std::map<std::string, int> orders_per_strategy;
 
   [[nodiscard]] std::string to_json() const;

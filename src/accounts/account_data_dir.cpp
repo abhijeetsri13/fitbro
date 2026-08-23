@@ -48,9 +48,9 @@ Result<ports::Ok> validate_account_id(std::string_view account_id) {
     return fail(make_error(ErrorCategory::Validation, "account id: must not be empty"));
   }
   if (account_id.size() > kMaxAccountIdLength) {
-    return fail(make_error(ErrorCategory::Validation,
-                           "account id: longer than " + std::to_string(kMaxAccountIdLength) +
-                               " characters"));
+    return fail(make_error(
+        ErrorCategory::Validation,
+        "account id: longer than " + std::to_string(kMaxAccountIdLength) + " characters"));
   }
   for (const char c : account_id) {
     if (!is_allowed_id_char(c)) {
@@ -97,11 +97,21 @@ Result<AccountDataDir> AccountDataDir::create(fs::path data_root, std::string ac
   return AccountDataDir(std::move(data_root), std::move(account_id), std::move(perms));
 }
 
-fs::path AccountDataDir::intent_log() const { return root_ / "intent.log"; }
-fs::path AccountDataDir::store_db() const { return root_ / "store.sqlite3"; }
-fs::path AccountDataDir::token_store() const { return root_ / "token_store.enc"; }
-fs::path AccountDataDir::ledger() const { return root_ / "ledger.jsonl"; }
-fs::path AccountDataDir::kill_journal() const { return root_ / "kill_journal.jsonl"; }
+fs::path AccountDataDir::intent_log() const {
+  return root_ / "intent.log";
+}
+fs::path AccountDataDir::store_db() const {
+  return root_ / "store.sqlite3";
+}
+fs::path AccountDataDir::token_store() const {
+  return root_ / "token_store.enc";
+}
+fs::path AccountDataDir::ledger() const {
+  return root_ / "ledger.jsonl";
+}
+fs::path AccountDataDir::kill_journal() const {
+  return root_ / "kill_journal.jsonl";
+}
 
 Result<ports::Ok> AccountDataDir::ensure() const {
   std::error_code ec;
@@ -124,8 +134,9 @@ Result<ports::Ok> AccountDataDir::ensure() const {
   // encrypted token store. A failure here FAILS the call: running on with loose
   // permissions is not a degraded mode we accept.
   if (!perms_(root_)) {
-    return fail(make_error(ErrorCategory::Internal,
-                           "account data dir: cannot restrict the account directory to owner-only"));
+    return fail(
+        make_error(ErrorCategory::Internal,
+                   "account data dir: cannot restrict the account directory to owner-only"));
   }
 
   return ports::ok();

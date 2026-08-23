@@ -54,6 +54,11 @@ if(BROKER_EXEC_BUILD_TESTS)
     kotak_session_test.cpp
     kotak_rest_client_test.cpp
     kotak_ws_protocol_test.cpp
+    # The BrokerPort impl's own row-reading contract. The conformance kit certifies
+    # the adapter's BEHAVIOUR against a recorded server whose rows always carry
+    # every field; these cases pin what happens when a row OMITS one, which that
+    # fixture by construction cannot reach.
+    kotak_broker_adapter_test.cpp
   )
   target_link_libraries(broker_exec_adapters_kotak_tests
     PRIVATE

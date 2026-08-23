@@ -79,8 +79,7 @@ std::string_view to_string(ManualInterventionEvent::Kind kind) noexcept {
 
 std::vector<ManualInterventionEvent> ManualInterventionDetector::detect(
     const std::vector<domain::Position>& believed_positions,
-    const std::vector<domain::Order>& local_orders,
-    const ReconcileResult& truth) const {
+    const std::vector<domain::Order>& local_orders, const ReconcileResult& truth) const {
   std::vector<ManualInterventionEvent> events;
 
   // ── The "bot has live intent on this symbol" set ──
@@ -149,8 +148,7 @@ std::vector<ManualInterventionEvent> ManualInterventionDetector::detect(
     // reverse). A broker magnitude >= believed with the same sign is NOT a
     // reduce (matched or grew — nothing the bot must react to here).
     const bool sign_flipped = (broker_qty < 0) != (believed_qty < 0);
-    const bool same_sign_reduced =
-        !sign_flipped && abs_qty(broker_qty) < abs_qty(believed_qty);
+    const bool same_sign_reduced = !sign_flipped && abs_qty(broker_qty) < abs_qty(believed_qty);
     if (sign_flipped || same_sign_reduced) {
       ManualInterventionEvent event;
       event.kind = ManualInterventionEvent::Kind::PositionReducedManually;
@@ -253,7 +251,7 @@ void ManualInterventionDetector::reconcile_positions(
       local.net_qty = match->net_qty;
       local.avg_price = match->avg_price;
     } else {
-      local.net_qty = domain::Quantity::of(0);     // broker no longer reports it -> flat.
+      local.net_qty = domain::Quantity::of(0);         // broker no longer reports it -> flat.
       local.avg_price = domain::Price::from_paise(0);  // flatten avg_price alongside net_qty.
     }
   }

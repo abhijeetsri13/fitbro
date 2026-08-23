@@ -13,8 +13,7 @@ HealthSnapshot fail_closed_default() noexcept {
   // session, a max-int heartbeat age (always outside any sane budget), a negative
   // in-flight count, and both sanity gates false — so is_live and is_ready are
   // false for ANY budget. /healthz and /ready both answer 503 before first publish.
-  return HealthSnapshot(session::SessionState::Failed,
-                        std::numeric_limits<std::int64_t>::max(),
+  return HealthSnapshot(session::SessionState::Failed, std::numeric_limits<std::int64_t>::max(),
                         std::numeric_limits<std::int64_t>::max(),
                         /*in_flight_count=*/-1, /*clock_sane=*/false, /*replay_clean=*/false);
 }

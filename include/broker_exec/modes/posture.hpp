@@ -111,8 +111,7 @@ class PostureCoordinator {
   // ExitOnly/SoftKill=Error, Panic=Critical). The AlertSink Result is swallowed;
   // no throw. Returns the same posture `evaluate` would.
   [[nodiscard]] Posture evaluate_and_alert(const std::vector<DetectorSignal>& active,
-                                           Posture operator_floor,
-                                           ports::AlertSink& alerts) const;
+                                           Posture operator_floor, ports::AlertSink& alerts) const;
 };
 
 }  // namespace broker_exec::modes

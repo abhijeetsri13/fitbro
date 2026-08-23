@@ -1,7 +1,4 @@
-#include "broker_exec/alerting/multi_channel_alert_sink.hpp"
-
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <cstddef>
 #include <stdexcept>
@@ -12,6 +9,7 @@
 
 #include "broker_exec/alerting/alert_channel.hpp"
 #include "broker_exec/alerting/heartbeat_monitor.hpp"
+#include "broker_exec/alerting/multi_channel_alert_sink.hpp"
 #include "broker_exec/clock/test_clock.hpp"
 #include "broker_exec/domain/redaction.hpp"  // kRedactionMarker, for the IMP-16 assertions
 #include "broker_exec/errors/error.hpp"
@@ -125,8 +123,7 @@ TEST_CASE("MultiChannelAlertSink: send_test_alert posts to every channel (AC-1)"
   REQUIRE(saw_hook);
 }
 
-TEST_CASE("MultiChannelAlertSink: scrubs the outbound body (4.2 lesson)",
-          "[alerting][redaction]") {
+TEST_CASE("MultiChannelAlertSink: scrubs the outbound body (4.2 lesson)", "[alerting][redaction]") {
   TestClock clock;
   CapturingSeam capture;
   PostFn post = [&capture](std::string_view url, std::string_view body) {
@@ -221,8 +218,7 @@ TEST_CASE("HeartbeatMonitor: dead-man's-switch over the steady clock (AC-2/AC-3)
   REQUIRE(monitor.is_alive(2s));
 }
 
-TEST_CASE("MultiChannelAlertSink: a successful send beats the heartbeat",
-          "[alerting][heartbeat]") {
+TEST_CASE("MultiChannelAlertSink: a successful send beats the heartbeat", "[alerting][heartbeat]") {
   TestClock clock;
   CapturingSeam capture;
   PostFn post = [&capture](std::string_view url, std::string_view body) {
@@ -352,8 +348,7 @@ constexpr std::string_view kSecretToken = "ab12CD34ef56GH78ij90KL12mn34OP56";
 
 [[nodiscard]] broker_exec::ports::AlertContext ctx(std::string client_ref,
                                                    std::string broker_order_id,
-                                                   std::string strategy,
-                                                   std::string symbol = {}) {
+                                                   std::string strategy, std::string symbol = {}) {
   broker_exec::ports::AlertContext out;
   out.client_ref = std::move(client_ref);
   out.broker_order_id = std::move(broker_order_id);
@@ -474,8 +469,8 @@ TEST_CASE("IMP-16: an all-empty context is byte-identical to a plain send()",
 
   const std::string message = "recovery: could not load state";
   REQUIRE(sink2.send(AlertLevel::Warning, message));
-  REQUIRE(sink3.send_with_context(AlertLevel::Warning, message,
-                                  broker_exec::ports::AlertContext{}));
+  REQUIRE(
+      sink3.send_with_context(AlertLevel::Warning, message, broker_exec::ports::AlertContext{}));
 
   REQUIRE(two_arg.posts.size() == 1);
   REQUIRE(three_arg.posts.size() == 1);
@@ -529,8 +524,8 @@ TEST_CASE("IMP-16: a minted CHILD slice ref survives a real sink verbatim",
   for (const auto& [url, body] : capture.posts) {
     static_cast<void>(url);
     REQUIRE(body_contains(body, child_ref));  // the '#' suffix included, byte for byte
-    REQUIRE(body_contains(body, "[client_ref=" + child_ref +
-                                    " strategy=alpha symbol=NIFTY24JUN24000CE]"));
+    REQUIRE(body_contains(
+        body, "[client_ref=" + child_ref + " strategy=alpha symbol=NIFTY24JUN24000CE]"));
   }
 
   // THE BASELINE: the same child ref in the free-form body is still destroyed.
@@ -590,8 +585,7 @@ TEST_CASE("IMP-16/M4: the INSTRUMENT SYMBOL survives an alert end-to-end",
                                        ctx("", "", "", std::string(kSecretToken))));
   REQUIRE(token_capture.posts.size() == 1);
   CHECK_FALSE(body_contains(token_capture.posts.front().second, kSecretToken));
-  CHECK(body_contains(token_capture.posts.front().second,
-                      broker_exec::domain::kRedactionMarker));
+  CHECK(body_contains(token_capture.posts.front().second, broker_exec::domain::kRedactionMarker));
 }
 
 TEST_CASE("IMP-16: a NON-ASCII broker order id cannot append prose to an alert",
@@ -617,8 +611,8 @@ TEST_CASE("IMP-16: a NON-ASCII broker order id cannot append prose to an alert",
   const std::string& body = capture.posts.front().second;
   CHECK_FALSE(body_contains(body, "RESOLVED"));
   CHECK_FALSE(body_contains(body, "ignore previous"));
-  CHECK(body_contains(body, "[broker_order_id=" +
-                                std::string(broker_exec::domain::kRedactionMarker) + "]"));
+  CHECK(body_contains(
+      body, "[broker_order_id=" + std::string(broker_exec::domain::kRedactionMarker) + "]"));
 }
 
 TEST_CASE("IMP-16: an ENORMOUS numeric broker order id cannot suppress a Critical alert",

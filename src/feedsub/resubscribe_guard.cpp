@@ -45,7 +45,9 @@ void ResubscribeGuard::subscribe(const std::string& token) {
   tokens_.emplace(token, Entry{});
 }
 
-void ResubscribeGuard::unsubscribe(const std::string& token) { tokens_.erase(token); }
+void ResubscribeGuard::unsubscribe(const std::string& token) {
+  tokens_.erase(token);
+}
 
 std::vector<std::string> ResubscribeGuard::on_reconnect() {
   // Re-issue the FULL desired set: the caller must send a subscribe frame for

@@ -20,10 +20,9 @@
 // `#ifdef`, no localtime/strftime — UTC is formatted via std::chrono.
 
 #include <chrono>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
-
-#include <nlohmann/json.hpp>
 
 namespace broker_exec::observability {
 
@@ -57,11 +56,11 @@ struct AuditEvent {
   std::chrono::system_clock::time_point ts{};
 
   // Typed provenance columns. Emitted only when non-empty.
-  std::string strategy;
-  std::string broker;
-  std::string account;
-  std::string client_ref;
-  std::string broker_order_id;
+  std::string strategy{};
+  std::string broker{};
+  std::string account{};
+  std::string client_ref{};
+  std::string broker_order_id{};
 
   // Everything else (status, risk_result, reconcile_result, pnl, error,
   // override...). Money values are integers or strings here — never a double.

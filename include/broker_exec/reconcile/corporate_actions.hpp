@@ -65,10 +65,10 @@ enum class CorporateActionKind { Split, Bonus, SymbolChange, FnoAdjustment };
 struct CorporateAction {
   std::string symbol;
   CorporateActionKind kind = CorporateActionKind::Split;
-  std::int64_t qty_num = 1;     // Numerator of the quantity multiplier.
-  std::int64_t qty_den = 1;     // Denominator of the quantity multiplier (!= 0).
-  std::string new_symbol;       // Non-empty for a symbol change.
-  std::int64_t new_token = 0;   // The re-resolved instrument token (master's job).
+  std::int64_t qty_num = 1;    // Numerator of the quantity multiplier.
+  std::int64_t qty_den = 1;    // Denominator of the quantity multiplier (!= 0).
+  std::string new_symbol;      // Non-empty for a symbol change.
+  std::int64_t new_token = 0;  // The re-resolved instrument token (master's job).
 };
 
 // Abstract port: the source of corporate-action reference data for a symbol. The
@@ -101,8 +101,7 @@ class CorporateActionClassifier {
  public:
   // `source == nullptr` means the corporate-action source is NOT configured: a
   // change is then surfaced (Error alert) rather than silently assumed.
-  CorporateActionClassifier(const CorporateActionSource* source,
-                            ports::AlertSink& alerts) noexcept
+  CorporateActionClassifier(const CorporateActionSource* source, ports::AlertSink& alerts) noexcept
       : source_(source), alerts_(alerts) {}
 
   // Re-base a position by a corporate action (value-preserving, integer math):
@@ -128,8 +127,8 @@ class CorporateActionClassifier {
   //  - a change with no CA, or a CA that does NOT match the observed change ->
   //    {is_corporate_action=false, source_missing=false} (caller falls through to
   //    the manual / mismatch path; the CA is NOT force-applied).
-  [[nodiscard]] CorporateActionOutcome classify(
-      const domain::Position& believed, const domain::Position& broker_observed) const;
+  [[nodiscard]] CorporateActionOutcome classify(const domain::Position& believed,
+                                                const domain::Position& broker_observed) const;
 
  private:
   const CorporateActionSource* source_;  // nullptr == not configured.

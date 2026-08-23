@@ -18,6 +18,13 @@
 // run their text through domain::scrub() BEFORE hashing/persisting, so no
 // token-shaped secret ever lands in the chain, the file, or the hash preimage.
 //
+// APPEND IS ALL-OR-NOTHING (IMP-36): a failed append restores the file to its
+// pre-append bytes, and a Ledger that cannot prove that — or that finds the file
+// already ending mid-record — SEALS itself and refuses to write again. Splicing a
+// good record onto a torn tail is what turns ONE failed write into a permanently
+// unloadable audit file, which can then only be repaired by hand-editing the very
+// artifact that must never be hand-edited. See append().
+//
 // TYPED PROVENANCE (IMP-16): because that scrub also destroyed a client_ref (one
 // long token-shaped run), the ids no longer travel inside the free-form payload —
 // they are passed as a ProvenanceContext and rendered through the whole-column
@@ -158,6 +165,24 @@ class Ledger {
   // JSON writer uses) and the entry is recorded. Losing an audit entry is strictly
   // worse than recording a sanitised one. Valid UTF-8 is untouched, so a payload
   // that was already well-formed hashes exactly as it did before IMP-17.
+  //
+  // ALL-OR-NOTHING ON DISK, AND IT SEALS ON DOUBT (IMP-36). An append either lands
+  // COMPLETE — one newline-terminated line, fsync'd, AND pushed onto the in-memory
+  // chain — or leaves the file BYTE-IDENTICAL to what it was on entry. A short or
+  // failed fwrite/fflush is rolled back to the offset measured before the write,
+  // and so is a failed fsync/fclose AFTER a successful flush: that second case
+  // leaves a COMPLETE record on disk that was never pushed in memory, so without
+  // the rollback the next append reuses seq N and verify_chain() reports "chain
+  // broken at seq N+1" on every boot thereafter. If the rollback itself cannot be
+  // completed, or if the file is found ALREADY ending mid-record (a torn write by
+  // a process that died before it could roll back), the Ledger SEALS: every later
+  // append() fails closed instead of splicing a good record onto unknown bytes.
+  // SPLICING IS WHAT BRICKS THE FILE — getline() reads the two as one unparseable
+  // line, load() forgives that only while it is the LAST content line (silently
+  // dropping the record), and one further entry makes it a permanent, fatal,
+  // hand-edit-only safe-start blocker. The seal is NOT cleared by load(), because a
+  // successful load() SKIPS a torn last line and is therefore no evidence the tail
+  // is clean: repair the file out of process and construct a new Ledger.
   [[nodiscard]] Result<LedgerEntry> append(std::string payload);
 
   // Same as append(payload), plus TYPED PROVENANCE (IMP-16). `payload` is scrubbed
@@ -233,9 +258,9 @@ class Ledger {
 
   // Verify an Ed25519 `signature` over `head_hash` under `public_key`. Returns
   // ok() iff OpenSSL verifies; a wrong key or a tampered head fails CLOSED.
-  [[nodiscard]] static Result<ports::Ok> verify_head(
-      std::string_view head_hash, const std::vector<unsigned char>& signature,
-      const std::vector<unsigned char>& public_key);
+  [[nodiscard]] static Result<ports::Ok> verify_head(std::string_view head_hash,
+                                                     const std::vector<unsigned char>& signature,
+                                                     const std::vector<unsigned char>& public_key);
 
   // Fail-closed key-identity guard (AC-3): ok() iff `expected == actual`, else a
   // safe-start Error. These are PUBLIC keys (not secrets), so a plain compare.
@@ -339,6 +364,15 @@ class Ledger {
   const ports::ClockPort* clock_;
   std::filesystem::path path_;
   std::vector<LedgerEntry> entries_;
+
+  // THE IMP-36 SEAL. Latched — and never cleared — the moment an append cannot
+  // prove the file is back at the size it measured on entry, or finds a
+  // terminator-less fragment already at EOF. While set, every append() fails
+  // closed. It is deliberately ONE-WAY: load() SKIPS a torn last line rather than
+  // reporting it, so a successful reload is not evidence the tail is clean, and
+  // nothing this object can observe may re-arm the writer. Repair the file out of
+  // process and build a new Ledger.
+  bool poisoned_ = false;
 };
 
 }  // namespace broker_exec::ledger

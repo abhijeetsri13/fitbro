@@ -42,7 +42,9 @@
 //          This closes the window in which a third process could occupy the name
 //          while we were still deciding. If the create says "exists", someone
 //          beat us to the free name: we ABORT, drop the file we claimed, and
-//          NEVER restore it (restoring would overwrite the new owner's lock).
+//          NEVER restore it (restoring would overwrite the new owner's lock). A
+//          create that merely FAILED proves nothing about who holds the name, so
+//          that case drops NOTHING — the claimed file stays, named in the error.
 //       c. ONLY NOW re-check the age of the file we claimed. If it turns out to
 //          have been FRESH (a legitimate holder acquired it between our staleness
 //          observation and step (a)), we UNDO: remove our own lock (nonce-checked,
@@ -50,6 +52,18 @@
 //          back. The restore's error_code is INSPECTED — a failed restore is
 //          reported as a typed Internal Error naming the residue, never silently
 //          swallowed.
+//
+//          THE UNDO'S OWN OUTCOME — not the mere existence of a file at the lock
+//          path — decides whether the restore happens. Only a PROVEN stranger
+//          suppresses it: the file carries a nonce that is not ours, or our file
+//          is provably gone and something new has appeared in its place. A removal
+//          that merely FAILED (Windows refuses to delete a file any sibling has
+//          open, and siblings read this path routinely) must never be read as "a
+//          third party took the name" — that inference deletes the displaced
+//          holder's real lock AND strands ours at the lock path, released by
+//          nobody, blocking every sibling for a full staleness window. Under any
+//          doubt we RESTORE (rename replaces, so it also clears an orphan of our
+//          own) and we NEVER delete the file we claimed.
 //
 //     Doing (b) before (c) is the load-bearing detail. The earlier
 //     check-then-restore ordering left the lock path UNOCCUPIED while the mtime
@@ -108,9 +122,9 @@ inline constexpr std::chrono::seconds kDefaultLockStaleness{600};
 // The lock file's payload — operator-facing diagnostics plus the ownership
 // nonce. Redaction-safe: a pid, a timestamp and a synthetic id, never a secret.
 struct LockPayload {
-  long long pid = 0;         // the acquiring process id
-  std::string acquired_at;   // ISO-8601 UTC, "YYYY-MM-DDTHH:MM:SSZ"
-  std::string nonce;         // unique per acquisition: "<pid>-<epoch_ns>-<counter>"
+  long long pid = 0;        // the acquiring process id
+  std::string acquired_at;  // ISO-8601 UTC, "YYYY-MM-DDTHH:MM:SSZ"
+  std::string nonce;        // unique per acquisition: "<pid>-<epoch_ns>-<counter>"
 };
 
 // The on-disk payload text (exactly this shape; tests pin it):
@@ -142,8 +156,7 @@ class FileLock;
 // `staleness <= 0` disables takeover (a stale lock then blocks forever, which is
 // the safest possible posture and is what tests use to pin the "no steal" case).
 [[nodiscard]] Result<FileLock> try_acquire_file_lock(
-    const std::filesystem::path& lock_path,
-    std::chrono::seconds staleness = kDefaultLockStaleness);
+    const std::filesystem::path& lock_path, std::chrono::seconds staleness = kDefaultLockStaleness);
 
 // RAII guard over an acquired lock file. Move-only: a lock has exactly one
 // owner, and moving transfers the responsibility to release it.
@@ -188,8 +201,7 @@ class FileLock {
   void release() noexcept;
 
  private:
-  friend Result<FileLock> try_acquire_file_lock(const std::filesystem::path&,
-                                                std::chrono::seconds);
+  friend Result<FileLock> try_acquire_file_lock(const std::filesystem::path&, std::chrono::seconds);
 
   FileLock(std::filesystem::path lock_path, LockPayload payload) noexcept;
 
@@ -213,15 +225,15 @@ class FileLock {
 // arrange the world so that a step reports a failure it was already able to
 // report. NOT thread-safe, and not intended to be: it is a test seam.
 enum class LockFaultPoint {
-  AfterCreate,       // a create-exclusive at the lock path just succeeded
-  AfterStaleClaim,   // the atomic rename-claim of a stale lock just succeeded
+  AfterCreate,      // a create-exclusive at the lock path just succeeded
+  AfterStaleClaim,  // the atomic rename-claim of a stale lock just succeeded
 };
 
 // `lock_path` is the lock being acquired; `claim_path` is the private name the
 // stale file was moved to (empty for AfterCreate).
-using LockFaultHook = std::function<void(LockFaultPoint lock_fault_point,
-                                         const std::filesystem::path& lock_path,
-                                         const std::filesystem::path& claim_path)>;
+using LockFaultHook =
+    std::function<void(LockFaultPoint lock_fault_point, const std::filesystem::path& lock_path,
+                       const std::filesystem::path& claim_path)>;
 
 // Install (or, with an empty function, remove) the fault hook. TEST ONLY.
 void set_lock_fault_hook(LockFaultHook hook);

@@ -1,7 +1,6 @@
 #include "broker_exec/reconcile/manual_intervention.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -118,8 +117,8 @@ TEST_CASE("detect: a believed-open position the broker shows flat is a manual cl
   const rec::ManualInterventionDetector detector(alerts);
 
   const std::vector<Position> believed{position("X", 50)};
-  const std::vector<Order> local_orders;            // no bot order on X
-  const auto truth = truth_with({});                // X absent at broker == flat
+  const std::vector<Order> local_orders;  // no bot order on X
+  const auto truth = truth_with({});      // X absent at broker == flat
 
   const auto events = detector.detect(believed, local_orders, truth);
 
@@ -171,8 +170,7 @@ TEST_CASE("detect: an explicitly-flat (net 0) broker position is also a manual c
   CountingAlertSink alerts;
   const rec::ManualInterventionDetector detector(alerts);
 
-  const auto events =
-      detector.detect({position("X", 50)}, {}, truth_with({position("X", 0)}));
+  const auto events = detector.detect({position("X", 50)}, {}, truth_with({position("X", 0)}));
   REQUIRE(events.size() == 1);
   CHECK(events.front().kind == Kind::PositionClosedManually);
 }
@@ -232,7 +230,8 @@ TEST_CASE("detect: a flat position explained by a live bot order is NOT flagged"
   // The order must be present in broker truth, else it would (correctly) be a
   // separate OrderCancelledManually; here we isolate the position-suppression.
   const std::vector<Order> local_orders{local_order("exit-1", "X", OrderState::Sent)};
-  const auto events = detector.detect({position("X", 50)}, local_orders, truth_with({}, local_orders));
+  const auto events =
+      detector.detect({position("X", 50)}, local_orders, truth_with({}, local_orders));
 
   CHECK(events.empty());
   CHECK(alerts.count() == 0);

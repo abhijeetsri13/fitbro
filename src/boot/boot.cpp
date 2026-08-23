@@ -77,10 +77,11 @@ void fire_absence_alarm(BootOutcome& outcome, const BootDeps& deps) {
   // way out, which is where outbound redaction belongs.
   const std::string message =
       std::string("broker-exec FAILED CLOSED during boot at step '") +
-      std::string(to_string(outcome.step)) + "' for account '" + deps.args.account_id +
-      "'. Exit " + std::to_string(exit_code_for(outcome.exit_class)) +
+      std::string(to_string(outcome.step)) + "' for account '" + deps.args.account_id + "'. Exit " +
+      std::to_string(exit_code_for(outcome.exit_class)) +
       ": there will be NO automatic restart and this account is now ABSENT until a "
-      "human intervenes. Reason: " + outcome.error.message;
+      "human intervenes. Reason: " +
+      outcome.error.message;
   const Result<ports::Ok> sent = deps.alerts->send(ports::AlertLevel::Critical, message);
   outcome.absence_alarm_delivered = sent.has_value();
 }
@@ -230,14 +231,41 @@ RunPhaseFn unimplemented_run_phase() {
     // See boot.hpp: this REFUSES rather than pretending to trade. A loop that
     // spun doing nothing would report a healthy trading engine that places no
     // orders — a far worse lie to hand an operator than an honest 70.
-    return fail(blocking(
-        ErrorCategory::Internal,
-        "boot: the trading run phase is not implemented. IMP-20 builds the process "
-        "entrypoint and the cold-boot sequence ONLY; the synchronous main loop "
-        "(dispatcher pumping, reconcile scheduling, market-data ingest) is a separate "
-        "story and is deliberately NOT stubbed into a fake loop. The world was verified "
-        "safe and the health surface is up; there is nothing yet to run"));
+    return fail(
+        blocking(ErrorCategory::Internal,
+                 "boot: the trading run phase is not implemented. IMP-20 builds the process "
+                 "entrypoint and the cold-boot sequence ONLY; the synchronous main loop "
+                 "(dispatcher pumping, reconcile scheduling, market-data ingest) is a separate "
+                 "story and is deliberately NOT stubbed into a fake loop. The world was verified "
+                 "safe and the health surface is up; there is nothing yet to run"));
   };
+}
+
+// ── The ledger-chain probe ──────────────────────────────────────────────────
+
+Result<bool> ledger_chain_present(const fs::path& path) {
+  if (path.empty()) {
+    // A layout that resolved to nothing is a composition bug, not a first boot.
+    return fail(blocking(ErrorCategory::Internal,
+                         "boot: no ledger chain path was resolved for this account"));
+  }
+
+  std::error_code ec;
+  const bool present = fs::exists(path, ec);
+  if (ec) {
+    // `fs::exists(p, ec)` returns FALSE for BOTH "it is not there" and "I could
+    // not find out" ([fs.op.exists]: status() reports file_type::none on error,
+    // which is not status_known()), so the error_code is the ONLY thing that
+    // separates the two. Guess "absent" and boot skips the chain load — see the
+    // call site for what that costs. The OS text is deliberately NOT appended:
+    // every message in this module is ASCII and locale-independent, and
+    // error_code::message() is neither on Windows.
+    return fail(blocking(ErrorCategory::Internal,
+                         "boot: could not determine whether the ledger chain file exists. The "
+                         "account tree could not be probed, so this process refuses to assume "
+                         "there is no chain and start on an empty ledger"));
+  }
+  return present;
 }
 
 // ── The sequence ────────────────────────────────────────────────────────────
@@ -297,8 +325,8 @@ BootOutcome boot(const BootDeps& deps) {
     const std::string account_id =
         deps.args.account_id.empty() ? outcome.config.engine.account_id : deps.args.account_id;
 
-    auto dir = accounts::AccountDataDir::create(std::move(root).value(), account_id,
-                                                deps.dir_permissions);
+    auto dir =
+        accounts::AccountDataDir::create(std::move(root).value(), account_id, deps.dir_permissions);
     if (!dir) {
       // An invalid account id is never sanitized into something "close enough".
       fail_step(outcome, BootStep::ResolveDataDir, ExitClass::FailClosedNeedsHuman,
@@ -342,9 +370,27 @@ BootOutcome boot(const BootDeps& deps) {
     // simply nothing to load or to verify the internal consistency of. The
     // checkpoint guard below still runs — a retained checkpoint with NO ledger
     // beneath it is a truncation to zero, which is exactly what it detects.
-    std::error_code ec;
-    const bool chain_exists = fs::exists(outcome.data_dir->ledger(), ec);
-    if (chain_exists && !ec) {
+    //
+    // ONLY A CLEAN "no" MAY BE READ AS A FIRST BOOT. A probe that FAILED used to
+    // land here as `false` and was silently reclassified as "first boot": load()
+    // and verify_chain() were skipped, boot ran on with an EMPTY in-memory chain,
+    // and the first append then wrote seq=0 with an empty prev_hash on top of a
+    // populated file — which every later boot fails verify_chain on, permanently.
+    // There is no backstop behind this: `verify_against_checkpoint` returns ok()
+    // when no checkpoint file exists (ledger.hpp), and nothing in this process
+    // writes one yet.
+    auto present = deps.chain_present ? deps.chain_present(outcome.data_dir->ledger())
+                                      : ledger_chain_present(outcome.data_dir->ledger());
+    if (!present) {
+      // CRASH, NOT FAIL-CLOSED, on the same reasoning as ensure() above: a probe
+      // that cannot be answered is what an unmounted StateDirectory or a mount
+      // that hiccupped looks like, and a capped backoff is the right response.
+      // The crash-loop breaker escalates a fault that turns out to be permanent.
+      // Either way this process does NOT trade on a ledger it never read.
+      fail_step(outcome, BootStep::OpenLedger, ExitClass::Crash, std::move(present).error(), deps);
+      return outcome;
+    }
+    if (present.value()) {
       if (auto loaded = deps.ledger->load(); !loaded) {
         fail_step(outcome, BootStep::OpenLedger, ExitClass::FailClosedNeedsHuman,
                   std::move(loaded).error(), deps);

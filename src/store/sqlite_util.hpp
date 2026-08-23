@@ -49,6 +49,22 @@ namespace broker_exec::store::detail {
   return (code & 0xff) == SQLITE_CONSTRAINT;
 }
 
+// True if a raw code says the DATABASE FILE ITSELF is damaged. This is the ONLY
+// class of read failure that may licence a destructive rebuild.
+//
+// SQLITE_BUSY (a backup process, an operator's `sqlite3` shell, WAL recovery
+// after a crash), SQLITE_IOERR (a one-off EIO on the data mount), SQLITE_NOMEM
+// and SQLITE_INTERRUPT say NOTHING about the file's contents — they are
+// transient or environmental. Collapsing one of them into "corrupt" runs
+// reset(), i.e. DROP TABLE on all six projection tables; `audit` and
+// `risk_events` have no second source (the intent log records intents, not audit
+// records), so a momentary lock would destroy the FR-27 trail permanently. On
+// doubt we refuse to start, not wipe.
+[[nodiscard]] inline bool is_corruption(int code) noexcept {
+  const int primary = code & 0xff;  // strip extended-result-code high bits
+  return primary == SQLITE_CORRUPT || primary == SQLITE_NOTADB;
+}
+
 // RAII wrapper around a prepared statement: prepares on construction (via the
 // factory) and always finalizes on destruction. Move-only.
 class Statement {
@@ -75,8 +91,8 @@ class Statement {
   // ── Parameter binding (1-based index, the sqlite3 convention) ─────────────
   [[nodiscard]] int bind_text(int index, std::string_view value) noexcept {
     // SQLITE_TRANSIENT: sqlite copies the bytes, so a temporary is safe.
-    return sqlite3_bind_text(stmt_, index, value.data(),
-                             static_cast<int>(value.size()), SQLITE_TRANSIENT);
+    return sqlite3_bind_text(stmt_, index, value.data(), static_cast<int>(value.size()),
+                             SQLITE_TRANSIENT);
   }
   [[nodiscard]] int bind_int64(int index, std::int64_t value) noexcept {
     return sqlite3_bind_int64(stmt_, index, static_cast<sqlite3_int64>(value));
@@ -152,9 +168,19 @@ class Statement {
 };
 
 // Prepare `sql` against `db` into a RAII Statement, or a typed Error.
-[[nodiscard]] inline Result<Statement> prepare(sqlite3* db, std::string_view sql) {
+//
+// `out_code` optionally receives the RAW SQLite result code. The typed Error
+// keeps it only as text in `broker_code`, and the callers that must tell a
+// corruption-shaped failure from a transient one (is_corruption above, whose
+// answer decides whether six tables get dropped) must not make that decision by
+// parsing a string back into a number.
+[[nodiscard]] inline Result<Statement> prepare(sqlite3* db, std::string_view sql,
+                                               int* out_code = nullptr) {
   sqlite3_stmt* raw = nullptr;
   const int rc = sqlite3_prepare_v2(db, sql.data(), static_cast<int>(sql.size()), &raw, nullptr);
+  if (out_code != nullptr) {
+    *out_code = rc;
+  }
   if (rc != SQLITE_OK) {
     return fail(sqlite_error(rc, "prepare failed"));
   }

@@ -1,7 +1,6 @@
 #include "broker_exec/ratelimit/endpoint_limiter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <string>
 
@@ -163,8 +162,9 @@ TEST_CASE("circuit-breaker backoff grows with consecutive trips and reopens/clos
           "[endpoint][breaker][backoff]") {
   TestClock clock;
   // trip on EVERY 429 so each call advances the trip index: cooldown 1s, 2s, 4s...
-  EndpointRateLimiter rl(clock, EndpointLimits{}, BreakerConfig{/*trip_after=*/1,
-                                                                /*base=*/1, /*max=*/300});
+  EndpointRateLimiter rl(clock, EndpointLimits{},
+                         BreakerConfig{/*trip_after=*/1,
+                                       /*base=*/1, /*max=*/300});
 
   // Trip #1 -> 1s cooldown (open_until = 0 + 1s).
   rl.record_429(EndpointClass::Quote);
@@ -187,8 +187,9 @@ TEST_CASE("circuit-breaker cooldown is capped and overflow-safe under a huge tri
           "[endpoint][breaker][backoff][overflow]") {
   TestClock clock;
   // Small cap so we can step exactly to it; trip on every 429.
-  EndpointRateLimiter rl(clock, EndpointLimits{}, BreakerConfig{/*trip_after=*/1,
-                                                                /*base=*/1, /*max=*/4});
+  EndpointRateLimiter rl(clock, EndpointLimits{},
+                         BreakerConfig{/*trip_after=*/1,
+                                       /*base=*/1, /*max=*/4});
 
   // A pathologically long storm: the trip index climbs into the tens of thousands.
   // The capped-doubling cooldown must NOT shift past the cap (no signed-overflow
@@ -249,8 +250,8 @@ TEST_CASE("a non-positive trip_after_consecutive_429 trips on the FIRST 429 (nev
   EndpointRateLimiter rl(clock, EndpointLimits{}, BreakerConfig{/*trip_after=*/0, 1, 300});
 
   CHECK_FALSE(rl.breaker_open(EndpointClass::Order));
-  rl.record_429(EndpointClass::Order);  // a single 429
-  CHECK(rl.breaker_open(EndpointClass::Order));        // tripped immediately
+  rl.record_429(EndpointClass::Order);                                // a single 429
+  CHECK(rl.breaker_open(EndpointClass::Order));                       // tripped immediately
   CHECK_FALSE(rl.acquire(EndpointClass::Order, kEntry).has_value());  // entry blocked
   CHECK(rl.acquire(EndpointClass::Order, kExit).has_value());         // exit still through
 }

@@ -6,7 +6,14 @@ A **broker-neutral execution and safety layer** that sits between strategy code 
 >
 > **When something fails, it fails _visibly_, _safely_, _without duplicate orders_, and _with a clear recovery path_.**
 
-**Status:** 📐 **Design / planning complete — pre-implementation.** This repository currently holds the full design contract (spec → PRD → architecture → epics & stories). Implementation language is **C++ (C++20)**.
+**Status:** 🚧 **The safety machinery is built and tested. The trading loop that would drive it is not.**
+
+~63k lines of C++20 across 41 modules with 51 test suites: idempotency, write-ahead intent log, four-level risk engine, reconciliation, kill switches, hedge-first option safety, a Kite adapter, a Kotak Neo adapter, a cross-adapter conformance kit and a SIGKILL durability harness — all six epics' modules, plus the design contract (spec → PRD → architecture → epics & stories) they were built from.
+
+> **The run phase is deliberately a stub, and the binary says so.** `broker-exec run` performs the full cold-boot sequence — config, data dir, ledger verification, session, the ten safe-start checks, broker and engine composition, health — and then **exits 70 without trading**, because
+> [`boot::unimplemented_run_phase()`](include/broker_exec/boot/boot.hpp) refuses rather than pretend. The synchronous main loop that would call `dispatch()`, schedule reconciliation and ingest market data is not written. Composition is `EngineMode::ExitOnly` for the same reason: an entry-capable assembly needs a funds view, a live margin quote and an UNKNOWN-pause flag that only that loop produces, and wiring a guard is not arming it.
+>
+> So: **no part of this has placed an order with real money, and as shipped it cannot.** The zero-duplicate guarantee is proven against a recorded fake broker and a fault matrix, not against Zerodha or Kotak. Known defects are tracked as [open issues](https://github.com/abhijeetsri13/fitbro/issues).
 
 ---
 

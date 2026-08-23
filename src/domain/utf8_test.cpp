@@ -1,7 +1,6 @@
 #include "broker_exec/domain/utf8.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <string>
 #include <string_view>
 
@@ -63,9 +62,11 @@ TEST_CASE("canonical_text: one U+FFFD per MAXIMAL SUBPART, spelled out", "[domai
   // that cannot CONTINUE the sequence in progress is re-read as a FRESH LEAD, so
   // a truncated rupee sign followed by a whole one yields U+FFFD + the rupee,
   // NOT two replacements.
-  CHECK(canonical_text("\xE2\x82" "\xE2\x82\xB9") == std::string(kFffd) + "\xE2\x82\xB9");
+  CHECK(canonical_text("\xE2\x82"
+                       "\xE2\x82\xB9") == std::string(kFffd) + "\xE2\x82\xB9");
   // Same rule with an ASCII byte breaking the run: the 'A' is preserved.
-  CHECK(canonical_text("\xE2\x82" "A") == std::string(kFffd) + "A");
+  CHECK(canonical_text("\xE2\x82"
+                       "A") == std::string(kFffd) + "A");
 
   // The four tightened second-byte ranges: overlong 2-byte, overlong 3-byte,
   // a UTF-16 surrogate, and a code point above U+10FFFF. All ill-formed.
@@ -81,9 +82,16 @@ TEST_CASE("canonical_text: one U+FFFD per MAXIMAL SUBPART, spelled out", "[domai
 TEST_CASE("canonical_text: IDEMPOTENT, and the output is always valid UTF-8 (P2/P3)",
           "[domain][utf8]") {
   const std::string_view inputs[] = {
-      "",           "plain ascii", "lone \x80 byte",     "invalid \xFF byte",
-      "trunc \xE2\x82 run", "\xC0\xAF",  "\xED\xA0\x80", "net \xE2\x82\xB9 125000",
-      "emoji \xF0\x9F\x98\x80", "\xEF\xBF\xBD",
+      "",
+      "plain ascii",
+      "lone \x80 byte",
+      "invalid \xFF byte",
+      "trunc \xE2\x82 run",
+      "\xC0\xAF",
+      "\xED\xA0\x80",
+      "net \xE2\x82\xB9 125000",
+      "emoji \xF0\x9F\x98\x80",
+      "\xEF\xBF\xBD",
   };
   for (const std::string_view in : inputs) {
     const std::string once = canonical_text(in);
@@ -113,8 +121,12 @@ TEST_CASE("canonical_text: the ASCII subsequence is preserved EXACTLY (P4)", "[d
   };
   const std::string_view inputs[] = {
       "mpin \x80\x80 1234",
-      "passwordtokentotp\xC0\x80" "12345678",
-      "a\x80" "b\xFF" "c\xE2\x82" "d",
+      "passwordtokentotp\xC0\x80"
+      "12345678",
+      "a\x80"
+      "b\xFF"
+      "c\xE2\x82"
+      "d",
       "\xE2\x82\xB9 100",
   };
   for (const std::string_view in : inputs) {
@@ -131,7 +143,8 @@ TEST_CASE("canonical_text vs scrub: the TOKEN-SHAPED rules are order-invariant",
   // high-entropy rule fire on exactly the same runs either way round.
   const std::string_view inputs[] = {
       "\x80 order token=Xy8ZqA1bCd2eFg3hIj4k",
-      "api_key=\xFF" "secret-value more",
+      "api_key=\xFF"
+      "secret-value more",
       "\xE2\x82 abcdefghij0123456789ABC tail",
       "prefix token: \x80\x80 aaaaaaaaaa1111111111 suffix",
   };
@@ -164,9 +177,9 @@ TEST_CASE("canonical_text vs scrub: the AUTH-WINDOW rule is ORDER-SENSITIVE — 
     const std::string scrub_first = canonical_text(scrub(kMpin));
     const std::string norm_first = scrub(canonical_text(kMpin));
     CHECK(scrub_first != norm_first);
-    CHECK(scrub_first.find(kRedactionMarker) != std::string::npos);   // the PIN is destroyed
+    CHECK(scrub_first.find(kRedactionMarker) != std::string::npos);  // the PIN is destroyed
     CHECK(scrub_first.find("1234") == std::string::npos);
-    CHECK(norm_first.find(kRedactionMarker) == std::string::npos);    // ...and would LEAK
+    CHECK(norm_first.find(kRedactionMarker) == std::string::npos);  // ...and would LEAK
     CHECK(norm_first.find("1234") != std::string::npos);
   }
 
@@ -175,11 +188,13 @@ TEST_CASE("canonical_text vs scrub: the AUTH-WINDOW rule is ORDER-SENSITIVE — 
   //     "passwordtokentotp", so the whole-word check rejects it on the raw bytes;
   //     after normalisation the expansion separates it and it matches.
   {
-    constexpr std::string_view kEmbedded = "passwordtokentotp\xC0\x80" "12345678";
+    constexpr std::string_view kEmbedded =
+        "passwordtokentotp\xC0\x80"
+        "12345678";
     const std::string scrub_first = canonical_text(scrub(kEmbedded));
     const std::string norm_first = scrub(canonical_text(kEmbedded));
     CHECK(scrub_first != norm_first);
-    CHECK(scrub_first.find("12345678") != std::string::npos);         // leaks under scrub-first
+    CHECK(scrub_first.find("12345678") != std::string::npos);  // leaks under scrub-first
     CHECK(norm_first.find("12345678") == std::string::npos);
     CHECK(norm_first.find(kRedactionMarker) != std::string::npos);
   }

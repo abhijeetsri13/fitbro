@@ -51,9 +51,8 @@ Result<ports::FundsSnapshot> FundsView::ensure_fresh() {
     // (Network/RateLimited/broker_code) instead of a bare "stale" verdict.
     if (auto refreshed = refresh(); !refreshed) {
       const Error& inner = refreshed.error();
-      root_cause = inner.broker_code.empty()
-                       ? inner.message
-                       : inner.message + " [" + inner.broker_code + "]";
+      root_cause = inner.broker_code.empty() ? inner.message
+                                             : inner.message + " [" + inner.broker_code + "]";
     }
   }
   if (!is_fresh()) {
@@ -88,14 +87,12 @@ Result<ports::Ok> FundsView::check_margin(std::int64_t required_margin_paise) {
   // secrets, so naming the shortfall is safe and aids diagnosis.
   Error e = make_error(ErrorCategory::InsufficientFunds,
                        "insufficient margin: available " + std::to_string(available) +
-                           " paise < required " + std::to_string(required_margin_paise) +
-                           " paise");
+                           " paise < required " + std::to_string(required_margin_paise) + " paise");
   e.action = SuggestedAction::DoNotRetry;
   return fail(std::move(e));
 }
 
-std::function<Result<ports::Ok>()> FundsView::make_funds_check(
-    std::int64_t required_margin_paise) {
+std::function<Result<ports::Ok>()> FundsView::make_funds_check(std::int64_t required_margin_paise) {
   // Capture THIS view by pointer plus the requirement by value. The view must
   // outlive the closure (documented in the header); both live on the main loop,
   // so the gate pass holding the closure is bounded by the view's lifetime.

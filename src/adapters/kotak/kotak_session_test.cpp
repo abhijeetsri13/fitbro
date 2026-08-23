@@ -11,7 +11,6 @@
 #include "broker_exec/adapters/kotak/kotak_session.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -179,9 +178,8 @@ struct TempDir {
   fs::path path;
 
   explicit TempDir(const std::string& tag)
-      : path(fs::temp_directory_path() /
-             ("broker_exec_kotak_" + tag + "_" +
-              std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
+      : path(fs::temp_directory_path() / ("broker_exec_kotak_" + tag + "_" +
+                                          std::to_string(reinterpret_cast<std::uintptr_t>(this)))) {
     std::error_code ec;
     fs::create_directories(path, ec);
   }

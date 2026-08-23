@@ -78,6 +78,13 @@ class Price {
   // Round this price to the nearest integer multiple of `tick` (round half-up).
   // `tick` must be > 0; a non-positive tick returns *this unchanged (callers
   // validate tick > 0 upstream at the gate). All-integer math, no float.
+  //
+  // Total over the whole int64 range — there is no precondition on the VALUE.
+  // A price whose rounded form would not fit in an int64 (INT64_MIN at most
+  // ticks, INT64_MAX where it would round up past the end) is likewise returned
+  // unchanged, never wrapped or clamped: an un-rounded price is still rejected
+  // by the tick-alignment gate, whereas a wrapped one would be tick-aligned and
+  // would pass it.
   [[nodiscard]] Price round_to_tick(Price tick) const noexcept;
 
   [[nodiscard]] constexpr Price operator+(const Price& rhs) const noexcept {

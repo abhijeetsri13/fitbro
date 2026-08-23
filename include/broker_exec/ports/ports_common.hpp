@@ -31,6 +31,8 @@ using Ok = std::monostate;
 
 // Convenience success value for `Result<Ok>`-returning ports. Lets impls write
 // `return ports::ok();` instead of constructing a monostate by hand.
-[[nodiscard]] inline Result<Ok> ok() noexcept { return Ok{}; }
+[[nodiscard]] inline Result<Ok> ok() noexcept {
+  return Ok{};
+}
 
 }  // namespace broker_exec::ports

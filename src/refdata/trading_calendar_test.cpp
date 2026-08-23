@@ -1,7 +1,6 @@
 #include "broker_exec/refdata/trading_calendar.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -104,13 +103,14 @@ TEST_CASE("is_trading_day: weekday true, holiday false, Sunday-special true, Sat
   TradingCalendar cal(static_fetcher(kCal1), clock, dir.path, "kite");
   REQUIRE(cal.refresh().has_value());
 
-  CHECK(cal.is_trading_day("2026-06-29"));         // Monday, not a holiday
-  CHECK_FALSE(cal.is_trading_day("2026-06-30"));   // Tuesday but a holiday
-  CHECK(cal.is_trading_day("2026-06-28"));         // Sunday, but a special session
-  CHECK_FALSE(cal.is_trading_day("2026-06-27"));   // plain Saturday
+  CHECK(cal.is_trading_day("2026-06-29"));        // Monday, not a holiday
+  CHECK_FALSE(cal.is_trading_day("2026-06-30"));  // Tuesday but a holiday
+  CHECK(cal.is_trading_day("2026-06-28"));        // Sunday, but a special session
+  CHECK_FALSE(cal.is_trading_day("2026-06-27"));  // plain Saturday
 }
 
-TEST_CASE("IST conversion + entry window land on the intended local time", "[refdata][calendar][AC2]") {
+TEST_CASE("IST conversion + entry window land on the intended local time",
+          "[refdata][calendar][AC2]") {
   TempDir dir;
 
   SECTION("09:20 IST on a trading day -> in entry window, entry allowed") {
@@ -127,8 +127,8 @@ TEST_CASE("IST conversion + entry window land on the intended local time", "[ref
     TestClock clock = clock_utc(2026, 6, 29, 9, 55);  // IST 15:25 Monday
     TradingCalendar cal(static_fetcher(kCal1), clock, dir.path, "kite");
     REQUIRE(cal.refresh().has_value());
-    CHECK_FALSE(cal.in_entry_window());   // 15:25 >= entry_cutoff 15:00
-    CHECK(cal.past_square_off());         // 15:25 >= square_off 15:20
+    CHECK_FALSE(cal.in_entry_window());  // 15:25 >= entry_cutoff 15:00
+    CHECK(cal.past_square_off());        // 15:25 >= square_off 15:20
     CHECK(cal.in_session());             // 15:25 < close 15:30
     const Result<Ok> entry = cal.require_entry_allowed();
     REQUIRE_FALSE(entry.has_value());

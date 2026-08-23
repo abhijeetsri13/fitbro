@@ -89,9 +89,9 @@ Result<ports::Ok> RateLimiter::acquire(bool is_exit) {
   // Denied: RateLimited + RetrySafe is the slow+alert signal (AC-3) — the runtime
   // queues/backs off rather than letting the broker reject. The message names the
   // throttled lane and is redaction-safe (no token-shaped content).
-  Error e = make_error(ErrorCategory::RateLimited,
-                       is_exit ? "rate limiter: throttled (exit lane)"
-                               : "rate limiter: throttled (entry lane)");
+  Error e =
+      make_error(ErrorCategory::RateLimited, is_exit ? "rate limiter: throttled (exit lane)"
+                                                     : "rate limiter: throttled (entry lane)");
   e.action = SuggestedAction::RetrySafe;
   return fail(std::move(e));
 }

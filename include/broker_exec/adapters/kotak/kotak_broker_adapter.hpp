@@ -111,6 +111,39 @@
 // with no fill) — a status that says the order is live is never allowed to
 // produce a terminal state on absent evidence.
 //
+// THE RULE APPLIES TO THE FILL AND THE AVERAGE PRICE TOO, not only to the total.
+// It used to stop at the total: `fldQty` / `avgPrc` / `prc` were read into plain
+// integers through `.value_or(0)`, which spent both "absent" and "present but
+// garbage" as the number 0 one line after the readers had carefully told them
+// apart. So:
+//
+//   * A ROW WHOSE FILLED QUANTITY WE COULD NOT READ IS PUBLISHED Unknown. Every
+//     non-terminal lifecycle position — Acknowledged vs PartiallyFilled vs Filled
+//     — is DEFINED by the fill, so a fill we cannot read is a state we may not
+//     assert. It was previously published as a confident Acknowledged carrying a
+//     fill of 0, which is how a live 30-of-50 order reported its progress as none.
+//   * A ROW THAT CLAIMS A FILL BUT CARRIES NO READABLE AVERAGE PRICE is published
+//     Unknown for the same reason money is never read best-effort: Rs 0.00 as a
+//     cost basis is believed by the ledger, the P&L and the operator. It is only
+//     demanded of a row that claims a fill — on a working order with nothing done,
+//     an absent average is the truth, and demanding it there would turn an ordinary
+//     book Unknown and freeze entries via the UNKNOWN-pause.
+//   * square_off() REFUSES OUTRIGHT (`KOTAK-SQUAREOFF-NOFILLQTY`) rather than sizing
+//     an exit off a fill nobody reported. This is the twin of the existing
+//     `KOTAK-SQUAREOFF-NOQTY` refusal and closes the more dangerous half of the same
+//     hole: read as 0, the flatten cancelled the remainder, exited NOTHING, and
+//     returned ok() while a real position stayed fully on.
+//
+// KNOWN GAP AT THE PUBLISH SITE, STATED PLAINLY: `domain::Order` has no way to say
+// "I could not read this number", and `LifecycleEngine::apply` copies
+// `view.filled_qty` / `view.avg_price` onto the order unconditionally once the view
+// changes anything. So an Unknown row still LOOKS like a fill of 0 downstream and
+// still overwrites the engine's working copy. The adapter no longer ASSERTS that
+// zero, and the Unknown state is the signal the engine acts on — but closing the
+// gap needs a change outside this adapter (skip those two writes when
+// `view.observed_state == Unknown`, or give `lifecycle::BrokerView` optional fill
+// fields). Nothing an adapter can publish fixes it from here.
+//
 // A field that is PRESENT but unparseable is worse than absent (see
 // `domain::parse_decimal_paise` — money is never read best-effort). The
 // fail-closed response is graded by what the read is USED for:

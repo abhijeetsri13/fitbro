@@ -16,7 +16,9 @@ namespace {
 
 // |x| for a signed quantity, computed without overflow surprises at realistic
 // sizes (paise*qty is documented to fit int64 for real order sizes).
-[[nodiscard]] std::int64_t abs64(std::int64_t x) noexcept { return x < 0 ? -x : x; }
+[[nodiscard]] std::int64_t abs64(std::int64_t x) noexcept {
+  return x < 0 ? -x : x;
+}
 
 // A risk-rejection Error, redaction-safe: the message carries only caller ids
 // (strategy_id / symbol), which are non-secret. The action is BlockStrategy —
@@ -61,9 +63,8 @@ void StrategyBook::apply_fill(const std::string& strategy_id, const std::string&
   // a gain — the (n > 0 ? +1 : -1) sign captures both.
   const std::int64_t closed = std::min(abs64(f), abs64(n));
   const std::int64_t sign = (n > 0) ? 1 : -1;
-  pos.realized_pnl =
-      pos.realized_pnl +
-      domain::Money::from_paise((price.paise() - pos.avg_cost.paise()) * closed * sign);
+  pos.realized_pnl = pos.realized_pnl + domain::Money::from_paise(
+                                            (price.paise() - pos.avg_cost.paise()) * closed * sign);
   pos.net_qty = n + f;
 
   if (pos.net_qty == 0) {
@@ -204,8 +205,8 @@ Result<ports::Ok> StrategyBook::check_new_order(
   const std::int64_t combined =
       account_exposure(mark_price).paise() + abs64(qty.value()) * price.paise();
   if (combined > account_max_exposure.paise()) {
-    return fail(rejected("combined account exposure would exceed cap for strategy '" +
-                         strategy_id + "' on '" + symbol + "'"));
+    return fail(rejected("combined account exposure would exceed cap for strategy '" + strategy_id +
+                         "' on '" + symbol + "'"));
   }
 
   // 5. Within the cap.

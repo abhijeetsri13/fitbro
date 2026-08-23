@@ -31,6 +31,38 @@ Windows (MSVC), and macOS (clang). To keep it that way:
   (POSIX `fsync` / Windows `_commit`). Anything needing on-disk durability uses
   it — do not call `fsync`/`FlushFileBuffers` directly.
 
+## Formatting
+
+- `clang-format` is **pinned to 17.0.6** and CI enforces it with `--Werror`. The
+  formatter's output changes between major versions, so an unpinned one makes the
+  gate depend on whichever version the runner image ships. Install the exact same
+  binary locally:
+
+  ```bash
+  pip install "clang-format==17.0.6"
+  clang-format -i $(find include src tests -type f \( -name '*.cpp' -o -name '*.hpp' \))
+  ```
+
+  Bump the version in `.github/workflows/ci.yml` and here together, never apart.
+
+- Every first-party source must be **tracked by git**. `scripts/check-sources-tracked.sh`
+  (run in the lint job) fails the build if a file under `src/`, `include/` or `tests/`
+  is untracked, or if an `add_subdirectory()` path is missing from the checkout — an
+  unanchored `.gitignore` pattern once hid the whole `secrets` module this way.
+
+## Aggregates and designated initializers
+
+- **Every member of a struct that anyone designated-initializes must carry an explicit
+  default member initializer** (`{}` at minimum). C++20 designated initializers are meant to
+  name a subset of fields, but clang's `-Wmissing-field-initializers` fires for any omitted
+  member that has no default member initializer, and the project builds with `-Werror`.
+- MSVC does not implement that warning. A Windows developer sees a clean build while Linux
+  and macOS do not build at all, so this class of break is invisible until CI — and it has
+  already cost three separate CI round-trips (#8, #45, #51), because clang reports only the
+  *first* uninitialized member per site.
+- Prefer a named factory (`make_error(...)`) over aggregate-initializing a type at a call
+  site. `errors::Error` is constructed that way for exactly this reason.
+
 ## Money / prices
 
 - **No `double`/`float` in any money or price path** (lint + review enforced).

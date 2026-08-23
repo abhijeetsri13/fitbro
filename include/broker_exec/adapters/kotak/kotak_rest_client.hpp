@@ -43,12 +43,11 @@
 // Cross-platform: C++20 standard library only. No OS APIs, no `#ifdef`.
 
 #include <functional>
+#include <nlohmann/json_fwd.hpp>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json_fwd.hpp>
 
 #include "broker_exec/adapters/kotak/kotak_session.hpp"
 #include "broker_exec/adapters/kotak/kotak_transport.hpp"
@@ -84,8 +83,8 @@ class KotakRestClient {
   [[nodiscard]] Result<nlohmann::json> cancel_order(const nlohmann::json& params);
 
   // ── Reads (idempotent) ──
-  [[nodiscard]] Result<nlohmann::json> orders();    // order book
-  [[nodiscard]] Result<nlohmann::json> trades();    // trade book
+  [[nodiscard]] Result<nlohmann::json> orders();  // order book
+  [[nodiscard]] Result<nlohmann::json> trades();  // trade book
   [[nodiscard]] Result<nlohmann::json> positions();
   [[nodiscard]] Result<nlohmann::json> holdings();
   // Funds/limits. `params` selects the segment/exchange/product (Kotak takes

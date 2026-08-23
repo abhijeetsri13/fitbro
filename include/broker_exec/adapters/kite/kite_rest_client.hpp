@@ -20,12 +20,11 @@
 //
 // Cross-platform: C++20 standard library only. No OS APIs, no `#ifdef`.
 
+#include <nlohmann/json_fwd.hpp>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json_fwd.hpp>
 
 #include "broker_exec/adapters/kite/http_client.hpp"
 #include "broker_exec/errors/error.hpp"
@@ -38,19 +37,31 @@ namespace broker_exec::adapters::kite {
 // (Story 2.12) can throttle. Kite REST is non-paginated; where it sends
 // X-RateLimit-*/Retry-After we surface them, otherwise the fields stay empty.
 struct RateLimitInfo {
-  bool present = false;                       // any rate-limit/Retry-After header seen
-  std::optional<long> limit;                  // X-RateLimit-Limit
-  std::optional<long> remaining;              // X-RateLimit-Remaining
-  std::optional<long> retry_after_seconds;    // Retry-After (notably on a 429)
+  bool present = false;                     // any rate-limit/Retry-After header seen
+  std::optional<long> limit;                // X-RateLimit-Limit
+  std::optional<long> remaining;            // X-RateLimit-Remaining
+  std::optional<long> retry_after_seconds;  // Retry-After (notably on a 429)
 };
 
 // Map an HTTP/Kite error response to the typed taxonomy (the single Kite
 // error-parsing point). The Kite `message` is run through `domain::scrub` before
 // it is placed on the Error; the Authorization header/token is never touched.
 //   401/403 or TokenException/PermissionException -> SessionExpired / ReEstablishSession
-//   429                                           -> RateLimited   / RetrySafe (+Retry-After)
-//   5xx                                           -> Network       / ReconcileFirst
-//   400/422 or NetworkException                   -> Validation    / DoNotRetry
+//   429 or TooManyRequests                        -> RateLimited   / RetrySafe (+Retry-After)
+//   404                                           -> OrderNotFound / ReconcileFirst
+//   MarginException                               -> InsufficientFunds / DoNotRetry
+//   5xx, Order/Network/Data/GeneralException      -> Network       / ReconcileFirst
+//   InputException, or 400/422 carrying a
+//     readable broker `message`                   -> Validation    / DoNotRetry
+//   anything we could not read                    -> Unknown       / ReconcileFirst
+//
+// DoNotRetry REQUIRES A VERDICT WE ACTUALLY READ (IMP-25). A 400/422 whose body
+// yielded NEITHER an `error_type` NOR a `message` is not a definitive rejection:
+// it is an answer we could not parse, and on a mutation it may sit over an order
+// that IS live at the broker. It therefore lands on Unknown/ReconcileFirst — only
+// a verdict the broker actually stated is allowed to end an order. (The old table
+// above was wrong twice: NetworkException has never been Validation, and a bare
+// 400 no longer is.)
 [[nodiscard]] errors::Error map_http_error(const HttpResponse& response);
 
 // The Kite Connect v3 REST client. Construct with the transport, the secret
@@ -63,6 +74,14 @@ class KiteRestClient {
   // ── Orders (mutations) ──
   // `params` is a Kite order field object (form-encoded for the wire). Returns
   // the parsed `data` payload (e.g. `{ "order_id": "..." }`).
+  //
+  // `order_id` IS BROKER-SUPPLIED TEXT AND IT LANDS IN THE URL PATH (IMP-23), so
+  // both methods REFUSE — Validation / DoNotRetry, with nothing sent — an id that
+  // is empty, longer than 64 bytes, or carrying any byte outside `[A-Za-z0-9_-]`;
+  // whatever passes is percent-encoded before it is concatenated. A real Kite id
+  // is untouched by either step. The gate in the .cpp names the two injections
+  // this closes (a `?` truncating the path onto a DIFFERENT order, and `../`
+  // walking the cancel onto the logout endpoint).
   [[nodiscard]] Result<nlohmann::json> place_order(const nlohmann::json& params);
   [[nodiscard]] Result<nlohmann::json> modify_order(const std::string& order_id,
                                                     const nlohmann::json& params);
@@ -70,10 +89,11 @@ class KiteRestClient {
                                                     const nlohmann::json& params);
 
   // ── Reads (idempotent) ──
-  [[nodiscard]] Result<nlohmann::json> orders();      // orderbook
-  [[nodiscard]] Result<nlohmann::json> trades();      // tradebook
+  [[nodiscard]] Result<nlohmann::json> orders();  // orderbook
+  [[nodiscard]] Result<nlohmann::json> trades();  // tradebook
   [[nodiscard]] Result<nlohmann::json> positions();
   [[nodiscard]] Result<nlohmann::json> holdings();
+  // `segment` is spliced into the path too, and is gated exactly as an order id.
   [[nodiscard]] Result<nlohmann::json> margins(const std::string& segment);
 
   // The instruments dump is a CSV body (not a JSON envelope) — returned as text.

@@ -67,8 +67,7 @@ class TradingCalendar {
   // written; `broker` forms the cache filename prefix; `tz_offset_minutes` turns
   // UTC into the exchange-local date + minute-of-day (IST = UTC+5:30 = 330).
   TradingCalendar(std::function<Result<std::string>()> fetch_json, const ports::ClockPort& clock,
-                  std::filesystem::path cache_dir, std::string broker,
-                  int tz_offset_minutes = 330);
+                  std::filesystem::path cache_dir, std::string broker, int tz_offset_minutes = 330);
 
   TradingCalendar(const TradingCalendar&) = delete;
   TradingCalendar& operator=(const TradingCalendar&) = delete;

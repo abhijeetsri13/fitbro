@@ -3,12 +3,13 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
+#include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "broker_exec/domain/redaction.hpp"
 #include "broker_exec/observability/audit_event.hpp"
@@ -58,6 +59,51 @@ using json = nlohmann::json;
   return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
+// The EXACT int64 paise carried by a `fields["pnl"]`, or nullopt when the value
+// is not one and must be ignored. Two ways a money read here can lie, both of
+// them silent before this helper existed:
+//   * nlohmann's is_number_integer() is TRUE for value_t::number_unsigned as
+//     well as number_integer, and get<std::int64_t>() on an unsigned above
+//     INT64_MAX is a bare static_cast in from_json.hpp — no throw, no
+//     diagnostic. A broker field of 18446744073709551615 read back as -1. So an
+//     unsigned is RANGE-CHECKED IN ITS OWN TYPE before it is ever narrowed.
+//   * a float/string/bool pnl is not money we can add exactly, so it is refused
+//     rather than coerced (money is never a float).
+// This is the rule domain::decimal_paise already applies to a 20-digit broker
+// field: a value that cannot be represented in int64 paise is a REFUSAL, not a
+// wraparound.
+[[nodiscard]] std::optional<std::int64_t> pnl_paise(const json& value) {
+  if (!value.is_number_integer()) {
+    return std::nullopt;
+  }
+  if (value.is_number_unsigned()) {
+    const auto raw = value.get<std::uint64_t>();
+    if (raw > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+      return std::nullopt;
+    }
+    return static_cast<std::int64_t>(raw);
+  }
+  return value.get<std::int64_t>();
+}
+
+// `total += addend`, but ONLY if the exact sum is representable; returns false
+// and leaves `total` untouched otherwise. Signed overflow is undefined
+// behaviour, so the test is made on the OPERANDS BEFORE the add — never by
+// inspecting an already-wrapped result. Plain arithmetic, no compiler builtin,
+// so MSVC and gcc/clang take the identical path.
+[[nodiscard]] bool checked_add(std::int64_t& total, std::int64_t addend) {
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
+  if (addend > 0 && total > kMax - addend) {
+    return false;
+  }
+  if (addend < 0 && total < kMin - addend) {
+    return false;
+  }
+  total += addend;
+  return true;
+}
+
 }  // namespace
 
 DailyReport ReportGenerator::daily(const std::vector<AuditEvent>& events) {
@@ -92,12 +138,33 @@ DailyReport ReportGenerator::daily(const std::vector<AuditEvent>& events) {
         break;
     }
 
-    // Sum P&L as integer paise ONLY. A non-integer (float/string/...) pnl is
-    // IGNORED — never coerced to a double (money is never a float).
+    // Sum P&L as integer paise ONLY, and only where the value can be added
+    // EXACTLY: a non-integer (float/string/...) pnl is IGNORED — never coerced
+    // to a double — an integer outside int64 is IGNORED rather than narrowed
+    // through a silent uint64->int64 wrap, and an addend that would overflow the
+    // running total is refused rather than wrapped. Every dropped value is
+    // COUNTED: `realized_pnl_paise` is documented as the EXACT sum, so a total
+    // that is missing a figure has to say so instead of handing the operator a
+    // short (or sign-flipped) number to reconcile against the broker statement.
+    //
+    // BOUNDARY, stated so it is not rediscovered as a bug: WHICH addend a
+    // checked accumulator refuses depends on the running total, so a set of
+    // events whose PARTIAL sums leave int64 can drop a different one under a
+    // different arrival order. That needs a total near 9.2e16 rupees — input
+    // already outside any real money — and the counter flags it either way. The
+    // AC-3 promise (the SAME event vector always renders byte-identically) is
+    // untouched; only the old wrapping `+=` pretended such input was fine.
     if (ev.fields.is_object()) {
       const auto it = ev.fields.find("pnl");
-      if (it != ev.fields.end() && it->is_number_integer()) {
-        report.realized_pnl_paise += it->get<std::int64_t>();
+      // A `null` pnl is ABSENT, not a dropped figure — the same reading the
+      // Kite adapter's numeric_text() gives a null money field. Counting it
+      // would make the ignored counter cry wolf on every event whose host tags a
+      // pnl key it has no value for, and a counter that cries wolf gets ignored.
+      if (it != ev.fields.end() && !it->is_null()) {
+        const std::optional<std::int64_t> paise = pnl_paise(*it);
+        if (!paise.has_value() || !checked_add(report.realized_pnl_paise, *paise)) {
+          ++report.pnl_values_ignored;
+        }
       }
     }
   }
@@ -243,6 +310,12 @@ std::string DailyReport::to_json() const {
   out["cancelled"] = cancelled;
   out["unknown"] = unknown;
   out["realized_pnl_paise"] = realized_pnl_paise;  // int64 paise — never a float.
+  // Non-zero means at least one `fields["pnl"]` could NOT be summed exactly (a
+  // float/string, an integer outside int64, or an addend that would overflow)
+  // and was dropped, so the total above is a PARTIAL sum. The key is ALWAYS
+  // rendered: a dropped money figure that is invisible to the operator is the
+  // whole defect, and an absent key would read as "nothing was dropped".
+  out["pnl_values_ignored"] = pnl_values_ignored;
 
   // PROVENANCE COLUMN (IMP-15), sanitized at OUTPUT ONLY — the same shape the
   // reconciliation report uses, for the same reason. `strategy` is a typed column

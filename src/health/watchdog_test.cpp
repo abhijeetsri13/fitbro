@@ -1,8 +1,7 @@
 #include "broker_exec/health/watchdog.hpp"
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <algorithm>
+#include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -241,8 +240,8 @@ TEST_CASE("mute helper: Stale->true, Live->false, Disconnected->false") {
   // the steady clock, so now_wall() is unchanged from the first tick; the new tick
   // must carry a strictly-newer exchange_ts or the 3.5 de-dup guard (correctly)
   // drops it as a duplicate and freshness never refreshes.
-  view.on_tick(Tick{"RELIANCE", Price::from_paise(250100),
-                    clock.now_wall() + std::chrono::milliseconds{1}});
+  view.on_tick(
+      Tick{"RELIANCE", Price::from_paise(250100), clock.now_wall() + std::chrono::milliseconds{1}});
   REQUIRE(view.state_for("RELIANCE") == MarketDataState::Live);
   CHECK_FALSE(feed_connected_but_mute(view, "RELIANCE"));
 
