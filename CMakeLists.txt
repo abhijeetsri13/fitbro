@@ -14,6 +14,23 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Export compile_commands.json for clang-tidy / editors.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# This project uses no C++20 modules, and asking CMake to scan for them broke the
+# one consumer of compile_commands.json we have. With cxx_std_20 under Ninja,
+# CMake turns module scanning on by default and writes an `@<target>.modmap`
+# response-file flag into every entry. Those files are produced by the BUILD, so
+# clang-tidy — which the lint job runs after configure, without building — died on
+# every translation unit with
+#
+#   error: no such file or directory: '@src/.../kite_broker_adapter.cpp.o.modmap'
+#
+# before parsing a line of code. The job still reported six-figure warning counts,
+# which is what a failing driver dumping partially-parsed headers looks like, so
+# it read as "analysis with findings" rather than "analysis never ran". Turning
+# scanning off removes the flag, makes clang-tidy work, and drops a per-TU
+# dependency-scan pass from every Ninja build. Revisit only if this project ever
+# actually adopts modules. (#47)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 # Single-config generators: default to Release if unset.
 get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(NOT _is_multi_config AND NOT CMAKE_BUILD_TYPE)

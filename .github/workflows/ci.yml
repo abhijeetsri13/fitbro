@@ -106,9 +106,13 @@ jobs:
   lint:
     name: clang-format + clang-tidy
     runs-on: ubuntu-24.04
+    # A lint job that cannot converge must fail in minutes, not burn the 6-hour
+    # default. clang-tidy over this tree is single-digit minutes once it runs in
+    # parallel and skips the Catch2-heavy test TUs.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y clang-tidy ninja-build
+      - run: sudo apt-get update && sudo apt-get install -y clang-tidy-18 ninja-build
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -137,8 +141,16 @@ jobs:
           conan install . --build=missing -s compiler.cppstd=20 \
             -c tools.cmake.cmaketoolchain:generator=Ninja
           cmake --preset conan-release
-      - name: clang-tidy
+      # PRODUCTION SOURCES ONLY, AND IN PARALLEL. This step used to invoke the
+      # single-file driver serially over all 158 translation units, test files
+      # included. A Catch2-heavy test TU is where the six-figure warning counts
+      # came from, and the whole step ran for over 50 minutes without finishing.
+      # The version is pinned for the same reason clang-format is: an apt default
+      # that moves with the runner image can turn a gate red with no commit. (#47)
+      - name: clang-tidy (pinned, production sources, parallel)
         run: |
           BUILD_DIR="$(dirname "$(find . -name compile_commands.json | head -n1)")"
-          mapfile -t files < <(find src -type f -name '*.cpp' 2>/dev/null)
-          if [ ${#files[@]} -gt 0 ]; then clang-tidy -p "$BUILD_DIR" "${files[@]}"; fi
+          COUNT="$(find src -type f -name '*.cpp' ! -name '*_test.cpp' | wc -l)"
+          echo "analysing $COUNT production translation units with $(clang-tidy-18 --version | head -n1)"
+          find src -type f -name '*.cpp' ! -name '*_test.cpp' -print0 |
+            xargs -0 -r -n1 -P "$(nproc)" clang-tidy-18 --quiet -p "$BUILD_DIR"
