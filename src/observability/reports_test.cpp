@@ -1,6 +1,8 @@
 #include "broker_exec/observability/reports.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <cstdint>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
@@ -447,4 +449,125 @@ TEST_CASE("reports are byte-identical across permuted input orderings (AC-3)") {
   CHECK(ReportGenerator::daily(order1).to_json() == ReportGenerator::daily(order2).to_json());
   CHECK(ReportGenerator::reconciliation(order1).to_json() ==
         ReportGenerator::reconciliation(order2).to_json());
+}
+
+TEST_CASE("a pnl above INT64_MAX is IGNORED, never wrapped into the total (IMP-37)") {
+  // nlohmann stores an oversized integer as value_t::number_unsigned, and
+  // is_number_integer() is TRUE for that type — so the old guard ADMITTED it and
+  // get<std::int64_t>() narrowed 18446744073709551615 to -1 with no error, no log
+  // line and no counter. 10000 + (-1) = 9999: the one report specified to be
+  // exact handed the operator a fabricated money total.
+  std::vector<AuditEvent> events;
+  AuditEvent good = make_event(EventType::OrderFilled, "a");
+  good.fields["pnl"] = 10000;  // integer paise
+  events.push_back(good);
+
+  AuditEvent oversized = make_event(EventType::OrderFilled, "b");
+  oversized.fields["pnl"] = std::numeric_limits<std::uint64_t>::max();
+  events.push_back(oversized);
+
+  const DailyReport report = ReportGenerator::daily(events);
+
+  CHECK(report.realized_pnl_paise == 10000);  // old behaviour: 9999
+  CHECK(report.pnl_values_ignored == 1);
+  CHECK(report.filled == 2);  // the event still COUNTS; only its pnl is dropped
+}
+
+TEST_CASE("the int64 boundary: INT64_MAX sums exactly, INT64_MAX+1 is refused (IMP-37)") {
+  // The largest representable pnl is not anomalous and must still be summed
+  // VERBATIM — the range check must not be an off-by-one that starts silently
+  // dropping legitimate money.
+  std::vector<AuditEvent> at_max_events;
+  AuditEvent at_max = make_event(EventType::OrderFilled, "a");
+  at_max.fields["pnl"] = std::numeric_limits<std::int64_t>::max();
+  at_max_events.push_back(at_max);
+
+  const DailyReport at_max_report = ReportGenerator::daily(at_max_events);
+  CHECK(at_max_report.realized_pnl_paise == std::numeric_limits<std::int64_t>::max());
+  CHECK(at_max_report.pnl_values_ignored == 0);
+
+  // One paise more is stored unsigned, is out of int64 range, and used to read
+  // back as INT64_MIN: the largest positive broker figure became the most
+  // negative number there is.
+  std::vector<AuditEvent> over_events;
+  AuditEvent over = make_event(EventType::OrderFilled, "b");
+  over.fields["pnl"] = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1U;
+  over_events.push_back(over);
+
+  const DailyReport over_report = ReportGenerator::daily(over_events);
+  CHECK(over_report.realized_pnl_paise == 0);  // old behaviour: INT64_MIN
+  CHECK(over_report.pnl_values_ignored == 1);
+}
+
+TEST_CASE("a pnl addition that would overflow int64 is refused, not wrapped (IMP-37)") {
+  // Here BOTH operands are perfectly legal int64 paise; only their SUM is not.
+  // The old bare `+=` was signed overflow — undefined behaviour, in practice a
+  // session total that flips sign — in the report an operator reconciles real
+  // money against.
+  const std::int64_t near_max = std::numeric_limits<std::int64_t>::max() - 5;
+  std::vector<AuditEvent> up;
+  AuditEvent big = make_event(EventType::OrderFilled, "a");
+  big.fields["pnl"] = near_max;
+  up.push_back(big);
+  AuditEvent more = make_event(EventType::OrderFilled, "b");
+  more.fields["pnl"] = 10;
+  up.push_back(more);
+
+  const DailyReport up_report = ReportGenerator::daily(up);
+  CHECK(up_report.realized_pnl_paise == near_max);  // the overflowing addend is dropped
+  CHECK(up_report.pnl_values_ignored == 1);
+
+  // The negative direction is the same defect mirrored, so it is pinned too.
+  const std::int64_t near_min = std::numeric_limits<std::int64_t>::min() + 5;
+  std::vector<AuditEvent> down;
+  AuditEvent low = make_event(EventType::OrderFilled, "c");
+  low.fields["pnl"] = near_min;
+  down.push_back(low);
+  AuditEvent lower = make_event(EventType::OrderFilled, "d");
+  lower.fields["pnl"] = -10;
+  down.push_back(lower);
+
+  const DailyReport down_report = ReportGenerator::daily(down);
+  CHECK(down_report.realized_pnl_paise == near_min);
+  CHECK(down_report.pnl_values_ignored == 1);
+}
+
+TEST_CASE("the daily report EXPOSES how many pnl values it dropped (IMP-37)") {
+  // A dropped money figure that is INVISIBLE is the actual harm: the operator
+  // reads `realized_pnl_paise` with no way to know it is a partial sum. The count
+  // therefore ships in the persisted JSON, beside the total it qualifies.
+  std::vector<AuditEvent> events;
+  AuditEvent good = make_event(EventType::OrderFilled, "a");
+  good.fields["pnl"] = 42000;
+  events.push_back(good);
+  AuditEvent floaty = make_event(EventType::OrderFilled, "b");
+  floaty.fields["pnl"] = 1.5;  // ignored since 4.2 — but silently, until now
+  events.push_back(floaty);
+  AuditEvent oversized = make_event(EventType::OrderFilled, "c");
+  oversized.fields["pnl"] = std::numeric_limits<std::uint64_t>::max();
+  events.push_back(oversized);
+  AuditEvent texty = make_event(EventType::OrderFilled, "d");
+  texty.fields["pnl"] = "4200";  // a string is not summed either
+  events.push_back(texty);
+  AuditEvent nully = make_event(EventType::OrderFilled, "e");
+  nully.fields["pnl"] = nullptr;  // ABSENT, not a dropped figure — NOT counted
+  events.push_back(nully);
+
+  const DailyReport report = ReportGenerator::daily(events);
+  CHECK(report.realized_pnl_paise == 42000);  // old behaviour: 41999
+  CHECK(report.pnl_values_ignored == 3);      // the float, the oversized, the string
+
+  const json parsed = json::parse(report.to_json(), nullptr, /*allow_exceptions=*/false);
+  REQUIRE_FALSE(parsed.is_discarded());
+  CHECK(parsed.at("realized_pnl_paise").get<long long>() == 42000);
+  CHECK(parsed.at("pnl_values_ignored").get<int>() == 3);
+
+  // A clean report says so EXPLICITLY — the key is always present, so its absence
+  // can never be read as "nothing was dropped".
+  std::vector<AuditEvent> clean;
+  clean.push_back(good);
+  const json clean_json =
+      json::parse(ReportGenerator::daily(clean).to_json(), nullptr, /*allow_exceptions=*/false);
+  REQUIRE_FALSE(clean_json.is_discarded());
+  CHECK(clean_json.at("pnl_values_ignored").get<int>() == 0);
 }
