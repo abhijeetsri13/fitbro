@@ -66,6 +66,8 @@ TEST_CASE("conformance: the Kite adapter passes the full fault matrix with zero 
 
   // Scoped, so the reason survives to whichever assertion below actually fires.
   INFO("kite conformance failures:" << conf::failure_digest(report.failures));
+  INFO("kite conformance SETUP failures:" << conf::failure_digest(report.setup_failures));
+  CHECK(report.setup_failures.empty());
   CHECK(report.failures.empty());
 
   // The whole matrix ran, the headline zero-duplicate invariant held, and every

@@ -133,6 +133,8 @@ TEST_CASE("conformance: the Kotak adapter passes the full fault matrix with zero
 
   // Scoped, so the reason survives to whichever assertion below actually fires.
   INFO("kotak conformance failures:" << conf::failure_digest(report.failures));
+  INFO("kotak conformance SETUP failures:" << conf::failure_digest(report.setup_failures));
+  CHECK(report.setup_failures.empty());
   CHECK(report.failures.empty());
 
   CHECK(report.scenarios_run > 0);

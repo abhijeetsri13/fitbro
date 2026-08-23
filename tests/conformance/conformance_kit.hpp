@@ -44,12 +44,15 @@
 // HEADER-ONLY: the kit is a header so any adapter epic can include and run it
 // without a shared compiled object. It pulls only public library headers.
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -93,13 +96,49 @@ struct ConformanceReport {
   int duplicate_orders = 0;           // total duplicate broker orders across all scenarios
   std::vector<std::string> failures;  // human-readable, one line per failed assertion
 
-  // PASS iff every scenario passed AND not a single duplicate order was created.
+  // SETUP failures are counted APART from property failures, and deliberately so.
+  // A scenario that could not create its own data directory has not told us
+  // anything about the zero-duplicate guarantee — it has told us the machine is
+  // broken. Folding the two together is what made a temp-directory collision
+  // (#44) read as "the library duplicated an order", which is the most alarming
+  // thing this suite can say and was, on that occasion, false.
+  std::vector<std::string> setup_failures;
+
+  // PASS iff every scenario ran to completion AND passed AND not a single
+  // duplicate order was created. A setup failure fails the gate too — a scenario
+  // that never ran is not a scenario that passed — but it is reported as its own
+  // category so nobody has to guess which kind of red this is.
   [[nodiscard]] bool ok() const {
-    return scenarios_passed == scenarios_run && duplicate_orders == 0;
+    return scenarios_passed == scenarios_run && duplicate_orders == 0 && setup_failures.empty();
   }
 };
 
 namespace detail {
+
+// A token unique to THIS process, minted once. Used to keep one conformance
+// executable's scenario data directories disjoint from another's — see the
+// comment at the datadir below for why that matters (#44).
+//
+// A process id would be the obvious choice, but there is no portable way to ask
+// for one and docs/conventions.md keeps OS API inside src/platform/, which has no
+// such accessor. 64 random bits from `std::random_device` is portable, needs no
+// seam, and answers the only question being asked: two concurrently running test
+// executables must not compute the same path. It also covers a case a pid does
+// not — debris left by an earlier run on the same machine that reused the pid.
+[[nodiscard]] inline const std::string& run_token() {
+  static const std::string token = [] {
+    std::random_device rd;
+    const std::uint64_t bits =
+        (static_cast<std::uint64_t>(rd()) << 32) ^ static_cast<std::uint64_t>(rd());
+    std::string out;
+    out.reserve(16);
+    for (int shift = 60; shift >= 0; shift -= 4) {
+      out.push_back("0123456789abcdef"[(bits >> shift) & 0xFULL]);
+    }
+    return out;
+  }();
+  return token;
+}
 
 // A throwaway alert sink the kit hands to the UnknownResolver: it records the
 // count of escalations so a scenario can assert that a fail-closed NoMatch DID
@@ -334,14 +373,50 @@ inline int count_broker_orders_for(ports::BrokerPort& broker, const std::string&
       scenario_ok = false;
       report.failures.push_back(scenario.name + ": " + why);
     };
+    // A scenario that could not be SET UP has proven nothing either way. It is
+    // still a gate failure — see ConformanceReport::ok() — but it is recorded
+    // apart from the safety properties, and it carries the OS error rather than
+    // surfacing later as a mystery "could not open store".
+    const auto fail_setup = [&](const std::string& why, const std::error_code& why_ec) {
+      scenario_ok = false;
+      report.setup_failures.push_back(scenario.name + ": " + why +
+                                      (why_ec ? " (" + why_ec.message() + ")" : std::string{}));
+    };
 
     // ── Fresh, isolated data dir for this scenario ──────────────────────────
+    //
+    // THE NAME MUST BE UNIQUE PER PROCESS, not just per scenario. All three
+    // conformance executables — the FakeBroker kit, the Kite suite and the Kotak
+    // suite — run this same matrix, and the Conan test preset sets
+    // "execution": { "jobs": 28 }, so `ctest` runs them CONCURRENTLY. With a name
+    // derived from the scenario alone they computed identical paths and deleted
+    // each other's live SQLite databases mid-run: `Store::open` then failed, and
+    // the gate reported that as a conformance failure of the library. It was
+    // reproducible at roughly 1 suite-run in 6 (#44).
+    //
+    // pid + a process-local counter, the same shape platform/file_lock.cpp's
+    // make_nonce() uses, and for the same reason: two processes must not be able
+    // to collide, and neither must two runs on one machine that left debris.
+    static std::atomic<unsigned long long> run_counter{0};
     std::error_code ec;
     const fs::path datadir =
         fs::temp_directory_path() /
-        ("broker_exec_conformance_" + scenario.name + "_" + std::to_string(report.scenarios_run));
+        ("broker_exec_conformance_" + scenario.name + "_" + std::to_string(report.scenarios_run) +
+         "_" + detail::run_token() + "_" +
+         std::to_string(run_counter.fetch_add(1, std::memory_order_relaxed) + 1));
+
     fs::remove_all(datadir, ec);
+    if (ec) {
+      fail_setup("could not clear the scenario data directory", ec);
+      continue;
+    }
+    ec.clear();
     fs::create_directories(datadir, ec);
+    if (ec) {
+      fail_setup("could not create the scenario data directory", ec);
+      continue;
+    }
+    ec.clear();
 
     // Build the IntentLog + Store first (both fallible) so a setup failure is a
     // scenario failure, not a crash.
@@ -349,13 +424,15 @@ inline int count_broker_orders_for(ports::BrokerPort& broker, const std::string&
                                  std::chrono::system_clock::time_point{});
     auto log_opened = intentlog::IntentLog::open(datadir / "intent.log", setup_clock);
     if (!log_opened) {
-      fail("could not open intent log");
+      // The Error's own message, not a fixed string. "could not open store" with
+      // no reason is what turned #44 into an afternoon of guessing.
+      fail_setup("could not open intent log: " + log_opened.error().message, {});
       fs::remove_all(datadir, ec);
       continue;
     }
     auto store_opened = store::Store::open((datadir / "store.db").string());
     if (!store_opened) {
-      fail("could not open store");
+      fail_setup("could not open store: " + store_opened.error().message, {});
       fs::remove_all(datadir, ec);
       continue;
     }

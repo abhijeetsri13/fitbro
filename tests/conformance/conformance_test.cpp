@@ -41,8 +41,14 @@ TEST_CASE("conformance: the full fault matrix produces zero duplicate orders",
 
   // Scoped, so the reason survives to whichever assertion below actually fires.
   INFO("conformance failures:" << conf::failure_digest(report.failures));
+  INFO("conformance SETUP failures:" << conf::failure_digest(report.setup_failures));
 
-  // Named first: it is the most specific statement of what went wrong, so it is
+  // Setup first. A scenario that could not create its data directory proved
+  // nothing about the library, and saying so before the property assertions stops
+  // a broken runner reading as a broken zero-duplicate guarantee (#44).
+  CHECK(report.setup_failures.empty());
+
+  // Named next: the most specific statement of what actually went wrong, so it is
   // the assertion a reader sees before the arithmetic ones.
   CHECK(report.failures.empty());
 
