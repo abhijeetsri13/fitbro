@@ -203,8 +203,11 @@ TEST_CASE("establish surfaces a typed Error and never leaks secrets", "[session]
 
   // No request_token / api_secret / access_token / checksum in any Error text.
   const auto& err = result.error();
-  for (const std::string secret : {std::string(kRequestToken), std::string(kApiSecret),
-                                   std::string(kAccessToken), std::string(kExpectedChecksum)}) {
+  // Bind by reference: a by-value loop variable copies each std::string out of the
+  // initializer_list, which clang rejects under -Wrange-loop-construct -Werror
+  // while MSVC says nothing. Same MSVC-is-silent trap as #51.
+  for (const std::string& secret : {std::string(kRequestToken), std::string(kApiSecret),
+                                    std::string(kAccessToken), std::string(kExpectedChecksum)}) {
     CHECK(err.message.find(secret) == std::string::npos);
     CHECK(err.broker_code.find(secret) == std::string::npos);
   }
